@@ -6,7 +6,7 @@ TeamOS lives as its own repository and integrates into any project, giving every
 
 ## How It Works
 
-Team members are defined in a `team/` workspace directory within the host project. Each member has a profile, current state, todo list, schedule, and inbox. A runner script processes members through priority-cascading cycles, invoking an AI agent (Claude, Cursor, Augment) for each.
+Team members are defined in a `team/` workspace directory within the host project. Each member has a profile, current state, todo list, schedule, and inbox. A runner script processes members through fair-scheduled, priority-weighted cycles, invoking an AI agent (Claude, Cursor, Augment) for each.
 
 The runner provides full context — organization docs, news, projects, and the member's own files — then commits after each member completes. A clerk agent runs after each pass for cleanup (archiving old news, removing stale schedule items, etc.).
 
@@ -146,7 +146,7 @@ node teamos/scripts/run.mjs --loop --no-commit
 | Option | Default | Description |
 |---|---|---|
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
-| `--priority <level>` | `pressing` | Starting priority level |
+| `--priority <level>` | `pressing` | Highest priority to include |
 | `--member <name>` | — | Only run cycles for a specific member |
 | `--max-cycles <n>` | `10` | Maximum cycle passes per scheduling pass |
 | `--loop` | — | Enable continuous scheduling loop |
@@ -155,7 +155,9 @@ node teamos/scripts/run.mjs --loop --no-commit
 | `--no-commit` | — | Skip automatic git commit after each cycle |
 | `--no-clerk` | — | Skip clerk agent after each pass |
 | `--clerk-only` | — | Run only the clerk agent, then exit |
-| `--budget <pri:n>` | `thisWeek:2, later:1` | Max member cycles at a priority per pass (repeatable) |
+| `--weight <pri:n>` | `pressing:8, today:4, thisWeek:2, later:1` | Priority weight for fair scheduling (repeatable) |
+| `--cadence <pri:dur>` | `pressing:0h, today:4h, thisWeek:1d, later:3d` | Min time between serving a priority (repeatable) |
+| `--budget <pri:n>` | — | Optional max member cycles at a priority per pass (repeatable) |
 | `--dry-run` | — | List members with work, don't invoke agent |
 
 ### Loop Mode (Built-in Scheduler)
@@ -175,34 +177,38 @@ node teamos/scripts/run.mjs --loop --agent cursor
 
 In loop mode the runner:
 
-1. Runs a full priority cascade pass (no hard time limit)
+1. Runs a full scheduling pass (no hard time limit)
 2. If the pass completes before the interval elapses, **idles** — polling every 30 seconds for new work or a `.stop` file
-3. If new work arrives during idle at **pressing** or **today** priority, starts the next pass early. Lower-priority work (thisWeek, later) waits for the interval timer.
+3. If new work arrives during idle at **pressing** or **today** priority, starts the next pass early. Lower-priority work waits for the interval timer.
 4. If the pass overruns the interval, starts the next pass immediately
 
-**Cycle budgets** — Lower-priority work is nibbled at rather than fully processed each pass. Per-pass limits prevent the runner from being perpetually busy with non-urgent work:
+**Fair scheduling** — Priority levels are assigned weights that determine their proportional share of cycles:
 
-| Priority | Default budget | Effect |
+| Priority | Default weight | Approximate share |
 |---|---|---|
-| `pressing` | unlimited | Always fully processed |
-| `today` | unlimited | Always fully processed |
-| `thisWeek` | 2 member cycles | At most 2 members run per pass |
-| `later` | 1 member cycle | At most 1 member runs per pass |
+| `pressing` | 8 | ~53% |
+| `today` | 4 | ~27% |
+| `thisWeek` | 2 | ~13% |
+| `later` | 1 | ~7% |
 
-Override with `--budget <priority>:<count>` (repeatable). Starvation cycles bypass budgets.
+The scheduler tracks a virtual runtime (vruntime) for each priority. Each pass, it picks the priority with the lowest vruntime that has work. After running a cycle, vruntime advances by `1 / weight` — so higher-weight priorities advance slower and accumulate more cycles over time. A deficit cap prevents a newly-active priority from monopolizing cycles to "catch up" after a long idle period. Override weights with `--weight <priority>:<n>` (repeatable).
 
-**Member ordering** — At unbounded priorities (pressing, today), members run in `members.json` order every pass. Place operationally critical roles (e.g. DevOps) earlier in the manifest so their urgent work is always handled first. At budgeted priorities (thisWeek, later), members are served in **round-robin** order so that no single member monopolizes the limited slots. The rotation state is persisted in `scheduler-state.json` across restarts.
+**Cadence** — Each priority has a minimum cooldown between serves, matching its urgency tempo:
 
-**Starvation prevention** — If high-priority work dominates every pass, lower priorities get periodic forced cycles so they don't drift indefinitely:
+| Priority | Default cadence | Effect |
+|---|---|---|
+| `pressing` | 0 | Always eligible |
+| `today` | 4 hours | Served a few times per day |
+| `thisWeek` | 1 day | Served daily |
+| `later` | 3 days | Served every few days |
 
-| Priority | Guaranteed cycle every |
-|---|---|
-| `pressing` | Always (cascade default) |
-| `today` | ~24 hours |
-| `thisWeek` | ~4 days |
-| `later` | ~1 week |
+If there's no pressing work, the runner won't churn through lower-priority work every pass — it waits until each priority's cadence elapses before making it eligible again. Override with `--cadence <priority>:<duration>` (e.g. `--cadence today:2h`, `--cadence later:5d`).
 
-Starvation state is persisted to `team/.logs/scheduler-state.json` so that interruptions and restarts don't reset the clocks. On startup the runner restores the last-served timestamps; if the file is missing or corrupted it falls back to "just now" for all priorities.
+**Cycle budgets** — Optional per-pass safety rails to cap how many member cycles run at a given priority. By default all priorities are unlimited. Use `--budget <priority>:<count>` to cap a level (e.g. `--budget later:3`).
+
+**Member ordering** — Within each priority level, members are served in **round-robin** order so that no single member monopolizes. The rotation state is persisted in `scheduler-state.json` across restarts.
+
+Scheduling state (vruntimes, last-served timestamps, round-robin positions) is persisted to `team/.logs/scheduler-state.json` so that interruptions and restarts maintain fairness. On startup the runner restores the saved state; if the file is missing or corrupted it initializes all priorities at equal footing.
 
 Without `--loop`, the runner behaves as before: a single pass with a 1-hour hard time limit.
 
@@ -232,7 +238,7 @@ When the event fires, the member follows the rules in `teamos/agent-rules/self-a
 
 Assessments are saved to `team/members/<name>/archives/self-assessments/assessment-YYYY-MM-DD.md`. After completing the assessment, the member bumps the event's `time` forward by one week to maintain the recurrence.
 
-## Priority Cascade
+## Priority Levels
 
 ```
 pressing  →  today  →  thisWeek  →  later
@@ -243,7 +249,7 @@ pressing  →  today  →  thisWeek  →  later
 - **ThisWeek** — Handle this week
 - **Later** — Nibble at when there is time
 
-The runner starts at the highest priority and cascades down. It only advances to the next level when no members have work at the current level. Within a priority level, member order follows `members.json` — so list members in descending operational importance.
+The runner uses a weighted fair scheduler to allocate cycles across priorities. Higher-weight priorities receive proportionally more cycles, but lower priorities are never starved. See the Loop Mode section for weight details.
 
 ## Work Detection
 
@@ -299,13 +305,13 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 10. **Your schedule** — `team/members/<you>/schedule.json`
 11. **Your inbox** — all `.md` files in `team/members/<you>/inbox/`
 
-The runner also passes a header with the current priority level and timestamp. When working interactively, default to priority `pressing` and work down the cascade as described above.
+The runner also passes a header with the current priority level and timestamp. When working interactively, default to priority `pressing` and follow the priority levels as described above.
 
 Depending on your interaction, you may update your state, TODOs, and schedule. Do not commit — let the human handle that.
 
 ## Design Philosophy
 
-- **Priority-driven** — Pressing work is always handled before less urgent tasks
+- **Priority-weighted** — Higher-priority work receives proportionally more cycles, while lower priorities are guaranteed fair access
 - **Right-sized cycles** — Each cycle does a modest amount of work to maintain continuity without overrunning context windows
 - **Agent-owned changes** — The agent modifies files freely; the runner handles git commits
 - **Commit per member** — Clean git history for human review between runs

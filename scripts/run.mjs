@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * TeamOS Runner — orchestrates member cycles through the priority cascade
+ * TeamOS Runner — orchestrates member cycles using weighted fair scheduling
  * by invoking an agentic CLI tool for each active AI member.
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  *
  * Key design choices:
  *   - Members are discovered from team/members.json at startup.
  *   - Work detection checks inbox messages, todos at current priority,
  *     and due schedule events for each member.
- *   - Priority cascade: pressing → today → thisWeek → later.
- *     The runner advances to the next priority only when no members have
- *     work at the current level.  Within a priority level, it re-checks
- *     after each pass (members may create work for each other).
+ *   - Fair scheduling via virtual runtime (vruntime): each priority level
+ *     has a weight (pressing:8, today:4, thisWeek:2, later:1 by default).
+ *     The scheduler picks the priority with the lowest vruntime that has
+ *     work.  After each cycle, vruntime advances by 1/weight — so higher-
+ *     weight priorities advance slower and accumulate more cycles.
  *   - The agent owns all file changes during its cycle.  The runner commits
  *     after each member completes, keeping clean per-member commit history.
  *   - A clerk agent runs after each full pass for cleanup and error recovery.
@@ -23,8 +24,7 @@
  *
  * Options:
  *   --agent <name>       Agent adapter: claude | auggie | cursor  (default: claude)
- *   --priority <level>   Starting priority: pressing | today | thisWeek | later
- *                                                                (default: pressing)
+ *   --priority <level>   Highest priority to include              (default: pressing)
  *   --member <name>      Only run cycles for a specific member
  *   --max-cycles <n>     Max cycle passes per scheduling pass     (default: 10)
  *   --loop               Enable continuous scheduling loop
@@ -33,10 +33,11 @@
  *   --no-commit          Skip automatic git commit after each cycle
  *   --no-clerk           Skip clerk agent after each pass
  *   --clerk-only         Run only the clerk agent, then exit
- *   --budget <pri:n>     Max member cycles at a priority per pass (repeatable)
- *                                                (defaults: thisWeek:2, later:1)
- *   --min-interval <p:d> Min days between serving a priority (repeatable)
- *                                                (defaults: thisWeek:5, later:7)
+ *   --weight <pri:n>     Priority weight for fair scheduling (repeatable)
+ *                                (defaults: pressing:8, today:4, thisWeek:2, later:1)
+ *   --cadence <pri:dur>  Min time between serving a priority (repeatable)
+ *                                (defaults: pressing:0h, today:4h, thisWeek:1d, later:3d)
+ *   --budget <pri:n>     Optional max member cycles at a priority per pass (repeatable)
  *   --dry-run            List members with work, don't invoke agent
  *   --help               Show this help
  */
@@ -72,26 +73,27 @@ const STOP_FILE = '.stop';              // create team/.stop to halt the runner
 const DEFAULT_INTERVAL_MS = 2 * 60 * 60 * 1000;  // 2 hours between passes
 const IDLE_POLL_MS = 30 * 1000;                   // poll interval during idle wait
 
-const STARVATION_THRESHOLDS_MS = {
-	pressing: 0,
-	today:    24 * 60 * 60 * 1000,          // ~24h
-	thisWeek: 7 * 24 * 60 * 60 * 1000,      // 7 days  (must be > MIN_INTERVAL)
-	later:    14 * 24 * 60 * 60 * 1000,      // 14 days (must be > MIN_INTERVAL)
+/** Weights for fair scheduling — higher weight = more cycles. Shares: pressing ~53%, today ~27%, thisWeek ~13%, later ~7%. */
+const DEFAULT_PRIORITY_WEIGHTS = {
+	pressing: 8,
+	today:    4,
+	thisWeek: 2,
+	later:    1,
 };
 
-/** Minimum time between serving a priority level (work-week cadence for lower priorities). */
-const MIN_INTERVAL_MS = {
-	thisWeek: 5 * 24 * 60 * 60 * 1000,      // 5 days (work-week)
-	later:    7 * 24 * 60 * 60 * 1000,       // 1 week
+/** Max vruntime deficit a priority can accumulate while idle, preventing monopolization on catch-up. */
+const MAX_VRUNTIME_DEFICIT = 3.0;
+
+/** Minimum time between serving a priority — gives the system "breathing room" at lower urgencies. */
+const DEFAULT_CADENCE_MS = {
+	pressing: 0,                              // always eligible
+	today:    4 * 60 * 60 * 1000,             // 4 hours
+	thisWeek: 24 * 60 * 60 * 1000,            // 1 day
+	later:    3 * 24 * 60 * 60 * 1000,        // 3 days
 };
 
 const CLERK_DAILY_MS = 24 * 60 * 60 * 1000;                // run clerk at most once per day
 const EFFICIENCY_ANALYSIS_MS = 7 * 24 * 60 * 60 * 1000;    // weekly efficiency analysis
-
-const DEFAULT_CYCLE_BUDGETS = {
-	thisWeek: 2,
-	later:    1,
-};
 
 // ─── Stream formatters ─────────────────────────────────────────────────────────
 
@@ -267,24 +269,53 @@ function formatTimestamp() {
 
 // ─── Scheduling helpers ────────────────────────────────────────────────────────
 
-function getStarvedPriority(lastServedAt, currentPriority) {
-	const now = Date.now();
-	const currentIdx = PRIORITY_ORDER.indexOf(currentPriority);
-	for (let i = currentIdx + 1; i < PRIORITY_ORDER.length; i++) {
-		const priority = PRIORITY_ORDER[i];
-		const threshold = STARVATION_THRESHOLDS_MS[priority];
-		if (!threshold) continue;
-		const last = lastServedAt[priority];
-		if (last == null || (now - last) >= threshold) return priority;
+/**
+ * Pick the priority with the lowest vruntime among candidates that have work.
+ * Candidates are iterated in PRIORITY_ORDER, so ties favor higher priority.
+ */
+function pickNextPriority(vruntime, candidates) {
+	let best = null;
+	let bestVrt = Infinity;
+	for (const { priority } of candidates) {
+		const vrt = vruntime[priority] ?? 0;
+		if (vrt < bestVrt) {
+			bestVrt = vrt;
+			best = priority;
+		}
 	}
-	return null;
+	return best;
 }
 
-async function idleWait(ms, teamDir, members) {
+/**
+ * Normalize vruntimes: subtract the minimum to prevent unbounded growth,
+ * and cap any deficit at MAX_VRUNTIME_DEFICIT so a long-idle priority
+ * cannot monopolize cycles when it suddenly has work.
+ */
+function normalizeVruntimes(vruntime) {
+	const values = Object.values(vruntime);
+	if (values.length === 0) return;
+	const minVrt = Math.min(...values);
+	for (const p of Object.keys(vruntime)) {
+		vruntime[p] -= minVrt;
+	}
+	const maxVrt = Math.max(...Object.values(vruntime));
+	for (const p of Object.keys(vruntime)) {
+		if (maxVrt - vruntime[p] > MAX_VRUNTIME_DEFICIT) {
+			vruntime[p] = maxVrt - MAX_VRUNTIME_DEFICIT;
+		}
+	}
+}
+
+async function idleWait(ms, teamDir, members, lastServedAt, cadences) {
 	const end = Date.now() + ms;
 	while (Date.now() < end) {
 		if (await checkStop(teamDir)) return 'stop';
-		if ((await getMembersWithWork(members, 'today', teamDir)).length > 0) return 'work';
+		// Wake early only for priorities whose cadence has elapsed
+		for (const priority of ['pressing', 'today']) {
+			const cadence = cadences[priority] ?? 0;
+			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+			if ((await getMembersWithWork(members, priority, teamDir)).length > 0) return 'work';
+		}
 		const remaining = end - Date.now();
 		const delay = Math.min(IDLE_POLL_MS, remaining);
 		if (delay > 0) await new Promise(r => setTimeout(r, delay));
@@ -298,20 +329,27 @@ async function loadSchedulerState(logsDir) {
 		const state = JSON.parse(raw);
 		const now = Date.now();
 		const lastServedAt = {};
+		const vruntime = {};
 		for (const p of PRIORITY_ORDER) {
 			const ts = state.lastServedAt?.[p];
 			lastServedAt[p] = (typeof ts === 'number' && ts > 0 && ts <= now) ? ts : now;
+			const v = state.vruntime?.[p];
+			vruntime[p] = (typeof v === 'number' && isFinite(v)) ? v : 0;
 		}
 		const lastServedMember = state.lastServedMember ?? {};
 		const validTs = (v) => typeof v === 'number' && v > 0 && v <= now ? v : 0;
 		const lastClerkAt = validTs(state.lastClerkAt);
 		const lastEfficiencyAt = validTs(state.lastEfficiencyAt);
 		console.log('[runner] Restored scheduler state from previous run.');
-		return { lastServedAt, lastServedMember, lastClerkAt, lastEfficiencyAt };
+		return { lastServedAt, lastServedMember, vruntime, lastClerkAt, lastEfficiencyAt };
 	} catch {
 		const lastServedAt = {};
-		for (const p of PRIORITY_ORDER) lastServedAt[p] = Date.now();
-		return { lastServedAt, lastServedMember: {}, lastClerkAt: 0, lastEfficiencyAt: 0 };
+		const vruntime = {};
+		for (const p of PRIORITY_ORDER) {
+			lastServedAt[p] = Date.now();
+			vruntime[p] = 0;
+		}
+		return { lastServedAt, lastServedMember: {}, vruntime, lastClerkAt: 0, lastEfficiencyAt: 0 };
 	}
 }
 
@@ -319,6 +357,7 @@ async function saveSchedulerState(logsDir, state) {
 	const out = {
 		lastServedAt: state.lastServedAt,
 		lastServedMember: state.lastServedMember,
+		vruntime: state.vruntime,
 		lastClerkAt: state.lastClerkAt,
 		lastEfficiencyAt: state.lastEfficiencyAt,
 		updatedAt: new Date().toISOString(),
@@ -1118,13 +1157,14 @@ function printHelp() {
 		'',
 		'Members are discovered from team/members.json.  Work is detected by',
 		'checking inbox messages, todos at the current priority, and due schedule',
-		'events.  The priority cascade runs: pressing → today → thisWeek → later.',
+		'events.  A weighted fair scheduler (vruntime) allocates cycles across',
+		'priority levels: pressing → today → thisWeek → later.',
 		'',
 		'Usage: node teamos/scripts/run.mjs [options]',
 		'',
 		'Options:',
 		'  --agent <name>       claude | auggie | cursor              (default: claude)',
-		'  --priority <level>   Starting priority level               (default: pressing)',
+		'  --priority <level>   Highest priority to include           (default: pressing)',
 		'  --member <name>      Only run cycles for a specific member',
 		'  --max-cycles <n>     Max cycle passes per scheduling pass  (default: 10)',
 		'  --loop               Enable continuous scheduling loop',
@@ -1133,10 +1173,11 @@ function printHelp() {
 		'  --no-commit          Skip automatic git commit after each cycle',
 		'  --no-clerk           Skip clerk agent after each pass',
 		'  --clerk-only         Run only the clerk agent, then exit',
-		'  --budget <pri:n>     Max member cycles at a priority per pass (repeatable)',
-		'                         (defaults: thisWeek:2, later:1)',
-		'  --min-interval <p:d> Min days between serving a priority (repeatable)',
-		'                         (defaults: thisWeek:5, later:7)',
+		'  --weight <pri:n>     Priority weight for fair scheduling (repeatable)',
+		'                         (defaults: pressing:8, today:4, thisWeek:2, later:1)',
+		'  --cadence <pri:dur>  Min time between serving a priority (repeatable)',
+		'                         (defaults: pressing:0h, today:4h, thisWeek:1d, later:3d)',
+		'  --budget <pri:n>     Optional max member cycles at a priority per pass (repeatable)',
 		'  --dry-run            List members with work, don\'t invoke agent',
 		'  --help               Show this help',
 	];
@@ -1156,8 +1197,9 @@ function parseArgs(argv) {
 		noClerk: false,
 		clerkOnly: false,
 		dryRun: false,
-		budgets: { ...DEFAULT_CYCLE_BUDGETS },
-		minIntervals: { ...MIN_INTERVAL_MS },
+		budgets: {},
+		weights: { ...DEFAULT_PRIORITY_WEIGHTS },
+		cadences: { ...DEFAULT_CADENCE_MS },
 	};
 
 	for (let i = 0; i < argv.length; i++) {
@@ -1207,14 +1249,35 @@ function parseArgs(argv) {
 				}
 				break;
 			}
-			case '--min-interval': {
-				const spec = argv[++i]; // e.g. "thisWeek:5" (days)
+			case '--weight': {
+				const spec = argv[++i]; // e.g. "pressing:12" or "later:2"
 				if (spec) {
-					const [pri, days] = spec.split(':');
-					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseFloat(days))) {
-						opts.minIntervals[pri] = parseFloat(days) * 24 * 60 * 60 * 1000;
+					const [pri, w] = spec.split(':');
+					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseFloat(w)) && parseFloat(w) > 0) {
+						opts.weights[pri] = parseFloat(w);
 					} else {
-						console.error(`Invalid --min-interval spec: "${spec}". Use priority:days (e.g. thisWeek:5)`);
+						console.error(`Invalid --weight spec: "${spec}". Use priority:weight (e.g. pressing:8)`);
+						process.exit(1);
+					}
+				}
+				break;
+			}
+			case '--cadence': {
+				const spec = argv[++i]; // e.g. "today:6h" or "thisWeek:2d"
+				if (spec) {
+					const [pri, val] = spec.split(':');
+					if (PRIORITY_ORDER.includes(pri) && val) {
+						const unit = val.slice(-1);
+						const num = parseFloat(val.slice(0, -1));
+						const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : NaN;
+						if (!isNaN(num) && !isNaN(multiplier) && num >= 0) {
+							opts.cadences[pri] = num * multiplier;
+						} else {
+							console.error(`Invalid --cadence value: "${val}". Use <number>h or <number>d (e.g. today:4h, later:3d)`);
+							process.exit(1);
+						}
+					} else {
+						console.error(`Invalid --cadence spec: "${spec}". Use priority:duration (e.g. today:4h, thisWeek:1d)`);
 						process.exit(1);
 					}
 				}
@@ -1302,13 +1365,17 @@ async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, 
 // ─── Pass execution ────────────────────────────────────────────────────────────
 
 async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, useTimeout }) {
-	const { lastServedAt, lastServedMember } = schedulerState;
+	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
+	const weights = opts.weights;
 	const startTime = Date.now();
-	let currentPriority = opts.priority;
 	let cycleCount = 0;
 	let totalMemberRuns = 0;
 	const budgetSpent = {};
 	const passErrors = [];
+
+	// Eligible priorities based on --priority flag (this level and all below)
+	const startIdx = PRIORITY_ORDER.indexOf(opts.priority);
+	const eligiblePriorities = PRIORITY_ORDER.slice(startIdx);
 
 	function isBudgetExhausted(priority) {
 		const cap = opts.budgets[priority];
@@ -1325,99 +1392,59 @@ async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, sch
 			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
 		}
 
-		// Starvation check: force a cycle at a neglected priority before it drifts too far
-		// Starvation overrides budgets — that's the whole point of the safety net
-		const starved = getStarvedPriority(lastServedAt, currentPriority);
-		if (starved) {
-			const starvedMembers = await getMembersWithWork(members, starved, teamDir);
-			if (starvedMembers.length > 0) {
-				const last = lastServedAt[starved];
-				const agoH = last != null ? Math.round((Date.now() - last) / 3600000) : '∞';
-				console.log(`\n[runner] Priority "${starved}" starved (last served ${agoH}h ago) — injecting cycle`);
-
-				cycleCount++;
-				console.log(`\n[runner] Cycle ${cycleCount}, priority: ${starved} (starvation), ` +
-					`members: ${starvedMembers.map(m => m.name).join(', ')}`);
-
-				const result = await runCycle({
-					membersWithWork: starvedMembers, priority: starved, cycleCount,
-					opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout,
-				});
-				totalMemberRuns += result.memberRuns;
-				if (result.lastError) passErrors.push(result.lastError);
-				lastServedAt[starved] = Date.now();
-
-				if (result.stopped) return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
-				continue;
+		// Scan all eligible priorities for work (ordered by PRIORITY_ORDER for tie-breaking)
+		const candidates = [];
+		for (const priority of eligiblePriorities) {
+			if (isBudgetExhausted(priority)) continue;
+			// Cadence gate: skip priorities served too recently for their urgency tempo
+			const cadence = opts.cadences[priority];
+			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+			const membersWithWork = await getMembersWithWork(members, priority, teamDir);
+			if (membersWithWork.length > 0) {
+				candidates.push({ priority, members: membersWithWork });
 			}
 		}
 
-		const priorityIdx = PRIORITY_ORDER.indexOf(currentPriority);
-
-		if (isBudgetExhausted(currentPriority)) {
-			if (priorityIdx < PRIORITY_ORDER.length - 1) {
-				console.log(`\n[runner] Budget exhausted for "${currentPriority}" (${opts.budgets[currentPriority]} cycle(s)), advancing.`);
-				currentPriority = PRIORITY_ORDER[priorityIdx + 1];
-				continue;
-			}
-			console.log(`\n[runner] Budget exhausted for "${currentPriority}" — all priorities done.`);
+		if (candidates.length === 0) {
+			console.log('\n[runner] No work at any eligible priority.');
 			break;
 		}
 
-		// Min-interval gate: skip priorities served too recently (work-week cadence)
-		const minInterval = opts.minIntervals[currentPriority];
-		if (minInterval) {
-			const elapsed = Date.now() - (lastServedAt[currentPriority] ?? 0);
-			if (elapsed < minInterval) {
-				const remainH = Math.round((minInterval - elapsed) / 3600000);
-				if (priorityIdx < PRIORITY_ORDER.length - 1) {
-					console.log(`\n[runner] Priority "${currentPriority}" on cooldown (${remainH}h remaining), advancing.`);
-					currentPriority = PRIORITY_ORDER[priorityIdx + 1];
-					continue;
-				}
-				console.log(`\n[runner] Priority "${currentPriority}" on cooldown (${remainH}h remaining) — all priorities done.`);
-				break;
-			}
-		}
+		// Pick priority with lowest vruntime (ties broken by priority order via iteration)
+		const pickedPriority = pickNextPriority(vruntime, candidates);
+		const picked = candidates.find(c => c.priority === pickedPriority);
 
-		let membersWithWork = await getMembersWithWork(members, currentPriority, teamDir);
-
-		if (membersWithWork.length === 0) {
-			if (priorityIdx < PRIORITY_ORDER.length - 1) {
-				const prev = currentPriority;
-				currentPriority = PRIORITY_ORDER[priorityIdx + 1];
-				console.log(`\n[runner] No work at "${prev}", advancing to "${currentPriority}"`);
-				continue;
-			}
-			console.log('\n[runner] All priorities processed.');
-			break;
-		}
-
-		// Rotate for round-robin fairness, then trim to remaining budget
-		const cap = opts.budgets[currentPriority];
+		// Rotate members for round-robin fairness, then trim to budget
+		let membersToRun = picked.members;
+		const cap = opts.budgets[pickedPriority];
 		if (cap != null) {
-			membersWithWork = rotateAfter(membersWithWork, lastServedMember[currentPriority]);
-			const remaining = cap - (budgetSpent[currentPriority] ?? 0);
-			if (membersWithWork.length > remaining) {
-				membersWithWork = membersWithWork.slice(0, remaining);
+			membersToRun = rotateAfter(membersToRun, lastServedMember[pickedPriority]);
+			const remaining = cap - (budgetSpent[pickedPriority] ?? 0);
+			if (membersToRun.length > remaining) {
+				membersToRun = membersToRun.slice(0, remaining);
 			}
 		}
 
 		cycleCount++;
-		console.log(`\n[runner] Cycle ${cycleCount}, priority: ${currentPriority}, ` +
-			`members: ${membersWithWork.map(m => m.name).join(', ')}`);
+		const vrt = (vruntime[pickedPriority] ?? 0).toFixed(3);
+		console.log(`\n[runner] Cycle ${cycleCount}, priority: ${pickedPriority} (vrt=${vrt}), ` +
+			`members: ${membersToRun.map(m => m.name).join(', ')}`);
 
 		const result = await runCycle({
-			membersWithWork, priority: currentPriority, cycleCount,
+			membersWithWork: membersToRun, priority: pickedPriority, cycleCount,
 			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);
-		budgetSpent[currentPriority] = (budgetSpent[currentPriority] ?? 0) + result.memberRuns;
-		if (membersWithWork.length > 0) {
-			lastServedMember[currentPriority] = membersWithWork[membersWithWork.length - 1].name;
+		budgetSpent[pickedPriority] = (budgetSpent[pickedPriority] ?? 0) + result.memberRuns;
+		if (membersToRun.length > 0) {
+			lastServedMember[pickedPriority] = membersToRun[membersToRun.length - 1].name;
 		}
-		lastServedAt[currentPriority] = Date.now();
+		lastServedAt[pickedPriority] = Date.now();
+
+		// Advance vruntime for the served priority and normalize
+		vruntime[pickedPriority] = (vruntime[pickedPriority] ?? 0) + (1 / (weights[pickedPriority] ?? 1));
+		normalizeVruntimes(vruntime);
 
 		if (result.stopped) return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
 	}
@@ -1495,6 +1522,21 @@ async function main() {
 		console.log(`\nteamos (${version})`);
 		console.log(`Active AI members: ${members.map(m => m.name).join(', ')}\n`);
 
+		const weightStr = Object.entries(opts.weights).map(([p, w]) => `${p}:${w}`).join(', ');
+		const cadenceStr = Object.entries(opts.cadences)
+			.map(([p, ms]) => {
+				if (ms === 0) return `${p}:0`;
+				if (ms >= 86400000) return `${p}:${Math.round(ms / 86400000)}d`;
+				return `${p}:${Math.round(ms / 3600000)}h`;
+			})
+			.join(', ');
+		console.log(`  Weights: ${weightStr}`);
+		console.log(`  Cadences: ${cadenceStr}`);
+
+		const logsDir = await ensureLogsDir(teamDir);
+		const state = await loadSchedulerState(logsDir);
+		console.log(`  Vruntimes: ${Object.entries(state.vruntime).map(([p, v]) => `${p}:${v.toFixed(3)}`).join(', ')}\n`);
+
 		for (const priority of PRIORITY_ORDER) {
 			const withWork = await getMembersWithWork(members, priority, teamDir);
 			if (withWork.length > 0) {
@@ -1511,19 +1553,26 @@ async function main() {
 
 	// ── Run ────────────────────────────────────────────────────────────────────
 
+	const weightStr = Object.entries(opts.weights)
+		.map(([p, w]) => `${p}:${w}`)
+		.join(', ');
+	const cadenceStr = Object.entries(opts.cadences)
+		.map(([p, ms]) => {
+			if (ms === 0) return `${p}:0`;
+			if (ms >= 86400000) return `${p}:${Math.round(ms / 86400000)}d`;
+			return `${p}:${Math.round(ms / 3600000)}h`;
+		})
+		.join(', ');
 	const budgetStr = Object.entries(opts.budgets)
 		.map(([p, n]) => `${p}:${n}`)
-		.join(', ');
-	const intervalStr = Object.entries(opts.minIntervals)
-		.map(([p, ms]) => `${p}:${Math.round(ms / 86400000)}d`)
 		.join(', ');
 	const banner = [
 		'═'.repeat(72),
 		`  teamos (${version})${opts.loop ? ' [loop mode]' : ''}`,
 		`  ${members.length} active AI member(s): ${members.map(m => m.name).join(', ')}`,
-		`  Starting priority: ${opts.priority}`,
+		`  Weights: ${weightStr}`,
+		`  Cadences: ${cadenceStr}`,
 		budgetStr ? `  Budgets: ${budgetStr}` : null,
-		intervalStr ? `  Min intervals: ${intervalStr}` : null,
 		opts.loop ? `  Interval: ${opts.intervalMs / 60000}min` : null,
 		'═'.repeat(72),
 	].filter(Boolean).join('\n');
@@ -1574,7 +1623,7 @@ async function main() {
 			if (remaining > 0) {
 				const mins = Math.round(remaining / 60000);
 				console.log(`[runner] Idle for ~${mins}min until next interval.`);
-				const reason = await idleWait(remaining, teamDir, members);
+				const reason = await idleWait(remaining, teamDir, members, schedulerState.lastServedAt, opts.cadences);
 				if (reason === 'stop') {
 					console.log('\n[runner] Stop file detected — exiting loop.');
 					break;
