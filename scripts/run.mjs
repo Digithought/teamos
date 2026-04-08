@@ -857,6 +857,63 @@ async function ensureSelfAssessmentEvents(members, teamDir) {
 	}
 }
 
+// ─── Daily check-in schedule injection ────────────────────────────────────────
+
+const DAILY_CHECKIN_TITLE = 'Daily Check-in';
+
+/**
+ * Compute tomorrow at 09:00 UTC from the given date.
+ */
+function nextMorning(from = new Date()) {
+	const d = new Date(from);
+	d.setUTCHours(9, 0, 0, 0);
+	d.setUTCDate(d.getUTCDate() + 1); // always at least 1 day ahead
+	return d;
+}
+
+function buildDailyCheckinEvent(fromDate) {
+	return {
+		title: DAILY_CHECKIN_TITLE,
+		description:
+			'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
+		time: nextMorning(fromDate).toISOString(),
+		recurring: true,
+		recurrence: {
+			frequency: 'daily',
+			interval: 1,
+		},
+	};
+}
+
+/**
+ * Ensure every active AI member has a Daily Check-in schedule event.
+ * Adds one (persisted) if missing; leaves existing ones untouched.
+ */
+async function ensureDailyCheckinEvents(members, teamDir) {
+	let added = 0;
+	for (const member of members) {
+		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
+		let schedule;
+		try {
+			schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
+		} catch {
+			schedule = { events: [] };
+		}
+
+		const hasCheckin = schedule.events.some(
+			e => e.title === DAILY_CHECKIN_TITLE,
+		);
+		if (!hasCheckin) {
+			schedule.events.push(buildDailyCheckinEvent(new Date()));
+			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
+			added++;
+		}
+	}
+	if (added > 0) {
+		console.log(`[runner] Added daily check-in schedule event to ${added} member(s).`);
+	}
+}
+
 // ─── Logging ───────────────────────────────────────────────────────────────────
 
 async function ensureLogsDir(teamDir) {
@@ -1481,6 +1538,7 @@ async function main() {
 	// ── Ensure recurring system events ────────────────────────────────────────
 
 	await ensureSelfAssessmentEvents(allMembers, teamDir);
+	await ensureDailyCheckinEvents(allMembers, teamDir);
 
 	// ── Clerk only ────────────────────────────────────────────────────────────
 

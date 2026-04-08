@@ -222,6 +222,12 @@ touch team/.stop
 
 The runner checks for this file before each cycle, between each member, and during idle waits. When found, it commits any completed work, removes the stop file, and exits. In loop mode, this exits the outer loop as well.
 
+### Daily Check-in
+
+The runner automatically ensures every active AI member has a recurring **Daily Check-in** schedule event (09:00 UTC daily). This prevents members from going dormant when they have no explicit tasks, messages, or events — giving them at least one cycle per day to be proactive.
+
+When the event fires, the member follows the rules in `teamos/agent-rules/daily-checkin.md`. Check-ins are intentionally lightweight — if there's nothing to do, the member just goes back to sleep.
+
 ### Weekly Self-Assessment
 
 The runner automatically ensures every active AI member has a recurring **Weekly Self-Assessment** schedule event (Fridays at 18:00 UTC). On startup, if a member's `schedule.json` lacks this event, the runner injects it.
