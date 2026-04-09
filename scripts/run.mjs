@@ -92,6 +92,10 @@ const DEFAULT_CADENCE_MS = {
 	later:    3 * 24 * 60 * 60 * 1000,        // 3 days
 };
 
+/** Exponential backoff for consecutive agent failures (e.g. network outage). */
+const BACKOFF_INITIAL_MS = 30 * 1000;      // 30 seconds after first failure
+const BACKOFF_MAX_MS = 30 * 60 * 1000;     // cap at 30 minutes
+
 const CLERK_DAILY_MS = 24 * 60 * 60 * 1000;                // run clerk at most once per day
 const EFFICIENCY_ANALYSIS_MS = 7 * 24 * 60 * 60 * 1000;    // weekly efficiency analysis
 
@@ -1359,7 +1363,7 @@ function parseArgs(argv) {
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
 
-async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout }) {
+async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState }) {
 	let memberRuns = 0;
 	let lastError = null;
 	let stopped = false;
@@ -1367,6 +1371,15 @@ async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, 
 	for (const member of membersWithWork) {
 		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) break;
 		if (await checkStop(teamDir)) { stopped = true; break; }
+
+		// Exponential backoff after consecutive failures (e.g. network outage)
+		if (failureState.consecutive > 0) {
+			const delay = Math.min(BACKOFF_INITIAL_MS * 2 ** (failureState.consecutive - 1), BACKOFF_MAX_MS);
+			console.log(`[runner] ${failureState.consecutive} consecutive failure(s) — backing off ${Math.round(delay / 1000)}s before next member.`);
+			await new Promise(r => setTimeout(r, delay));
+			// Re-check stop file after waiting
+			if (await checkStop(teamDir)) { stopped = true; break; }
+		}
 
 		memberRuns++;
 		const currentLog = buildLogPath(logsDir, member.name, priority);
@@ -1393,16 +1406,19 @@ async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, 
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog);
 
 		if (exitCode !== 0) {
+			failureState.consecutive++;
 			lastError = `Agent exited with code ${exitCode} for member: ${member.name}`;
 			console.error(`\n${lastError}`);
 			console.error(`Log: ${currentLog}`);
+		} else {
+			failureState.consecutive = 0;
 		}
 
 		console.log(`\n  Complete: ${member.name}\n`);
 
 		await advanceRecurringEvents(member.name, teamDir);
 
-		if (membersWithWork.indexOf(member) < membersWithWork.length - 1) {
+		if (membersWithWork.indexOf(member) < membersWithWork.length - 1 && failureState.consecutive === 0) {
 			await new Promise(r => setTimeout(r, 500));
 		}
 	}
@@ -1429,6 +1445,7 @@ async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, sch
 	let totalMemberRuns = 0;
 	const budgetSpent = {};
 	const passErrors = [];
+	const failureState = { consecutive: 0 };
 
 	// Eligible priorities based on --priority flag (this level and all below)
 	const startIdx = PRIORITY_ORDER.indexOf(opts.priority);
@@ -1489,7 +1506,7 @@ async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, sch
 
 		const result = await runCycle({
 			membersWithWork: membersToRun, priority: pickedPriority, cycleCount,
-			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout,
+			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);
