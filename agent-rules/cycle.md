@@ -42,6 +42,8 @@ projectCode: optional-project-code
 Message text here.
 ```
 
+Note: The messaging backend may vary (file-based inbox or Discord). The file format above applies to the default file adapter. Regardless of backend, the semantics are the same — messages are delivered to the recipient and processed during their next cycle.
+
 ## Priority Discipline
 
 **Your priority labels control how often the runner invokes you.** Mislabeling wastes your cycles and starves other members.
@@ -61,7 +63,7 @@ Message text here.
 
 - **Modest increments.** Steady small steps tracked via todos
 - **Keep your state concise.** Build separate docs and link them
-- **Do NOT commit** — unless it is for code you need committed - the runner handles team git commits
+- **Do NOT commit** — unless it is for code you need committed - the runner handles syncing changes
 - **Do NOT modify other members' files** except their `inbox/` directories
 - **Talk through your thought process** as you work
 - **Right-size your work.** Too little wastes context on overhead. Too much overruns context windows and loses opportunities for collaboration.

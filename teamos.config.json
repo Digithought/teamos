@@ -1,0 +1,5 @@
+{
+	"messaging": { "adapter": "file" },
+	"sync": { "adapter": "git" },
+	"agent": "claude"
+}

@@ -1,0 +1,14 @@
+app = "teamos-runner"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[mounts]
+  source = "team_workspace"
+  destination = "/workspace"
+
+[env]
+  NODE_ENV = "production"
+  TEAMOS_TEAM_DIR = "/workspace/team"
+
+# Secrets set via: fly secrets set ANTHROPIC_API_KEY=... DISCORD_BOT_TOKEN=... etc.

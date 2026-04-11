@@ -2,32 +2,63 @@
 
 TeamOS is a virtual workplace system that orchestrates AI and human team members through structured work cycles. Each AI member gets a small *cycle* at a time to perform a unit of work, respond to messages, advance projects, and collaborate with other members.
 
-TeamOS lives as its own repository and integrates into any project, giving every repo the same team orchestration without duplicating code.
+TeamOS lives as its own repository and integrates into any project, giving every repo the same team orchestration without duplicating code. It can run locally against a git repo or be deployed to the cloud (Fly.io) with S3 storage and Discord messaging.
 
 ## How It Works
 
 Team members are defined in a `team/` workspace directory within the host project. Each member has a profile, current state, todo list, schedule, and inbox. A runner script processes members through fair-scheduled, priority-weighted cycles, invoking an AI agent (Claude, Cursor, Augment) for each.
 
-The runner provides full context — organization docs, news, projects, and the member's own files — then commits after each member completes. A clerk agent runs after each pass for cleanup (archiving old news, removing stale schedule items, etc.).
+The runner provides full context — organization docs, news, projects, and the member's own files — then syncs after each member completes. A clerk agent runs after each pass for cleanup (archiving old news, removing stale schedule items, etc.).
+
+**Adapters** make the system pluggable:
+- **Messaging** — File-based inbox (default) or Discord bot
+- **Sync** — Git commit/push (default) or S3-compatible storage (Tigris, MinIO)
+- **Agent** — Claude Code CLI (default, works headless), Cursor, or Augment (local only)
 
 ### Package Structure
 
 ```
 teamos/
-├── README.md                # This file — system architecture reference
+├── README.md                    # This file — system architecture reference
+├── teamos.config.json           # Default adapter configuration
+├── Dockerfile                   # Container image for cloud deployment
+├── fly.toml                     # Fly.io deployment config
 ├── scripts/
-│   ├── run.mjs              # Runner — orchestrates member cycles
-│   ├── init.mjs             # Project initialization
-│   └── detach.mjs           # Package removal
+│   ├── run.mjs                  # Entry point — CLI parsing, main loop (slim)
+│   ├── init.mjs                 # Project initialization
+│   ├── detach.mjs               # Package removal
+│   └── lib/
+│       ├── util.mjs             # Path helpers, time formatting, stop-file check
+│       ├── scheduler.mjs        # Vruntime fair scheduler, weights, cadences
+│       ├── state.mjs            # Scheduler state persistence (load/save/idle)
+│       ├── config.mjs           # Config file loader + env var resolver
+│       ├── work-detection.mjs   # Member loading, work scanning, recurring events
+│       ├── cycle.mjs            # Cycle/pass execution, prompt building
+│       ├── maintenance.mjs      # Housekeeping, clerk invocation, efficiency
+│       ├── agents/
+│       │   ├── index.mjs        # Registry + common invocation (spawn, timeout, logging)
+│       │   ├── claude.mjs       # Claude CLI adapter + stream parser
+│       │   ├── cursor.mjs       # Cursor agent adapter + stream parser
+│       │   └── auggie.mjs       # Augment adapter
+│       ├── messaging/
+│       │   ├── index.mjs        # Interface + factory
+│       │   ├── file.mjs         # File-based inbox (default)
+│       │   └── discord.mjs      # Discord bot adapter
+│       └── sync/
+│           ├── index.mjs        # Interface + factory
+│           ├── git.mjs          # Git add/commit/push (default)
+│           └── s3.mjs           # S3-compatible sync (Tigris, MinIO)
 ├── agent-rules/
-│   ├── cycle.md             # Rules for member cycle agents
-│   ├── clerk.md             # Rules for clerk agent
-│   ├── self-assessment.md   # Rules for weekly self-assessment
-│   └── root.md              # Section appended to host AGENTS.md
+│   ├── cycle.md                 # Rules for member cycle agents
+│   ├── clerk.md                 # Rules for clerk agent
+│   ├── clerk-efficiency.md      # Rules for weekly efficiency analysis
+│   ├── daily-checkin.md         # Rules for daily check-in
+│   ├── self-assessment.md       # Rules for weekly self-assessment
+│   └── root.md                  # Section appended to host AGENTS.md
 ├── templates/
-│   ├── *.d.ts               # TypeScript type definitions
-│   └── *-template.*         # File templates for new members
-└── ui/                      # Web dashboard (Svelte + Vite)
+│   ├── *.d.ts                   # TypeScript type definitions
+│   └── *-template.*             # File templates for new members
+└── ui/                          # Web dashboard (Svelte + Vite)
     ├── package.json
     ├── vite.config.ts
     └── src/
@@ -128,8 +159,11 @@ cp teamos/templates/state-template.md team/members/alice/state.md
 # See who has work
 node teamos/scripts/run.mjs --dry-run
 
-# Run cycles for all members
+# Run in loop mode (default) — continuous scheduling with 2-hour intervals
 node teamos/scripts/run.mjs
+
+# Run a single pass, then exit
+node teamos/scripts/run.mjs --once
 
 # Run only a specific member
 node teamos/scripts/run.mjs --member alice
@@ -137,8 +171,14 @@ node teamos/scripts/run.mjs --member alice
 # Use a different agent
 node teamos/scripts/run.mjs --agent cursor
 
-# Don't auto-commit and keep looping
-node teamos/scripts/run.mjs --loop --no-commit
+# Use S3 sync instead of git
+node teamos/scripts/run.mjs --sync s3
+
+# Use Discord messaging instead of file inbox
+node teamos/scripts/run.mjs --messaging discord
+
+# Don't auto-commit
+node teamos/scripts/run.mjs --no-commit
 ```
 
 ### Runner Options
@@ -146,13 +186,16 @@ node teamos/scripts/run.mjs --loop --no-commit
 | Option | Default | Description |
 |---|---|---|
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
+| `--messaging <name>` | `file` | Messaging adapter: `file` or `discord` |
+| `--sync <name>` | `git` | Sync adapter: `git` or `s3` |
 | `--priority <level>` | `pressing` | Highest priority to include |
 | `--member <name>` | — | Only run cycles for a specific member |
 | `--max-cycles <n>` | `10` | Maximum cycle passes per scheduling pass |
-| `--loop` | — | Enable continuous scheduling loop |
-| `--interval <min>` | `120` | Minutes between passes (implies `--loop`) |
-| `--push` | — | Push to remote after each commit |
-| `--no-commit` | — | Skip automatic git commit after each cycle |
+| `--once` | — | Run a single pass, then exit |
+| `--loop` | *(default)* | Enable continuous scheduling loop |
+| `--interval <min>` | `120` | Minutes between passes |
+| `--push` | — | Push to remote after each commit (git sync) |
+| `--no-commit` | — | Skip automatic sync after each cycle |
 | `--no-clerk` | — | Skip clerk agent after each pass |
 | `--clerk-only` | — | Run only the clerk agent, then exit |
 | `--weight <pri:n>` | `pressing:8, today:4, thisWeek:2, later:1` | Priority weight for fair scheduling (repeatable) |
@@ -160,19 +203,19 @@ node teamos/scripts/run.mjs --loop --no-commit
 | `--budget <pri:n>` | — | Optional max member cycles at a priority per pass (repeatable) |
 | `--dry-run` | — | List members with work, don't invoke agent |
 
-### Loop Mode (Built-in Scheduler)
+### Loop Mode (Default)
 
-Instead of running via an external cron job, the runner can operate as a long-lived process with its own scheduling loop:
+The runner operates as a long-lived process with its own scheduling loop by default. Use `--once` for a single pass (e.g. CI or one-off run).
 
 ```bash
-# Default: 2-hour interval
-node teamos/scripts/run.mjs --loop
+# Default: loop mode with 2-hour interval
+node teamos/scripts/run.mjs
 
 # Custom interval (90 minutes)
 node teamos/scripts/run.mjs --interval 90
 
-# With a specific agent
-node teamos/scripts/run.mjs --loop --agent cursor
+# Single pass, then exit
+node teamos/scripts/run.mjs --once
 ```
 
 In loop mode the runner:
@@ -210,7 +253,7 @@ If there's no pressing work, the runner won't churn through lower-priority work 
 
 Scheduling state (vruntimes, last-served timestamps, round-robin positions) is persisted to `team/.logs/scheduler-state.json` so that interruptions and restarts maintain fairness. On startup the runner restores the saved state; if the file is missing or corrupted it initializes all priorities at equal footing.
 
-Without `--loop`, the runner behaves as before: a single pass with a 1-hour hard time limit.
+With `--once`, the runner behaves as a single pass with a 1-hour hard time limit.
 
 ### Stopping the Runner
 
@@ -282,7 +325,7 @@ A unit of work can include:
 
 ## Member Communication
 
-Members communicate by dropping markdown files into each other's `inbox/` directories:
+Members communicate through the messaging adapter. With the default file adapter, messages are markdown files in each other's `inbox/` directories:
 
 ```markdown
 ---
@@ -294,6 +337,8 @@ projectCode: AUTH
 
 The auth module is ready for review.
 ```
+
+With the Discord adapter, messages are posted to channels or DMs instead. The message format and semantics are the same regardless of backend.
 
 ## Acting as a Team Member (Interactive Mode)
 
@@ -315,14 +360,170 @@ The runner also passes a header with the current priority level and timestamp. W
 
 Depending on your interaction, you may update your state, TODOs, and schedule. Do not commit — let the human handle that.
 
+## Adapters
+
+TeamOS uses a pluggable adapter architecture. Agents always work on a local filesystem — adapters handle how messages are delivered and how state is persisted.
+
+### Messaging Adapters
+
+| Adapter | Flag | Description |
+|---|---|---|
+| `file` | `--messaging file` | File-based inbox (default). Messages are markdown files in `inbox/` directories. |
+| `discord` | `--messaging discord` | Discord bot. Messages are posted to channels/DMs. |
+
+All adapters expose the same interface: `hasMessages()`, `getMessages()`, `sendMessage()`, `acknowledgeMessage()`, `listConversations()`.
+
+### Sync Adapters
+
+| Adapter | Flag | Description |
+|---|---|---|
+| `git` | `--sync git` | Git add/commit/push (default). Local repo is always current; push after each cycle. |
+| `s3` | `--sync s3` | S3-compatible storage (Tigris, MinIO). Pull before each pass, push after each cycle. |
+
+All adapters expose the same interface: `pull()`, `push()`, `init()`.
+
+### Agent Adapters
+
+| Agent | Local dev | Hosted (container) | Auth |
+|---|---|---|---|
+| Claude Code CLI | Yes | Yes | `ANTHROPIC_API_KEY` env var |
+| Cursor | Yes | No | Desktop IDE |
+| Augment | Yes | No | Desktop IDE |
+
+In a container, only `claude` is valid — desktop tools require a GUI.
+
+## Configuration
+
+Adapters can be configured via `teamos.config.json` at the project root, with CLI flags as overrides:
+
+```json
+{
+  "messaging": { "adapter": "file" },
+  "sync": { "adapter": "git" },
+  "agent": "claude"
+}
+```
+
+For Discord messaging:
+```json
+{
+  "messaging": {
+    "adapter": "discord",
+    "discord": {
+      "botToken": "$DISCORD_BOT_TOKEN",
+      "guildId": "...",
+      "memberMap": {
+        "alice": "discord-user-id",
+        "bob": "discord-user-id"
+      }
+    }
+  }
+}
+```
+
+For S3 sync (Tigris or MinIO):
+```json
+{
+  "sync": {
+    "adapter": "s3",
+    "s3": {
+      "endpoint": "https://fly.storage.tigris.dev",
+      "bucket": "teamos-workspace",
+      "region": "auto",
+      "accessKeyId": "$AWS_ACCESS_KEY_ID",
+      "secretAccessKey": "$AWS_SECRET_ACCESS_KEY"
+    }
+  }
+}
+```
+
+Values prefixed with `$` are resolved from environment variables. Secrets should always use env vars, never be placed directly in config files.
+
+## Cloud Deployment
+
+TeamOS can run as a container on Fly.io (or any container host) with S3 storage and Discord messaging.
+
+### Quick deploy to Fly.io
+
+```bash
+# Create app and volume
+fly apps create teamos-runner
+fly volumes create team_workspace --size 1
+
+# Set secrets
+fly secrets set ANTHROPIC_API_KEY=sk-... DISCORD_BOT_TOKEN=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+
+# Deploy
+fly deploy
+```
+
+### Local dev with MinIO
+
+```bash
+# Start MinIO (one-time)
+minio server ./minio-data --console-address ":9001"
+
+# Run against local MinIO
+node teamos/scripts/run.mjs --sync s3 --messaging file
+```
+
+With `teamos.config.json` for MinIO:
+```json
+{
+  "sync": {
+    "adapter": "s3",
+    "s3": {
+      "endpoint": "http://localhost:9000",
+      "bucket": "teamos-workspace",
+      "region": "us-east-1",
+      "accessKeyId": "minioadmin",
+      "secretAccessKey": "minioadmin",
+      "forcePathStyle": true
+    }
+  }
+}
+```
+
+Or just use the default git sync with file messaging — zero additional dependencies:
+
+```bash
+node teamos/scripts/run.mjs
+```
+
+### Container architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│  Runner Process (Node.js)                        │
+│                                                  │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  │
+│  │ Scheduler  │  │   Cycle    │  │Maintenance │  │
+│  │            │→ │  Executor  │→ │  & Clerk   │  │
+│  └────────────┘  └─────┬──────┘  └────────────┘  │
+│                        │                         │
+│              ┌─────────┼─────────┐               │
+│              ▼         ▼         ▼               │
+│        ┌──────────┐ ┌──────┐ ┌──────────┐        │
+│        │Messaging │ │Agent │ │  Sync    │        │
+│        │ Adapter  │ │Adapter│ │ Adapter  │        │
+│        └────┬─────┘ └──┬───┘ └────┬─────┘        │
+│             │          │          │               │
+└─────────────┼──────────┼──────────┼───────────────┘
+              │          │          │
+         Discord /    Claude /   Tigris /
+         Files        Cursor     Git
+```
+
+Agents always see a local filesystem. The sync adapter handles durability *around* the cycle — pull before, push after — so the agent never knows it's running in a container.
+
 ## Design Philosophy
 
 - **Priority-weighted** — Higher-priority work receives proportionally more cycles, while lower priorities are guaranteed fair access
 - **Right-sized cycles** — Each cycle does a modest amount of work to maintain continuity without overrunning context windows
-- **Agent-owned changes** — The agent modifies files freely; the runner handles git commits
-- **Commit per member** — Clean git history for human review between runs
+- **Modular adapters** — Messaging, sync, and agent concerns are pluggable; the same runner works locally or in the cloud
+- **Agent-owned changes** — The agent modifies files freely; the runner handles sync
+- **Commit per member** — Clean history for human review between runs
 - **Clerk cleanup** — Automated housekeeping after each pass (archiving, fixing inconsistencies)
-- **Zero dependencies** — Uses only Node.js built-in modules
 
 ## Web Dashboard
 

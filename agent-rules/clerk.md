@@ -21,4 +21,4 @@ If an error or issue is described in the context, prioritize diagnosing and fixi
 
 ## When Done
 
-Do NOT commit — the runner handles git commits after you complete.
+Do NOT commit — the runner handles syncing changes after you complete.
