@@ -61,11 +61,11 @@ team/
 
 ```bash
 # Git submodule (recommended):
-git submodule add <teamos-repo-url> teamos
+git submodule add https://github.com/Digithought/teamos.git teamos
 node teamos/scripts/init.mjs
 
 # Git subtree (works with git worktrees; submodules do not):
-git subtree add --prefix=teamos <teamos-repo-url> main --squash
+git subtree add --prefix=teamos https://github.com/Digithought/teamos.git main --squash
 node teamos/scripts/init.mjs
 
 # Symlink (teamos cloned elsewhere):
