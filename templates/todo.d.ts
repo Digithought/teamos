@@ -3,6 +3,8 @@ export interface TodoItem {
   title: string;
   description?: string;
   priority: 'pressing' | 'today' | 'thisWeek' | 'later';
+  status?: 'blocked';
+  notes?: string;
   projectCode?: string;
 }
 

@@ -3,10 +3,10 @@ export interface MemberEntry {
   name: string;
   title: string;
   roles: string[];
-  /** Sequence number within role category (lower runs first) */
-  sequenceOrder: number;
   active: boolean;
   type: 'human' | 'ai';
+  /** Optional notes — e.g. "talk to this person about X" */
+  notes?: string;
 }
 
 /** Root members.json structure */

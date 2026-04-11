@@ -15,6 +15,10 @@
 
 - `tools/proforma` - budget and prospective planning; see readme.md
 
+## References
+
+- `doing-things.md` - Notes about how to do "things"
+
 ## Notes for Next Cycle
 
 Found that most Wonkles are made by Foo Corp and Bob Tech.  How do we get good pricing from them?

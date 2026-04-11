@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * TeamOS Runner — orchestrates member cycles through the priority cascade
+ * TeamOS Runner — orchestrates member cycles using weighted fair scheduling
  * by invoking an agentic CLI tool for each active AI member.
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  *
  * Key design choices:
  *   - Members are discovered from team/members.json at startup.
  *   - Work detection checks inbox messages, todos at current priority,
  *     and due schedule events for each member.
- *   - Priority cascade: pressing → today → thisWeek → later.
- *     The runner advances to the next priority only when no members have
- *     work at the current level.  Within a priority level, it re-checks
- *     after each pass (members may create work for each other).
+ *   - Fair scheduling via virtual runtime (vruntime): each priority level
+ *     has a weight (pressing:8, today:4, thisWeek:2, later:1 by default).
+ *     The scheduler picks the priority with the lowest vruntime that has
+ *     work.  After each cycle, vruntime advances by 1/weight — so higher-
+ *     weight priorities advance slower and accumulate more cycles.
  *   - The agent owns all file changes during its cycle.  The runner commits
  *     after each member completes, keeping clean per-member commit history.
  *   - A clerk agent runs after each full pass for cleanup and error recovery.
@@ -23,12 +24,20 @@
  *
  * Options:
  *   --agent <name>       Agent adapter: claude | auggie | cursor  (default: claude)
- *   --priority <level>   Starting priority: pressing | today | thisWeek | later
- *                                                                (default: pressing)
+ *   --priority <level>   Highest priority to include              (default: pressing)
  *   --member <name>      Only run cycles for a specific member
- *   --max-cycles <n>     Max cycle passes before stopping         (default: 10)
+ *   --max-cycles <n>     Max cycle passes per scheduling pass     (default: 10)
+ *   --loop               Enable continuous scheduling loop
+ *   --interval <min>     Minutes between passes (default: 120, implies --loop)
+ *   --push               Push to remote after each commit
  *   --no-commit          Skip automatic git commit after each cycle
  *   --no-clerk           Skip clerk agent after each pass
+ *   --clerk-only         Run only the clerk agent, then exit
+ *   --weight <pri:n>     Priority weight for fair scheduling (repeatable)
+ *                                (defaults: pressing:8, today:4, thisWeek:2, later:1)
+ *   --cadence <pri:dur>  Min time between serving a priority (repeatable)
+ *                                (defaults: pressing:0h, today:4h, thisWeek:1d, later:3d)
+ *   --budget <pri:n>     Optional max member cycles at a priority per pass (repeatable)
  *   --dry-run            List members with work, don't invoke agent
  *   --help               Show this help
  */
@@ -59,7 +68,36 @@ function getVersion() {
 
 const PRIORITY_ORDER = ['pressing', 'today', 'thisWeek', 'later'];
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes with no output → assume hung
-const MAX_RUN_MS = 60 * 60 * 1000;      // 1 hour hard stop
+const MAX_RUN_MS = 60 * 60 * 1000;      // 1 hour hard stop (single-run mode only)
+const STOP_FILE = '.stop';              // create team/.stop to halt the runner
+const DEFAULT_INTERVAL_MS = 2 * 60 * 60 * 1000;  // 2 hours between passes
+const IDLE_POLL_MS = 30 * 1000;                   // poll interval during idle wait
+
+/** Weights for fair scheduling — higher weight = more cycles. Shares: pressing ~53%, today ~27%, thisWeek ~13%, later ~7%. */
+const DEFAULT_PRIORITY_WEIGHTS = {
+	pressing: 8,
+	today:    4,
+	thisWeek: 2,
+	later:    1,
+};
+
+/** Max vruntime deficit a priority can accumulate while idle, preventing monopolization on catch-up. */
+const MAX_VRUNTIME_DEFICIT = 3.0;
+
+/** Minimum time between serving a priority — gives the system "breathing room" at lower urgencies. */
+const DEFAULT_CADENCE_MS = {
+	pressing: 0,                              // always eligible
+	today:    4 * 60 * 60 * 1000,             // 4 hours
+	thisWeek: 24 * 60 * 60 * 1000,            // 1 day
+	later:    3 * 24 * 60 * 60 * 1000,        // 3 days
+};
+
+/** Exponential backoff for consecutive agent failures (e.g. network outage). */
+const BACKOFF_INITIAL_MS = 30 * 1000;      // 30 seconds after first failure
+const BACKOFF_MAX_MS = 30 * 60 * 1000;     // cap at 30 minutes
+
+const CLERK_DAILY_MS = 24 * 60 * 60 * 1000;                // run clerk at most once per day
+const EFFICIENCY_ANALYSIS_MS = 7 * 24 * 60 * 60 * 1000;    // weekly efficiency analysis
 
 // ─── Stream formatters ─────────────────────────────────────────────────────────
 
@@ -203,17 +241,498 @@ async function readTextOrEmpty(filePath) {
 	try { return await readFile(filePath, 'utf-8'); } catch { return ''; }
 }
 
+async function checkStop(teamDir) {
+	const stopFile = join(teamDir, STOP_FILE);
+	if (await pathExists(stopFile)) {
+		await unlink(stopFile).catch(() => {});
+		return true;
+	}
+	return false;
+}
+
+// ─── Time formatting ───────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatTimestamp() {
+	const now = new Date();
+	const day = DAY_NAMES[now.getDay()];
+	const month = MONTH_NAMES[now.getMonth()];
+	const date = now.getDate();
+	const year = now.getFullYear();
+	const offset = -now.getTimezoneOffset();
+	const sign = offset >= 0 ? '+' : '-';
+	const offH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+	const offM = String(Math.abs(offset) % 60).padStart(2, '0');
+	const h = String(now.getHours()).padStart(2, '0');
+	const m = String(now.getMinutes()).padStart(2, '0');
+	const isoLocal = `${year}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(date).padStart(2, '0')}T${h}:${m}:${String(now.getSeconds()).padStart(2, '0')}${sign}${offH}:${offM}`;
+	return `${day}, ${month} ${date}, ${year} ${h}:${m} local (${isoLocal})`;
+}
+
+// ─── Scheduling helpers ────────────────────────────────────────────────────────
+
+/**
+ * Pick the priority with the lowest vruntime among candidates that have work.
+ * Candidates are iterated in PRIORITY_ORDER, so ties favor higher priority.
+ */
+function pickNextPriority(vruntime, candidates) {
+	let best = null;
+	let bestVrt = Infinity;
+	for (const { priority } of candidates) {
+		const vrt = vruntime[priority] ?? 0;
+		if (vrt < bestVrt) {
+			bestVrt = vrt;
+			best = priority;
+		}
+	}
+	return best;
+}
+
+/**
+ * Normalize vruntimes: subtract the minimum to prevent unbounded growth,
+ * and cap any deficit at MAX_VRUNTIME_DEFICIT so a long-idle priority
+ * cannot monopolize cycles when it suddenly has work.
+ */
+function normalizeVruntimes(vruntime) {
+	const values = Object.values(vruntime);
+	if (values.length === 0) return;
+	const minVrt = Math.min(...values);
+	for (const p of Object.keys(vruntime)) {
+		vruntime[p] -= minVrt;
+	}
+	const maxVrt = Math.max(...Object.values(vruntime));
+	for (const p of Object.keys(vruntime)) {
+		if (maxVrt - vruntime[p] > MAX_VRUNTIME_DEFICIT) {
+			vruntime[p] = maxVrt - MAX_VRUNTIME_DEFICIT;
+		}
+	}
+}
+
+async function idleWait(ms, teamDir, members, lastServedAt, cadences) {
+	const end = Date.now() + ms;
+	while (Date.now() < end) {
+		if (await checkStop(teamDir)) return 'stop';
+		// Wake early only for priorities whose cadence has elapsed
+		for (const priority of ['pressing', 'today']) {
+			const cadence = cadences[priority] ?? 0;
+			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+			if ((await getMembersWithWork(members, priority, teamDir)).length > 0) return 'work';
+		}
+		const remaining = end - Date.now();
+		const delay = Math.min(IDLE_POLL_MS, remaining);
+		if (delay > 0) await new Promise(r => setTimeout(r, delay));
+	}
+	return 'interval';
+}
+
+async function loadSchedulerState(logsDir) {
+	try {
+		const raw = await readFile(join(logsDir, 'scheduler-state.json'), 'utf-8');
+		const state = JSON.parse(raw);
+		const now = Date.now();
+		const lastServedAt = {};
+		const vruntime = {};
+		for (const p of PRIORITY_ORDER) {
+			const ts = state.lastServedAt?.[p];
+			lastServedAt[p] = (typeof ts === 'number' && ts > 0 && ts <= now) ? ts : now;
+			const v = state.vruntime?.[p];
+			vruntime[p] = (typeof v === 'number' && isFinite(v)) ? v : 0;
+		}
+		const lastServedMember = state.lastServedMember ?? {};
+		const validTs = (v) => typeof v === 'number' && v > 0 && v <= now ? v : 0;
+		const lastClerkAt = validTs(state.lastClerkAt);
+		const lastEfficiencyAt = validTs(state.lastEfficiencyAt);
+		console.log('[runner] Restored scheduler state from previous run.');
+		return { lastServedAt, lastServedMember, vruntime, lastClerkAt, lastEfficiencyAt };
+	} catch {
+		const lastServedAt = {};
+		const vruntime = {};
+		for (const p of PRIORITY_ORDER) {
+			lastServedAt[p] = Date.now();
+			vruntime[p] = 0;
+		}
+		return { lastServedAt, lastServedMember: {}, vruntime, lastClerkAt: 0, lastEfficiencyAt: 0 };
+	}
+}
+
+async function saveSchedulerState(logsDir, state) {
+	const out = {
+		lastServedAt: state.lastServedAt,
+		lastServedMember: state.lastServedMember,
+		vruntime: state.vruntime,
+		lastClerkAt: state.lastClerkAt,
+		lastEfficiencyAt: state.lastEfficiencyAt,
+		updatedAt: new Date().toISOString(),
+	};
+	await writeFile(
+		join(logsDir, 'scheduler-state.json'),
+		JSON.stringify(out, null, '\t') + '\n', 'utf-8',
+	).catch(() => {});
+}
+
+/** Rotate membersWithWork so the member after lastServed is first (round-robin fairness). */
+function rotateAfter(membersWithWork, lastServedName) {
+	if (!lastServedName || membersWithWork.length <= 1) return membersWithWork;
+	const idx = membersWithWork.findIndex(m => m.name === lastServedName);
+	if (idx < 0) return membersWithWork;
+	return [...membersWithWork.slice(idx + 1), ...membersWithWork.slice(0, idx + 1)];
+}
+
+// ─── Automated housekeeping ─────────────────────────────────────────────────────
+// Lightweight JS checks that replace the per-cycle clerk for routine tasks.
+
+function slugify(text) {
+	return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+}
+
+/**
+ * Run automated housekeeping: archive expired memos, prune stale schedule events,
+ * validate JSON files.  Returns { fixed: string[], errors: string[] }.
+ */
+async function runHousekeeping(teamDir, members) {
+	const fixed = [];
+	const errors = [];
+
+	// 1. Archive expired memos
+	const memosPath = join(teamDir, 'memos.json');
+	try {
+		const raw = await readFile(memosPath, 'utf-8');
+		const memos = JSON.parse(raw);
+		const now = new Date();
+		const expired = (memos.items ?? []).filter(m => m.expiresAt && new Date(m.expiresAt) < now);
+		if (expired.length > 0) {
+			const archiveDir = join(teamDir, 'archives');
+			await mkdir(archiveDir, { recursive: true });
+			for (const memo of expired) {
+				const archivePath = join(archiveDir, `memo-${slugify(memo.title)}.json`);
+				await writeFile(archivePath, JSON.stringify(memo, null, '\t') + '\n', 'utf-8');
+			}
+			memos.items = memos.items.filter(m => !expired.includes(m));
+			await writeFile(memosPath, JSON.stringify(memos, null, '\t') + '\n', 'utf-8');
+			fixed.push(`Archived ${expired.length} expired memo(s)`);
+		}
+	} catch (e) {
+		errors.push(`memos.json: ${e.message}`);
+	}
+
+	// 2. Prune schedule events older than 1 week (non-recurring only)
+	const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+	for (const member of members) {
+		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
+		try {
+			const raw = await readFile(schedulePath, 'utf-8');
+			const schedule = JSON.parse(raw);
+			const stale = (schedule.events ?? []).filter(e => !e.recurring && new Date(e.time) < weekAgo);
+			if (stale.length > 0) {
+				schedule.events = schedule.events.filter(e => !stale.includes(e));
+				await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
+				fixed.push(`Pruned ${stale.length} stale event(s) from ${member.name}'s schedule`);
+			}
+		} catch { /* missing file is fine */ }
+	}
+
+	// 3. Archive completed/cancelled projects
+	const projectsPath = join(teamDir, 'projects.json');
+	try {
+		const raw = await readFile(projectsPath, 'utf-8');
+		const manifest = JSON.parse(raw);
+		const done = (manifest.projects ?? []).filter(p => p.status === 'completed' || p.status === 'cancelled');
+		if (done.length > 0) {
+			const archiveDir = join(teamDir, 'archives');
+			await mkdir(archiveDir, { recursive: true });
+			for (const proj of done) {
+				const archivePath = join(archiveDir, `project-${slugify(proj.code)}.json`);
+				await writeFile(archivePath, JSON.stringify(proj, null, '\t') + '\n', 'utf-8');
+			}
+			manifest.projects = manifest.projects.filter(p => !done.includes(p));
+			await writeFile(projectsPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+			fixed.push(`Archived ${done.length} completed/cancelled project(s)`);
+		}
+	} catch (e) {
+		errors.push(`projects.json: ${e.message}`);
+	}
+
+	// 4. Validate key JSON files
+	for (const member of members) {
+		for (const file of ['todo.json', 'schedule.json']) {
+			const filePath = join(teamDir, 'members', member.name, file);
+			try {
+				const raw = await readFile(filePath, 'utf-8');
+				JSON.parse(raw);
+			} catch (e) {
+				if (e.code !== 'ENOENT') errors.push(`${member.name}/${file}: ${e.message}`);
+			}
+		}
+	}
+
+	return { fixed, errors };
+}
+
+// ─── Log scanning (for efficiency analysis) ─────────────────────────────────────
+
+/**
+ * Scan recent log files and return per-member summary stats.
+ * Used to build the efficiency analysis prompt without the agent reading every log.
+ */
+async function scanRecentLogs(logsDir, days = 7) {
+	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+	let files;
+	try { files = await readdir(logsDir); } catch { return []; }
+
+	const entries = [];
+	for (const file of files) {
+		if (!file.endsWith('.log')) continue;
+		const match = file.match(/^(.+?)\.(.+?)\.(\d{4}-\d{2}-\d{2}T(\d{2})-(\d{2})-(\d{2})-(\d+)Z)\.log$/);
+		if (!match) continue;
+		const [, member, priority, , hh, mm, ss, ms] = match;
+		const tsStr = match[3].replace(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z/, '$1T$2:$3:$4.$5Z');
+		const ts = new Date(tsStr);
+		if (isNaN(ts.getTime()) || ts.getTime() < cutoff) continue;
+
+		// Read tail to extract cost/duration without loading full file
+		const content = await readTextOrEmpty(join(logsDir, file));
+		const tail = content.slice(-600);
+		const costMatch = tail.match(/cost \$([0-9.]+)/);
+		const durMatch = tail.match(/\| ([0-9.]+)s/);
+		const rateLimited = content.includes('"status":"rejected"');
+
+		entries.push({
+			file, member, priority,
+			timestamp: ts.toISOString(),
+			cost: costMatch ? parseFloat(costMatch[1]) : 0,
+			durationSec: durMatch ? parseFloat(durMatch[1]) : 0,
+			rateLimited,
+			sizeKB: Math.round(content.length / 1024),
+		});
+	}
+
+	return entries.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+}
+
+/**
+ * Build a per-member summary table from log entries.
+ */
+function buildLogSummary(entries) {
+	const byMember = {};
+	for (const e of entries) {
+		if (e.member === 'clerk') continue;
+		const key = e.member;
+		if (!byMember[key]) byMember[key] = { runs: 0, totalCost: 0, rateLimited: 0, byPriority: {} };
+		const m = byMember[key];
+		m.runs++;
+		m.totalCost += e.cost;
+		if (e.rateLimited) m.rateLimited++;
+		if (!m.byPriority[e.priority]) m.byPriority[e.priority] = { runs: 0, cost: 0 };
+		m.byPriority[e.priority].runs++;
+		m.byPriority[e.priority].cost += e.cost;
+	}
+
+	const lines = ['| Member | Runs | Cost | Rate-limited | By priority |',
+		'|--------|------|------|-------------|-------------|'];
+	for (const [name, m] of Object.entries(byMember).sort((a, b) => b[1].totalCost - a[1].totalCost)) {
+		const priStr = Object.entries(m.byPriority)
+			.map(([p, d]) => `${p}:${d.runs}/$${d.cost.toFixed(2)}`)
+			.join(', ');
+		lines.push(`| ${name} | ${m.runs} | $${m.totalCost.toFixed(2)} | ${m.rateLimited} | ${priStr} |`);
+	}
+	return lines.join('\n');
+}
+
+// ─── Post-pass maintenance ──────────────────────────────────────────────────────
+
+async function buildEfficiencyPrompt(teamDir, logsDir, members) {
+	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'clerk-efficiency.md');
+	const rules = await readTextOrEmpty(rulesFile);
+	const membersDoc = await readTextOrEmpty(join(teamDir, 'members.json'));
+
+	const entries = await scanRecentLogs(logsDir, 7);
+	const summaryTable = buildLogSummary(entries);
+
+	// List the 30 most expensive non-rate-limited logs for the agent to investigate
+	const interesting = entries
+		.filter(e => !e.rateLimited && e.member !== 'clerk')
+		.sort((a, b) => b.cost - a.cost)
+		.slice(0, 30);
+	const logList = interesting.map(e =>
+		`  ${e.file}  ($${e.cost.toFixed(2)}, ${e.durationSec.toFixed(0)}s, ${e.sizeKB}KB)`
+	).join('\n');
+
+	return [
+		'# TeamOS Weekly Efficiency Analysis',
+		`# Time: ${formatTimestamp()}`,
+		`# Team directory: team/`,
+		`# Logs directory: team/.logs/`,
+		'',
+		'## Team Members',
+		'',
+		membersDoc,
+		'',
+		'## Last 7 Days — Summary',
+		'',
+		summaryTable,
+		'',
+		'## Most Expensive Runs (non-rate-limited)',
+		'',
+		logList || '(none)',
+		'',
+		'## Rules',
+		'',
+		rules,
+		'',
+		'## Instructions',
+		'',
+		'Analyze the logs listed above for repeated inefficiency patterns.',
+		'Read the actual log files (in team/.logs/) to understand what the agent did.',
+		'Send inbox messages ONLY for repeated patterns — not one-time fumbles.',
+		'Do NOT commit — the runner handles commits after you complete.',
+	].join('\n');
+}
+
+/**
+ * Post-pass maintenance: automated housekeeping, conditional clerk, weekly efficiency analysis.
+ * Replaces the per-cycle clerk invocation.
+ */
+async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, passErrors }) {
+	const now = Date.now();
+
+	// 1. Automated housekeeping (lightweight JS — no agent)
+	const issues = await runHousekeeping(teamDir, members);
+	if (issues.fixed.length > 0) {
+		console.log(`[runner] Housekeeping: ${issues.fixed.join('; ')}`);
+		if (!opts.noCommit) {
+			if (commitChanges('housekeeping: automated cleanup', repoRoot)) {
+				console.log('  Housekeeping committed.');
+				if (opts.push) pushChanges(repoRoot);
+			}
+		}
+	}
+	if (issues.errors.length > 0) {
+		console.log(`[runner] Housekeeping issues: ${issues.errors.join('; ')}`);
+	}
+
+	// 2. Clerk: run if issues need agent intervention, errors occurred, or ≥24h since last run
+	const errorContext = [...(passErrors ?? []), ...issues.errors];
+	const timeSinceClerk = now - (schedulerState.lastClerkAt ?? 0);
+	const needsClerk = errorContext.length > 0 || timeSinceClerk >= CLERK_DAILY_MS;
+
+	if (needsClerk && !opts.noClerk) {
+		console.log('\n[runner] Running daily clerk...');
+		const clerkLog = buildLogPath(logsDir, 'clerk', 'maintenance');
+
+		await writeFile(clerkLog, [
+			`Clerk run (maintenance)`,
+			`Agent: ${opts.agent}`,
+			`TeamOS: ${version}`,
+			`Started: ${new Date().toISOString()}`,
+			errorContext.length > 0 ? `Issues: ${errorContext.join('; ')}` : 'No issues.',
+			'═'.repeat(72),
+			'',
+		].join('\n'));
+
+		const clerkPrompt = await buildClerkPrompt(teamDir, errorContext.length > 0 ? errorContext.join('\n') : null);
+		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog);
+
+		if (clerkExit !== 0) {
+			console.error(`[runner] Clerk exited with code ${clerkExit}`);
+		}
+
+		if (!opts.noCommit) {
+			if (commitChanges('clerk: maintenance', repoRoot)) {
+				console.log('  Clerk committed.');
+				if (opts.push) pushChanges(repoRoot);
+			}
+		}
+
+		schedulerState.lastClerkAt = Date.now();
+	}
+
+	// 3. Weekly efficiency analysis
+	const timeSinceAnalysis = now - (schedulerState.lastEfficiencyAt ?? 0);
+	if (!opts.noClerk && timeSinceAnalysis >= EFFICIENCY_ANALYSIS_MS) {
+		console.log('\n[runner] Running weekly efficiency analysis...');
+		const analysisLog = buildLogPath(logsDir, 'clerk', 'efficiency');
+
+		await writeFile(analysisLog, [
+			`Clerk run (weekly efficiency analysis)`,
+			`Agent: ${opts.agent}`,
+			`TeamOS: ${version}`,
+			`Started: ${new Date().toISOString()}`,
+			'═'.repeat(72),
+			'',
+		].join('\n'));
+
+		const prompt = await buildEfficiencyPrompt(teamDir, logsDir, members);
+		const analysisExit = await runAgent(opts.agent, prompt, repoRoot, analysisLog);
+
+		if (analysisExit !== 0) {
+			console.error(`[runner] Efficiency analysis exited with code ${analysisExit}`);
+		}
+
+		if (!opts.noCommit) {
+			if (commitChanges('clerk: weekly efficiency analysis', repoRoot)) {
+				console.log('  Analysis committed.');
+				if (opts.push) pushChanges(repoRoot);
+			}
+		}
+
+		schedulerState.lastEfficiencyAt = Date.now();
+	}
+}
+
 // ─── Member discovery ──────────────────────────────────────────────────────────
 
 async function loadMembers(teamDir) {
 	const content = await readFile(join(teamDir, 'members.json'), 'utf-8');
 	const manifest = JSON.parse(content);
 	return manifest.members
-		.filter(m => m.active && m.type === 'ai')
-		.sort((a, b) => a.sequenceOrder - b.sequenceOrder);
+		.filter(m => m.active && m.type === 'ai');
 }
 
 // ─── Work detection ────────────────────────────────────────────────────────────
+
+/**
+ * Determine if a schedule event is currently due.
+ * Non-recurring: due if time <= now.
+ * Recurring: due if the event's `time` field is <= now.  After the agent
+ * handles a recurring event, the runner advances `time` to the next
+ * occurrence so it won't re-trigger until then.
+ */
+function isEventDue(event, now) {
+	return new Date(event.time) <= now;
+}
+
+/**
+ * Compute the next occurrence of a recurring event after `after`.
+ * Steps forward from `base` by the recurrence interval until the result > after.
+ */
+function nextOccurrence(base, recurrence, after) {
+	const { frequency, interval = 1 } = recurrence;
+
+	if (frequency === 'daily') {
+		const ms = interval * 24 * 60 * 60 * 1000;
+		const periods = Math.ceil((after - base) / ms);
+		return new Date(base.getTime() + Math.max(1, periods) * ms);
+	}
+
+	if (frequency === 'weekly') {
+		const ms = interval * 7 * 24 * 60 * 60 * 1000;
+		const periods = Math.ceil((after - base) / ms);
+		return new Date(base.getTime() + Math.max(1, periods) * ms);
+	}
+
+	if (frequency === 'monthly') {
+		let d = new Date(base);
+		while (d <= after) {
+			d = new Date(d);
+			d.setMonth(d.getMonth() + interval);
+		}
+		return d;
+	}
+
+	return new Date(base.getTime() + interval * 24 * 60 * 60 * 1000);
+}
 
 async function memberHasWork(memberName, priority, teamDir) {
 	const memberDir = join(teamDir, 'members', memberName);
@@ -223,7 +742,7 @@ async function memberHasWork(memberName, priority, teamDir) {
 	if (await pathExists(inboxDir)) {
 		try {
 			const files = await readdir(inboxDir);
-			if (files.some(f => f.endsWith('.json'))) return true;
+			if (files.some(f => f.endsWith('.md'))) return true;
 		} catch { /* ignore */ }
 	}
 
@@ -233,7 +752,7 @@ async function memberHasWork(memberName, priority, teamDir) {
 		try {
 			const todos = JSON.parse(await readFile(todoPath, 'utf-8'));
 			const priorityIdx = PRIORITY_ORDER.indexOf(priority);
-			if (todos.items.some(t => PRIORITY_ORDER.indexOf(t.priority) <= priorityIdx)) return true;
+			if (todos.items.some(t => t.status !== 'blocked' && PRIORITY_ORDER.indexOf(t.priority) <= priorityIdx)) return true;
 		} catch { /* ignore */ }
 	}
 
@@ -243,11 +762,34 @@ async function memberHasWork(memberName, priority, teamDir) {
 		try {
 			const schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
 			const now = new Date();
-			if (schedule.events.some(e => new Date(e.time) <= now)) return true;
+			if (schedule.events.some(e => isEventDue(e, now))) return true;
 		} catch { /* ignore */ }
 	}
 
 	return false;
+}
+
+/**
+ * After a member's cycle, advance any due recurring events to their next
+ * occurrence so they don't re-trigger until the next period.
+ */
+async function advanceRecurringEvents(memberName, teamDir) {
+	const schedulePath = join(teamDir, 'members', memberName, 'schedule.json');
+	try {
+		const raw = await readFile(schedulePath, 'utf-8');
+		const schedule = JSON.parse(raw);
+		const now = new Date();
+		let changed = false;
+		for (const event of (schedule.events ?? [])) {
+			if (event.recurring && event.recurrence && new Date(event.time) <= now) {
+				event.time = nextOccurrence(new Date(event.time), event.recurrence, now).toISOString();
+				changed = true;
+			}
+		}
+		if (changed) {
+			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
+		}
+	} catch { /* missing or invalid schedule is fine */ }
 }
 
 async function getMembersWithWork(members, priority, teamDir) {
@@ -258,6 +800,122 @@ async function getMembersWithWork(members, priority, teamDir) {
 		}
 	}
 	return results;
+}
+
+// ─── Self-assessment schedule injection ─────────────────────────────────────────
+
+const SELF_ASSESSMENT_TITLE = 'Weekly Self-Assessment';
+
+/**
+ * Compute the next Friday at 18:00 UTC on or after the given date.
+ */
+function nextFriday(from = new Date()) {
+	const d = new Date(from);
+	d.setUTCHours(18, 0, 0, 0);
+	const day = d.getUTCDay(); // 0=Sun … 5=Fri
+	const daysUntilFri = (5 - day + 7) % 7 || 7; // at least 1 day ahead
+	d.setUTCDate(d.getUTCDate() + daysUntilFri);
+	return d;
+}
+
+function buildSelfAssessmentEvent(fromDate) {
+	return {
+		title: SELF_ASSESSMENT_TITLE,
+		description:
+			'Conduct a weekly self-assessment following the rules in teamos/agent-rules/self-assessment.md. ',
+		time: nextFriday(fromDate).toISOString(),
+		recurring: true,
+		recurrence: {
+			frequency: 'weekly',
+			interval: 1,
+		},
+	};
+}
+
+/**
+ * Ensure every active AI member has a Weekly Self-Assessment schedule event.
+ * Adds one (persisted) if missing; leaves existing ones untouched.
+ */
+async function ensureSelfAssessmentEvents(members, teamDir) {
+	let added = 0;
+	for (const member of members) {
+		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
+		let schedule;
+		try {
+			schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
+		} catch {
+			schedule = { events: [] };
+		}
+
+		const hasAssessment = schedule.events.some(
+			e => e.title === SELF_ASSESSMENT_TITLE,
+		);
+		if (!hasAssessment) {
+			schedule.events.push(buildSelfAssessmentEvent(new Date()));
+			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
+			added++;
+		}
+	}
+	if (added > 0) {
+		console.log(`[runner] Added self-assessment schedule event to ${added} member(s).`);
+	}
+}
+
+// ─── Daily check-in schedule injection ────────────────────────────────────────
+
+const DAILY_CHECKIN_TITLE = 'Daily Check-in';
+
+/**
+ * Compute tomorrow at 09:00 UTC from the given date.
+ */
+function nextMorning(from = new Date()) {
+	const d = new Date(from);
+	d.setUTCHours(9, 0, 0, 0);
+	d.setUTCDate(d.getUTCDate() + 1); // always at least 1 day ahead
+	return d;
+}
+
+function buildDailyCheckinEvent(fromDate) {
+	return {
+		title: DAILY_CHECKIN_TITLE,
+		description:
+			'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
+		time: nextMorning(fromDate).toISOString(),
+		recurring: true,
+		recurrence: {
+			frequency: 'daily',
+			interval: 1,
+		},
+	};
+}
+
+/**
+ * Ensure every active AI member has a Daily Check-in schedule event.
+ * Adds one (persisted) if missing; leaves existing ones untouched.
+ */
+async function ensureDailyCheckinEvents(members, teamDir) {
+	let added = 0;
+	for (const member of members) {
+		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
+		let schedule;
+		try {
+			schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
+		} catch {
+			schedule = { events: [] };
+		}
+
+		const hasCheckin = schedule.events.some(
+			e => e.title === DAILY_CHECKIN_TITLE,
+		);
+		if (!hasCheckin) {
+			schedule.events.push(buildDailyCheckinEvent(new Date()));
+			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
+			added++;
+		}
+	}
+	if (added > 0) {
+		console.log(`[runner] Added daily check-in schedule event to ${added} member(s).`);
+	}
 }
 
 // ─── Logging ───────────────────────────────────────────────────────────────────
@@ -279,9 +937,9 @@ async function readInboxMessages(memberDir) {
 	const inboxDir = join(memberDir, 'inbox');
 	try {
 		const files = await readdir(inboxDir);
-		const jsonFiles = files.filter(f => f.endsWith('.json'));
+		const mdFiles = files.filter(f => f.endsWith('.md'));
 		const messages = [];
-		for (const file of jsonFiles) {
+		for (const file of mdFiles) {
 			const content = await readTextOrEmpty(join(inboxDir, file));
 			if (content) messages.push({ file, content });
 		}
@@ -294,14 +952,12 @@ async function readInboxMessages(memberDir) {
 async function buildCyclePrompt(member, priority, teamDir) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
-	const systemFile = join(TEAMOS_ROOT, 'README.md');
 
-	const [rules, systemDoc, orgDoc, newsDoc, projectsDoc, membersDoc,
+	const [rules, orgDoc, memosDoc, projectsDoc, membersDoc,
 		profile, state, todos, schedule] = await Promise.all([
 		readTextOrEmpty(rulesFile),
-		readTextOrEmpty(systemFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
-		readTextOrEmpty(join(teamDir, 'news.json')),
+		readTextOrEmpty(join(teamDir, 'memos.json')),
 		readTextOrEmpty(join(teamDir, 'projects.json')),
 		readTextOrEmpty(join(teamDir, 'members.json')),
 		readTextOrEmpty(join(memberDir, 'profile.md')),
@@ -315,25 +971,17 @@ async function buildCyclePrompt(member, priority, teamDir) {
 	const parts = [
 		`# TeamOS Cycle: ${member.name} (${member.title})`,
 		`# Priority: ${priority}`,
-		`# Time: ${new Date().toISOString()}`,
+		`# Time: ${formatTimestamp()}`,
 		`# Team directory: team/`,
 		`# Member directory: team/members/${member.name}/`,
-		'',
-		'## System Architecture',
-		'',
-		systemDoc,
-		'',
-		'## Cycle Rules',
-		'',
-		rules,
 		'',
 		'## Organization',
 		'',
 		orgDoc,
 		'',
-		'## News',
+		'## Memos',
 		'',
-		newsDoc,
+		memosDoc,
 		'',
 		'## Projects',
 		'',
@@ -373,11 +1021,13 @@ async function buildCyclePrompt(member, priority, teamDir) {
 
 	parts.push(
 		'',
-		'## Instructions',
+		'## Cycle Rules',
+		'',
+		rules,
+		'',
+		'----',
 		'',
 		`Execute a cycle for **${member.name}** at priority level **${priority}**.`,
-		'Follow the cycle rules above.',
-		'Do NOT commit — the runner handles commits after you complete.',
 	);
 
 	return parts.join('\n');
@@ -389,7 +1039,7 @@ async function buildClerkPrompt(teamDir, error) {
 
 	const parts = [
 		'# TeamOS Clerk',
-		`# Time: ${new Date().toISOString()}`,
+		`# Time: ${formatTimestamp()}`,
 		`# Team directory: team/`,
 		'',
 		'## System Architecture',
@@ -526,6 +1176,7 @@ async function runAgent(agentName, prompt, cwd, logFile) {
 			});
 		});
 	} finally {
+		process.stdout.write('\x1b[0m');
 		await unlink(instructionFile).catch(() => {});
 	}
 }
@@ -547,6 +1198,18 @@ function commitChanges(message, cwd) {
 	}
 }
 
+/** Push to the remote tracking branch. Returns true on success. */
+function pushChanges(cwd) {
+	try {
+		execSync('git push', { cwd, encoding: 'utf-8', stdio: 'pipe' });
+		console.log('  Pushed.');
+		return true;
+	} catch (err) {
+		console.error(`[runner] Git push failed: ${err.stderr || err.message}`);
+		return false;
+	}
+}
+
 // ─── CLI ───────────────────────────────────────────────────────────────────────
 
 function printHelp() {
@@ -555,17 +1218,27 @@ function printHelp() {
 		'',
 		'Members are discovered from team/members.json.  Work is detected by',
 		'checking inbox messages, todos at the current priority, and due schedule',
-		'events.  The priority cascade runs: pressing → today → thisWeek → later.',
+		'events.  A weighted fair scheduler (vruntime) allocates cycles across',
+		'priority levels: pressing → today → thisWeek → later.',
 		'',
 		'Usage: node teamos/scripts/run.mjs [options]',
 		'',
 		'Options:',
 		'  --agent <name>       claude | auggie | cursor              (default: claude)',
-		'  --priority <level>   Starting priority level               (default: pressing)',
+		'  --priority <level>   Highest priority to include           (default: pressing)',
 		'  --member <name>      Only run cycles for a specific member',
-		'  --max-cycles <n>     Max cycle passes                      (default: 10)',
+		'  --max-cycles <n>     Max cycle passes per scheduling pass  (default: 10)',
+		'  --loop               Enable continuous scheduling loop',
+		'  --interval <min>     Minutes between passes                (default: 120, implies --loop)',
+		'  --push               Push to remote after each commit',
 		'  --no-commit          Skip automatic git commit after each cycle',
 		'  --no-clerk           Skip clerk agent after each pass',
+		'  --clerk-only         Run only the clerk agent, then exit',
+		'  --weight <pri:n>     Priority weight for fair scheduling (repeatable)',
+		'                         (defaults: pressing:8, today:4, thisWeek:2, later:1)',
+		'  --cadence <pri:dur>  Min time between serving a priority (repeatable)',
+		'                         (defaults: pressing:0h, today:4h, thisWeek:1d, later:3d)',
+		'  --budget <pri:n>     Optional max member cycles at a priority per pass (repeatable)',
 		'  --dry-run            List members with work, don\'t invoke agent',
 		'  --help               Show this help',
 	];
@@ -578,9 +1251,16 @@ function parseArgs(argv) {
 		priority: 'pressing',
 		member: null,
 		maxCycles: 10,
+		loop: false,
+		intervalMs: DEFAULT_INTERVAL_MS,
+		push: false,
 		noCommit: false,
 		noClerk: false,
+		clerkOnly: false,
 		dryRun: false,
+		budgets: {},
+		weights: { ...DEFAULT_PRIORITY_WEIGHTS },
+		cadences: { ...DEFAULT_CADENCE_MS },
 	};
 
 	for (let i = 0; i < argv.length; i++) {
@@ -598,12 +1278,72 @@ function parseArgs(argv) {
 			case '--max-cycles':
 				opts.maxCycles = parseInt(argv[++i], 10);
 				break;
+			case '--loop':
+				opts.loop = true;
+				break;
+			case '--interval':
+				opts.intervalMs = parseInt(argv[++i], 10) * 60 * 1000;
+				opts.loop = true;
+				break;
+			case '--push':
+				opts.push = true;
+				break;
 			case '--no-commit':
 				opts.noCommit = true;
 				break;
 			case '--no-clerk':
 				opts.noClerk = true;
 				break;
+			case '--clerk-only':
+				opts.clerkOnly = true;
+				break;
+			case '--budget': {
+				const spec = argv[++i]; // e.g. "later:2" or "thisWeek:3"
+				if (spec) {
+					const [pri, count] = spec.split(':');
+					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseInt(count, 10))) {
+						opts.budgets[pri] = parseInt(count, 10);
+					} else {
+						console.error(`Invalid --budget spec: "${spec}". Use priority:count (e.g. later:2)`);
+						process.exit(1);
+					}
+				}
+				break;
+			}
+			case '--weight': {
+				const spec = argv[++i]; // e.g. "pressing:12" or "later:2"
+				if (spec) {
+					const [pri, w] = spec.split(':');
+					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseFloat(w)) && parseFloat(w) > 0) {
+						opts.weights[pri] = parseFloat(w);
+					} else {
+						console.error(`Invalid --weight spec: "${spec}". Use priority:weight (e.g. pressing:8)`);
+						process.exit(1);
+					}
+				}
+				break;
+			}
+			case '--cadence': {
+				const spec = argv[++i]; // e.g. "today:6h" or "thisWeek:2d"
+				if (spec) {
+					const [pri, val] = spec.split(':');
+					if (PRIORITY_ORDER.includes(pri) && val) {
+						const unit = val.slice(-1);
+						const num = parseFloat(val.slice(0, -1));
+						const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : NaN;
+						if (!isNaN(num) && !isNaN(multiplier) && num >= 0) {
+							opts.cadences[pri] = num * multiplier;
+						} else {
+							console.error(`Invalid --cadence value: "${val}". Use <number>h or <number>d (e.g. today:4h, later:3d)`);
+							process.exit(1);
+						}
+					} else {
+						console.error(`Invalid --cadence spec: "${spec}". Use priority:duration (e.g. today:4h, thisWeek:1d)`);
+						process.exit(1);
+					}
+				}
+				break;
+			}
 			case '--dry-run':
 				opts.dryRun = true;
 				break;
@@ -621,7 +1361,172 @@ function parseArgs(argv) {
 	return opts;
 }
 
-// ─── Main loop ─────────────────────────────────────────────────────────────────
+// ─── Cycle execution ───────────────────────────────────────────────────────────
+
+async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState }) {
+	let memberRuns = 0;
+	let lastError = null;
+	let stopped = false;
+
+	for (const member of membersWithWork) {
+		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) break;
+		if (await checkStop(teamDir)) { stopped = true; break; }
+
+		// Exponential backoff after consecutive failures (e.g. network outage)
+		if (failureState.consecutive > 0) {
+			const delay = Math.min(BACKOFF_INITIAL_MS * 2 ** (failureState.consecutive - 1), BACKOFF_MAX_MS);
+			console.log(`[runner] ${failureState.consecutive} consecutive failure(s) — backing off ${Math.round(delay / 1000)}s before next member.`);
+			await new Promise(r => setTimeout(r, delay));
+			// Re-check stop file after waiting
+			if (await checkStop(teamDir)) { stopped = true; break; }
+		}
+
+		memberRuns++;
+		const currentLog = buildLogPath(logsDir, member.name, priority);
+
+		console.log([
+			`${'─'.repeat(72)}`,
+			`  ${member.name} (${member.title})`,
+			`  Priority: ${priority}  |  Cycle: ${cycleCount}`,
+			`  Log: ${currentLog}`,
+			`${'─'.repeat(72)}`,
+		].join('\n'));
+
+		await writeFile(currentLog, [
+			`Member: ${member.name} (${member.title})`,
+			`Priority: ${priority}`,
+			`Agent: ${opts.agent}`,
+			`TeamOS: ${version}`,
+			`Started: ${new Date().toISOString()}`,
+			'═'.repeat(72),
+			'',
+		].join('\n'));
+
+		const prompt = await buildCyclePrompt(member, priority, teamDir);
+		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog);
+
+		if (exitCode !== 0) {
+			failureState.consecutive++;
+			lastError = `Agent exited with code ${exitCode} for member: ${member.name}`;
+			console.error(`\n${lastError}`);
+			console.error(`Log: ${currentLog}`);
+		} else {
+			failureState.consecutive = 0;
+		}
+
+		console.log(`\n  Complete: ${member.name}\n`);
+
+		await advanceRecurringEvents(member.name, teamDir);
+
+		if (membersWithWork.indexOf(member) < membersWithWork.length - 1 && failureState.consecutive === 0) {
+			await new Promise(r => setTimeout(r, 500));
+		}
+	}
+
+	if (!opts.noCommit) {
+		const names = membersWithWork.map(m => m.name).join(', ');
+		const label = `cycle ${cycleCount} (${priority}): ${names}`;
+		if (commitChanges(label, repoRoot)) {
+			console.log('  Committed.');
+			if (opts.push) pushChanges(repoRoot);
+		}
+	}
+
+	return { memberRuns, stopped, lastError };
+}
+
+// ─── Pass execution ────────────────────────────────────────────────────────────
+
+async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, useTimeout }) {
+	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
+	const weights = opts.weights;
+	const startTime = Date.now();
+	let cycleCount = 0;
+	let totalMemberRuns = 0;
+	const budgetSpent = {};
+	const passErrors = [];
+	const failureState = { consecutive: 0 };
+
+	// Eligible priorities based on --priority flag (this level and all below)
+	const startIdx = PRIORITY_ORDER.indexOf(opts.priority);
+	const eligiblePriorities = PRIORITY_ORDER.slice(startIdx);
+
+	function isBudgetExhausted(priority) {
+		const cap = opts.budgets[priority];
+		if (cap == null) return false;
+		return (budgetSpent[priority] ?? 0) >= cap;
+	}
+
+	while (cycleCount < opts.maxCycles) {
+		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) {
+			return { cycleCount, totalMemberRuns, stopped: false, timedOut: true, passErrors };
+		}
+
+		if (await checkStop(teamDir)) {
+			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
+		}
+
+		// Scan all eligible priorities for work (ordered by PRIORITY_ORDER for tie-breaking)
+		const candidates = [];
+		for (const priority of eligiblePriorities) {
+			if (isBudgetExhausted(priority)) continue;
+			// Cadence gate: skip priorities served too recently for their urgency tempo
+			const cadence = opts.cadences[priority];
+			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+			const membersWithWork = await getMembersWithWork(members, priority, teamDir);
+			if (membersWithWork.length > 0) {
+				candidates.push({ priority, members: membersWithWork });
+			}
+		}
+
+		if (candidates.length === 0) {
+			console.log('\n[runner] No work at any eligible priority.');
+			break;
+		}
+
+		// Pick priority with lowest vruntime (ties broken by priority order via iteration)
+		const pickedPriority = pickNextPriority(vruntime, candidates);
+		const picked = candidates.find(c => c.priority === pickedPriority);
+
+		// Rotate members for round-robin fairness, then trim to budget
+		let membersToRun = picked.members;
+		const cap = opts.budgets[pickedPriority];
+		if (cap != null) {
+			membersToRun = rotateAfter(membersToRun, lastServedMember[pickedPriority]);
+			const remaining = cap - (budgetSpent[pickedPriority] ?? 0);
+			if (membersToRun.length > remaining) {
+				membersToRun = membersToRun.slice(0, remaining);
+			}
+		}
+
+		cycleCount++;
+		const vrt = (vruntime[pickedPriority] ?? 0).toFixed(3);
+		console.log(`\n[runner] Cycle ${cycleCount}, priority: ${pickedPriority} (vrt=${vrt}), ` +
+			`members: ${membersToRun.map(m => m.name).join(', ')}`);
+
+		const result = await runCycle({
+			membersWithWork: membersToRun, priority: pickedPriority, cycleCount,
+			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState,
+		});
+		totalMemberRuns += result.memberRuns;
+		if (result.lastError) passErrors.push(result.lastError);
+		budgetSpent[pickedPriority] = (budgetSpent[pickedPriority] ?? 0) + result.memberRuns;
+		if (membersToRun.length > 0) {
+			lastServedMember[pickedPriority] = membersToRun[membersToRun.length - 1].name;
+		}
+		lastServedAt[pickedPriority] = Date.now();
+
+		// Advance vruntime for the served priority and normalize
+		vruntime[pickedPriority] = (vruntime[pickedPriority] ?? 0) + (1 / (weights[pickedPriority] ?? 1));
+		normalizeVruntimes(vruntime);
+
+		if (result.stopped) return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
+	}
+
+	return { cycleCount, totalMemberRuns, stopped: false, timedOut: false, passErrors };
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
@@ -630,13 +1535,11 @@ async function main() {
 	const teamDir = join(repoRoot, 'team');
 	const version = getVersion();
 
-	// Verify team/ exists
 	if (!await pathExists(teamDir)) {
 		console.error('team/ directory not found. Run `node teamos/scripts/init.mjs` first.');
 		process.exit(1);
 	}
 
-	// Load members
 	const allMembers = await loadMembers(teamDir);
 	const members = opts.member
 		? allMembers.filter(m => m.name === opts.member)
@@ -649,11 +1552,65 @@ async function main() {
 		return;
 	}
 
+	// ── Ensure recurring system events ────────────────────────────────────────
+
+	await ensureSelfAssessmentEvents(allMembers, teamDir);
+	await ensureDailyCheckinEvents(allMembers, teamDir);
+
+	// ── Clerk only ────────────────────────────────────────────────────────────
+
+	if (opts.clerkOnly) {
+		console.log(`\nteamos (${version}) — clerk only`);
+		const logsDir = await ensureLogsDir(teamDir);
+		const clerkLog = buildLogPath(logsDir, 'clerk', 'manual');
+
+		await writeFile(clerkLog, [
+			`Clerk run (manual)`,
+			`Agent: ${opts.agent}`,
+			`TeamOS: ${version}`,
+			`Started: ${new Date().toISOString()}`,
+			'═'.repeat(72),
+			'',
+		].join('\n'));
+
+		const clerkPrompt = await buildClerkPrompt(teamDir, null);
+		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog);
+
+		if (clerkExit !== 0) {
+			console.error(`[runner] Clerk exited with code ${clerkExit}`);
+		}
+
+		if (!opts.noCommit) {
+			if (commitChanges('clerk: manual', repoRoot)) {
+				console.log('  Clerk committed.');
+				if (opts.push) pushChanges(repoRoot);
+			}
+		}
+
+		console.log('\nDone — clerk only.');
+		return;
+	}
+
 	// ── Dry run ────────────────────────────────────────────────────────────────
 
 	if (opts.dryRun) {
 		console.log(`\nteamos (${version})`);
 		console.log(`Active AI members: ${members.map(m => m.name).join(', ')}\n`);
+
+		const weightStr = Object.entries(opts.weights).map(([p, w]) => `${p}:${w}`).join(', ');
+		const cadenceStr = Object.entries(opts.cadences)
+			.map(([p, ms]) => {
+				if (ms === 0) return `${p}:0`;
+				if (ms >= 86400000) return `${p}:${Math.round(ms / 86400000)}d`;
+				return `${p}:${Math.round(ms / 3600000)}h`;
+			})
+			.join(', ');
+		console.log(`  Weights: ${weightStr}`);
+		console.log(`  Cadences: ${cadenceStr}`);
+
+		const logsDir = await ensureLogsDir(teamDir);
+		const state = await loadSchedulerState(logsDir);
+		console.log(`  Vruntimes: ${Object.entries(state.vruntime).map(([p, v]) => `${p}:${v.toFixed(3)}`).join(', ')}\n`);
 
 		for (const priority of PRIORITY_ORDER) {
 			const withWork = await getMembersWithWork(members, priority, teamDir);
@@ -671,135 +1628,112 @@ async function main() {
 
 	// ── Run ────────────────────────────────────────────────────────────────────
 
+	const weightStr = Object.entries(opts.weights)
+		.map(([p, w]) => `${p}:${w}`)
+		.join(', ');
+	const cadenceStr = Object.entries(opts.cadences)
+		.map(([p, ms]) => {
+			if (ms === 0) return `${p}:0`;
+			if (ms >= 86400000) return `${p}:${Math.round(ms / 86400000)}d`;
+			return `${p}:${Math.round(ms / 3600000)}h`;
+		})
+		.join(', ');
+	const budgetStr = Object.entries(opts.budgets)
+		.map(([p, n]) => `${p}:${n}`)
+		.join(', ');
 	const banner = [
-		`${'═'.repeat(72)}`,
-		`  teamos (${version})`,
+		'═'.repeat(72),
+		`  teamos (${version})${opts.loop ? ' [loop mode]' : ''}`,
 		`  ${members.length} active AI member(s): ${members.map(m => m.name).join(', ')}`,
-		`  Starting priority: ${opts.priority}`,
-		`${'═'.repeat(72)}`,
-	].join('\n');
+		`  Weights: ${weightStr}`,
+		`  Cadences: ${cadenceStr}`,
+		budgetStr ? `  Budgets: ${budgetStr}` : null,
+		opts.loop ? `  Interval: ${opts.intervalMs / 60000}min` : null,
+		'═'.repeat(72),
+	].filter(Boolean).join('\n');
 	console.log(banner);
 
 	const logsDir = await ensureLogsDir(teamDir);
-	const startTime = Date.now();
-	let currentPriority = opts.priority;
-	let cycleCount = 0;
-	let totalMemberRuns = 0;
+	const schedulerState = await loadSchedulerState(logsDir);
 
-	while (cycleCount < opts.maxCycles && (Date.now() - startTime) < MAX_RUN_MS) {
-		const priorityIdx = PRIORITY_ORDER.indexOf(currentPriority);
-		const membersWithWork = await getMembersWithWork(members, currentPriority, teamDir);
+	if (opts.loop) {
+		let passNum = 0;
 
-		if (membersWithWork.length === 0) {
-			// Advance to next priority level
-			if (priorityIdx < PRIORITY_ORDER.length - 1) {
-				const prev = currentPriority;
-				currentPriority = PRIORITY_ORDER[priorityIdx + 1];
-				console.log(`\n[runner] No work at "${prev}", advancing to "${currentPriority}"`);
-				continue;
-			}
-			console.log('\n[runner] All priorities processed.');
-			break;
-		}
-
-		cycleCount++;
-		console.log(`\n[runner] Cycle ${cycleCount}, priority: ${currentPriority}, ` +
-			`members: ${membersWithWork.map(m => m.name).join(', ')}`);
-
-		let lastError = null;
-
-		for (const member of membersWithWork) {
-			if ((Date.now() - startTime) >= MAX_RUN_MS) {
-				console.log('\n[runner] Time limit reached.');
+		while (true) {
+			if (await checkStop(teamDir)) {
+				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
 			}
 
-			totalMemberRuns++;
-			const currentLog = buildLogPath(logsDir, member.name, currentPriority);
+			passNum++;
+			const passStart = Date.now();
+			console.log(`\n${'═'.repeat(72)}`);
+			console.log(`  Pass ${passNum} started at ${new Date().toISOString()}`);
+			console.log('═'.repeat(72));
 
-			const memberBanner = [
-				`${'─'.repeat(72)}`,
-				`  ${member.name} (${member.title})`,
-				`  Priority: ${currentPriority}  |  Cycle: ${cycleCount}`,
-				`  Log: ${currentLog}`,
-				`${'─'.repeat(72)}`,
-			].join('\n');
-			console.log(memberBanner);
+			const result = await runPass({
+				opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
+				useTimeout: false,
+			});
 
-			// Write log header
-			await writeFile(currentLog, [
-				`Member: ${member.name} (${member.title})`,
-				`Priority: ${currentPriority}`,
-				`Agent: ${opts.agent}`,
-				`TeamOS: ${version}`,
-				`Started: ${new Date().toISOString()}`,
-				'═'.repeat(72),
-				'',
-			].join('\n'));
 
-			const prompt = await buildCyclePrompt(member, currentPriority, teamDir);
-			const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog);
+			// Post-pass maintenance: housekeeping, conditional clerk, weekly efficiency analysis
+			if (!result.stopped) {
+				await runMaintenance({
+					opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
+					passErrors: result.passErrors,
+				});
+			}
+			console.log(`\n[runner] Pass ${passNum} complete — ${result.cycleCount} cycle(s), ${result.totalMemberRuns} member run(s).`);
+			await saveSchedulerState(logsDir, schedulerState);
 
-			if (exitCode !== 0) {
-				lastError = `Agent exited with code ${exitCode} for member: ${member.name}`;
-				console.error(`\n${lastError}`);
-				console.error(`Log: ${currentLog}`);
+			if (result.stopped) {
+				console.log('[runner] Stop file detected — exiting loop.');
+				break;
 			}
 
-			if (!opts.noCommit) {
-				const label = `cycle(${member.name}): ${currentPriority}`;
-				if (commitChanges(label, repoRoot)) {
-					console.log('  Committed.');
+			const elapsed = Date.now() - passStart;
+			const remaining = opts.intervalMs - elapsed;
+
+			if (remaining > 0) {
+				const mins = Math.round(remaining / 60000);
+				console.log(`[runner] Idle for ~${mins}min until next interval.`);
+				const reason = await idleWait(remaining, teamDir, members, schedulerState.lastServedAt, opts.cadences);
+				if (reason === 'stop') {
+					console.log('\n[runner] Stop file detected — exiting loop.');
+					break;
 				}
-			}
-
-			console.log(`\n  Complete: ${member.name}\n`);
-
-			// Brief pause between members
-			if (membersWithWork.indexOf(member) < membersWithWork.length - 1) {
-				await new Promise(r => setTimeout(r, 500));
+				if (reason === 'work') {
+					console.log('[runner] New work detected — starting next pass early.');
+				}
+			} else {
+				console.log(`[runner] Pass took ${Math.round(elapsed / 60000)}min (overran interval) — starting next pass.`);
 			}
 		}
 
-		// Run clerk for cleanup
-		if (!opts.noClerk) {
-			console.log('\n[runner] Running clerk...');
-			const clerkLog = buildLogPath(logsDir, 'clerk', currentPriority);
+		console.log('\nTeamOS loop ended.');
+	} else {
+		const result = await runPass({
+			opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
+			useTimeout: true,
+		});
 
-			await writeFile(clerkLog, [
-				`Clerk run after cycle ${cycleCount}`,
-				`Priority: ${currentPriority}`,
-				`Agent: ${opts.agent}`,
-				`TeamOS: ${version}`,
-				`Started: ${new Date().toISOString()}`,
-				lastError ? `Error: ${lastError}` : 'No errors.',
-				'═'.repeat(72),
-				'',
-			].join('\n'));
+		await runMaintenance({
+			opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
+			passErrors: result.passErrors,
+		});
 
-			const clerkPrompt = await buildClerkPrompt(teamDir, lastError);
-			const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog);
+		await saveSchedulerState(logsDir, schedulerState);
 
-			if (clerkExit !== 0) {
-				console.error(`[runner] Clerk exited with code ${clerkExit}`);
-			}
-
-			if (!opts.noCommit) {
-				if (commitChanges(`clerk: cycle ${cycleCount} (${currentPriority})`, repoRoot)) {
-					console.log('  Clerk committed.');
-				}
-			}
+		if (result.cycleCount >= opts.maxCycles) {
+			console.log(`\n[runner] Reached max cycles (${opts.maxCycles}).`);
 		}
-	}
+		if (result.timedOut) {
+			console.log(`[runner] Reached time limit (${MAX_RUN_MS / 60000}min).`);
+		}
 
-	if (cycleCount >= opts.maxCycles) {
-		console.log(`\n[runner] Reached max cycles (${opts.maxCycles}).`);
+		console.log(`\nDone — ${result.cycleCount} cycle(s), ${result.totalMemberRuns} member run(s).`);
 	}
-	if ((Date.now() - startTime) >= MAX_RUN_MS) {
-		console.log(`[runner] Reached time limit (${MAX_RUN_MS / 60000}min).`);
-	}
-
-	console.log(`\nDone — ${cycleCount} cycle(s), ${totalMemberRuns} member run(s).`);
 }
 
 main().catch((err) => {

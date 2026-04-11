@@ -4,7 +4,6 @@ title: Member Title
 description: Brief description of the member's purpose
 type: ai
 active: true
-sequenceOrder: 100
 roles:
   - Primary Role
   - Secondary Role

@@ -1,0 +1,104 @@
+:root {
+	--bg: #f1f5f9;
+	--surface: #ffffff;
+	--surface-raised: #f8fafc;
+	--text: #0f172a;
+	--text-muted: #64748b;
+	--text-light: #94a3b8;
+	--border: #e2e8f0;
+	--primary: #3b82f6;
+	--primary-hover: #2563eb;
+	--primary-subtle: #eff6ff;
+	--on-primary: #ffffff;
+	--success: #22c55e;
+	--success-subtle: #f0fdf4;
+	--warning: #f59e0b;
+	--warning-subtle: #fffbeb;
+	--danger: #ef4444;
+	--danger-subtle: #fef2f2;
+	--human: #8b5cf6;
+	--human-subtle: #f5f3ff;
+	--ai: #06b6d4;
+	--ai-subtle: #ecfeff;
+	--overlay: rgba(0, 0, 0, 0.5);
+	--radius: 8px;
+	--radius-lg: 12px;
+	--shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+	--shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.1);
+	--font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	--font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+	--transition: 150ms ease;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #0f1117;
+		--surface: #1a1d27;
+		--surface-raised: #222538;
+		--text: #e2e8f0;
+		--text-muted: #94a3b8;
+		--text-light: #64748b;
+		--border: #2d3148;
+		--primary: #60a5fa;
+		--primary-hover: #3b82f6;
+		--primary-subtle: #0c1a35;
+		--on-primary: #ffffff;
+		--success: #4ade80;
+		--success-subtle: #0d2818;
+		--warning: #fbbf24;
+		--warning-subtle: #271d08;
+		--danger: #f87171;
+		--danger-subtle: #2d1010;
+		--human: #a78bfa;
+		--human-subtle: #1e1a3a;
+		--ai: #22d3ee;
+		--ai-subtle: #082830;
+		--overlay: rgba(0, 0, 0, 0.7);
+		--shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+		--shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5);
+	}
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+	font-family: var(--font);
+	background: var(--bg);
+	color: var(--text);
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+	font-family: inherit;
+	font-size: inherit;
+	color: inherit;
+	cursor: pointer;
+	border: none;
+	background: none;
+}
+
+input, textarea, select {
+	font-family: inherit;
+	font-size: inherit;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 0.5rem 0.75rem;
+	background: var(--surface);
+	color: var(--text);
+	outline: none;
+	transition: border-color var(--transition);
+}
+
+input:focus, textarea:focus, select:focus {
+	border-color: var(--primary);
+	box-shadow: 0 0 0 3px var(--primary-subtle);
+}
+
+textarea {
+	resize: vertical;
+	min-height: 120px;
+}

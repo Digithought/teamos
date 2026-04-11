@@ -16,6 +16,7 @@ export interface MemberProfile {
   personality: Big5Profile;
   active: boolean;
   type: 'human' | 'ai';
+  reportsTo?: string;
 }
 
 /* embedded in profile.md frontmatter - see profile-template.md */
