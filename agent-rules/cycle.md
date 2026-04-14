@@ -82,7 +82,8 @@ Your due and upcoming events are already listed in the cycle prompt under "Due E
 - **thisWeek** / **later** — Cycled less frequently.
 
 **Can't make progress?** (blocked on a person, waiting for an external event):
-- Call `update_todo(id, { status: "blocked", notes: "<why>" })` — the runner skips blocked items
+- `status: "blocked"` means **"do not cycle me for this"** — a blocked item does not count as work, so it will not trigger a cycle on its own. If it's the only thing on your list, you go dormant until something else (a message, an event, another todo) wakes you up. Use it only when the unblock will arrive from outside — another member, an inbox message, or a human.
+- **If *you* need to periodically re-check whether the item is still blocked, do NOT set `status: "blocked"`.** Leave the status clear, demote the priority (`today` → `thisWeek` → `later`) so you're cycled at the right cadence, and describe the block in `notes`. The item stays actionable and you keep getting cycles to re-evaluate it.
 - Or `complete_todo(id)` and call `add_event` at the time you can act
 - Never leave an unactionable task at pressing priority unless you've marked it blocked
 
