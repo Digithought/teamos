@@ -38,6 +38,7 @@ export default defineConfig(async () => {
 				messagingAdapterName: adapterName,
 				scheduleAdapter,
 				scheduleAdapterName,
+				auth: config.auth,
 			}),
 		],
 		server: {

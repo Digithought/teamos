@@ -85,6 +85,13 @@ interface ScheduleAdapter {
 	removeEvent(member: string, id: string): Promise<void>;
 }
 
+interface AuthConfig {
+	/** If false, identity headers are ignored — the dashboard trusts its own localStorage selection. */
+	trustProxy?: boolean;
+	/** Lowercase header names checked in order; first match wins. */
+	identityHeaders?: string[];
+}
+
 interface ApiOptions {
 	teamDir: string;
 	ticketsDir?: string;
@@ -94,6 +101,7 @@ interface ApiOptions {
 	messagingAdapterName: string;
 	scheduleAdapter: ScheduleAdapter;
 	scheduleAdapterName: string;
+	auth?: AuthConfig;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200) {
@@ -217,6 +225,37 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	let ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
 
+	const auth = opts.auth ?? {};
+	const trustProxy = auth.trustProxy === true;
+	const identityHeaders = (auth.identityHeaders ?? []).map(h => h.toLowerCase());
+
+	async function resolveIdentity(
+		req: IncomingMessage,
+	): Promise<{ name: string | null; locked: boolean; source?: string; email?: string }> {
+		if (!trustProxy || identityHeaders.length === 0) {
+			return { name: null, locked: false };
+		}
+		for (const header of identityHeaders) {
+			const raw = req.headers[header];
+			const value = Array.isArray(raw) ? raw[0] : raw;
+			if (!value) continue;
+			const email = String(value).trim().toLowerCase();
+			if (!email) continue;
+			const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
+			const members: any[] = manifest.members ?? [];
+			const match = members.find(
+				(m: any) => typeof m.email === 'string' && m.email.toLowerCase() === email,
+			);
+			return {
+				name: match ? match.name : null,
+				locked: true,
+				source: header,
+				email,
+			};
+		}
+		return { name: null, locked: false };
+	}
+
 	async function hasTickets(): Promise<boolean> {
 		if (ticketsAvailable !== null) return ticketsAvailable;
 		ticketsAvailable = ticketsDir ? await dirExists(ticketsDir) : false;
@@ -329,6 +368,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		active?: boolean;
 		roles?: string[];
 		body?: string;
+		email?: string;
 	}) {
 		const name = (input.name ?? '').trim();
 		if (!isValidMemberName(name)) {
@@ -364,20 +404,21 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		await writeFile(join(memberDir, 'sent.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
 		await writeFile(join(memberDir, 'archives.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
 
-		const entry = {
+		const entry: Record<string, unknown> = {
 			name,
 			title: fields.title ?? '',
 			roles: fields.roles ?? [],
 			active: fields.active ?? true,
 			type: fields.type ?? 'ai',
 		};
+		if (input.email) entry.email = input.email.trim().toLowerCase();
 		members.push(entry);
 		manifest.members = members;
 		await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
 		return entry;
 	}
 
-	async function updateMemberProfile(name: string, patch: ProfileFields & { body?: string }) {
+	async function updateMemberProfile(name: string, patch: ProfileFields & { body?: string; email?: string | null }) {
 		const memberDir = join(teamDir, 'members', name);
 		const profilePath = join(memberDir, 'profile.md');
 		const existing = await readText(profilePath);
@@ -395,6 +436,10 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			if (patch.type !== undefined) entry.type = patch.type;
 			if (patch.active !== undefined) entry.active = patch.active;
 			if (patch.roles !== undefined) entry.roles = patch.roles;
+			if (patch.email !== undefined) {
+				if (patch.email === null || patch.email === '') delete entry.email;
+				else entry.email = String(patch.email).trim().toLowerCase();
+			}
 			members[idx] = entry;
 			manifest.members = members;
 			await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
@@ -440,6 +485,10 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				try {
 					if (path === '/api/messaging/info' && method === 'GET') {
 						return json(res, { adapter: messagingAdapterName });
+					}
+
+					if (path === '/api/me' && method === 'GET') {
+						return json(res, await resolveIdentity(req));
 					}
 
 					if (path === '/api/members' && method === 'GET') {

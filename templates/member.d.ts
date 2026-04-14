@@ -7,6 +7,8 @@ export interface MemberEntry {
   type: 'human' | 'ai';
   /** Optional notes — e.g. "talk to this person about X" */
   notes?: string;
+  /** Optional email — used by the dashboard to map proxy/SSO identity headers to this member. */
+  email?: string;
 }
 
 /** Root members.json structure */

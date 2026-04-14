@@ -160,6 +160,8 @@ Add her to `team/members.json`:
 }
 ```
 
+Human members may also carry an optional `"email"` field that the dashboard uses to map proxy/SSO identity headers to the member — see the **Authentication** section below.
+
 Create her initial files:
 ```bash
 cp teamos/templates/todo-template.json team/members/alice/todo.json
@@ -599,6 +601,31 @@ TEAMOS_PROJECT_ROOT=/path/to/project npm run dev
 The dashboard reads `teamos.config.json` at startup and instantiates the configured messaging adapter, so inbox views, compose, reply, archive, and delete all flow through the same adapter the runner uses. Archive moves a message id from `inbox.json` to `archives.json` — the master store at `team/messages/<id>.md` holds the single copy of the body.
 
 If a `tickets/` directory exists at the project root (e.g. from a ticket management system like tess), the dashboard displays a ticket pipeline summary. This feature is optional and hidden when no tickets directory is found.
+
+### Authentication
+
+The dashboard picks its "Me" identity from one of two sources:
+
+1. **A trusted proxy header** (Cloudflare Access, Tailscale Serve, oauth2-proxy, Fly OIDC) — only honored when `auth.trustProxy: true` is set in `teamos.config.json`. The header value is looked up against an `email` field on each entry in `team/members.json` and the matched member becomes a locked identity the client can't change.
+2. **Local selection** — the existing localStorage picker. Used when no header is present (or when `trustProxy` is off, which is the default).
+
+This lets the same dashboard run on your desktop *and* behind a cloud auth proxy without code changes — just flip `trustProxy` and set `identityHeaders`.
+
+```json
+{
+  "auth": {
+    "trustProxy": false,
+    "identityHeaders": [
+      "cf-access-authenticated-user-email",
+      "x-forwarded-email",
+      "x-auth-request-email",
+      "tailscale-user-login"
+    ]
+  }
+}
+```
+
+Default is `trustProxy: false`, so localhost dev is safe — header spoofing has no effect. When you enable it, make sure the dashboard port is only reachable through the proxy (private network, Tailscale interface, loopback). See `teamos/docs/auth.md` for the full protocol, threat model, and deployment recipes.
 
 ## Removing TeamOS
 

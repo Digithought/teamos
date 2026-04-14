@@ -15,12 +15,26 @@
 	$effect(() => { load(); });
 
 	function pick(name: string) {
+		if (identity.locked) return;
 		identity.set(name);
 		open = false;
 	}
 </script>
 
-{#if !identity.isSet && loaded}
+{#if identity.resolved && identity.locked && identity.unknownEmail}
+	<div class="overlay">
+		<div class="picker-card">
+			<h2 class="picker-title">Unrecognized identity</h2>
+			<p class="picker-hint">
+				You signed in as <strong>{identity.unknownEmail}</strong>, but no team member has that email in
+				<code>members.json</code>.
+			</p>
+			<p class="picker-hint">
+				Add an <code>email</code> field to your entry (or ask an admin to) and reload.
+			</p>
+		</div>
+	</div>
+{:else if identity.resolved && !identity.isSet && loaded && !identity.locked}
 	<div class="overlay">
 		<div class="picker-card">
 			<h2 class="picker-title">Who are you?</h2>
@@ -42,11 +56,20 @@
 
 {#if identity.isSet}
 	<div class="identity-indicator">
-		<button class="identity-btn" onclick={() => open = !open}>
+		<button
+			class="identity-btn"
+			class:locked={identity.locked}
+			onclick={() => { if (!identity.locked) open = !open; }}
+			title={identity.locked ? `Signed in via ${identity.source ?? 'proxy'}` : 'Change identity'}
+		>
 			{identity.name}
-			<span class="identity-caret">{open ? '▲' : '▼'}</span>
+			{#if identity.locked}
+				<span class="identity-lock" aria-label="locked">🔒</span>
+			{:else}
+				<span class="identity-caret">{open ? '▲' : '▼'}</span>
+			{/if}
 		</button>
-		{#if open}
+		{#if open && !identity.locked}
 			<div class="identity-menu">
 				{#each members as member}
 					<button
@@ -136,7 +159,10 @@
 		transition: all var(--transition);
 	}
 	.identity-btn:hover { background: var(--bg); }
+	.identity-btn.locked { cursor: default; }
+	.identity-btn.locked:hover { background: transparent; }
 	.identity-caret { font-size: 0.6rem; color: var(--text-muted); }
+	.identity-lock { font-size: 0.7rem; }
 	.identity-menu {
 		position: absolute;
 		right: 0;
