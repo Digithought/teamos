@@ -14,6 +14,15 @@
 	let stopPending = $state(false);
 	let stoppingCycle = $state(false);
 
+	let showNewMember = $state(false);
+	let savingMember = $state(false);
+	let memberError = $state('');
+	let newMemberName = $state('');
+	let newMemberTitle = $state('');
+	let newMemberType: 'ai' | 'human' = $state('ai');
+	let newMemberRoles = $state('');
+	let newMemberDescription = $state('');
+
 	let showNewMemo = $state(false);
 	let savingMemo = $state(false);
 	let memoTitle = $state('');
@@ -54,6 +63,39 @@
 	async function archiveMemo(index: number) {
 		await api.archiveMemo(index);
 		memos = memos.filter((_, i) => i !== index);
+	}
+
+	function openNewMember() {
+		newMemberName = '';
+		newMemberTitle = '';
+		newMemberType = 'ai';
+		newMemberRoles = '';
+		newMemberDescription = '';
+		memberError = '';
+		showNewMember = true;
+	}
+
+	async function saveMember() {
+		if (!newMemberName.trim()) return;
+		savingMember = true;
+		memberError = '';
+		try {
+			const roles = newMemberRoles.split(',').map(r => r.trim()).filter(Boolean);
+			await api.createMember({
+				name: newMemberName.trim(),
+				title: newMemberTitle.trim(),
+				type: newMemberType,
+				roles,
+				description: newMemberDescription.trim() || undefined,
+				active: true,
+			});
+			showNewMember = false;
+			await load();
+		} catch (err) {
+			memberError = err instanceof Error ? err.message : 'Failed to create member';
+		} finally {
+			savingMember = false;
+		}
 	}
 
 	function openNewMemo() {
@@ -101,14 +143,61 @@
 	<section class="section">
 		<div class="section-header">
 			<h2 class="section-title">Team</h2>
-			{#if stopPending}
-				<span class="stop-status">Stop pending...</span>
-			{:else}
-				<button class="stop-btn" onclick={cycleStop} disabled={stoppingCycle}>
-					{stoppingCycle ? 'Stopping...' : 'Stop Cycle'}
-				</button>
-			{/if}
+			<div class="section-actions">
+				{#if !showNewMember}
+					<button class="new-memo-btn" onclick={openNewMember}>New Member</button>
+				{/if}
+				{#if stopPending}
+					<span class="stop-status">Stop pending...</span>
+				{:else}
+					<button class="stop-btn" onclick={cycleStop} disabled={stoppingCycle}>
+						{stoppingCycle ? 'Stopping...' : 'Stop Cycle'}
+					</button>
+				{/if}
+			</div>
 		</div>
+
+		{#if showNewMember}
+			<div class="memo-form">
+				<div class="form-row">
+					<div class="form-group" style="flex:1">
+						<label class="label" for="member-name">Name</label>
+						<input id="member-name" type="text" bind:value={newMemberName} placeholder="e.g. pixie" />
+					</div>
+					<div class="form-group" style="flex:2">
+						<label class="label" for="member-title">Title</label>
+						<input id="member-title" type="text" bind:value={newMemberTitle} placeholder="e.g. Design Lead" />
+					</div>
+					<div class="form-group" style="flex:1">
+						<label class="label" for="member-type">Type</label>
+						<select id="member-type" bind:value={newMemberType}>
+							<option value="ai">ai</option>
+							<option value="human">human</option>
+						</select>
+					</div>
+				</div>
+				<div class="form-group">
+					<label class="label" for="member-roles">Roles (comma separated)</label>
+					<input id="member-roles" type="text" bind:value={newMemberRoles} placeholder="e.g. designer, researcher" />
+				</div>
+				<div class="form-group">
+					<label class="label" for="member-description">Description</label>
+					<textarea id="member-description" bind:value={newMemberDescription} rows="3" placeholder="Brief description of the member's purpose"></textarea>
+				</div>
+				{#if memberError}
+					<div class="form-error">{memberError}</div>
+				{/if}
+				<div class="form-actions">
+					<button
+						class="btn btn-primary"
+						onclick={saveMember}
+						disabled={!newMemberName.trim() || savingMember}
+					>{savingMember ? 'Creating...' : 'Create Member'}</button>
+					<button class="btn btn-ghost" onclick={() => showNewMember = false}>Cancel</button>
+				</div>
+			</div>
+		{/if}
+
 		<div class="member-grid">
 			{#each members as member}
 				<MemberCard {member} />
@@ -232,6 +321,15 @@
 		margin-bottom: 0.75rem;
 	}
 	.section-header .section-title { margin-bottom: 0; }
+	.section-actions { display: flex; align-items: center; gap: 0.5rem; }
+	.form-error {
+		font-size: 0.8rem;
+		color: var(--danger);
+		padding: 0.5rem 0.75rem;
+		background: var(--danger-subtle);
+		border-radius: var(--radius);
+		margin-bottom: 0.5rem;
+	}
 	.stop-btn {
 		padding: 0.375rem 0.75rem;
 		border: 1px solid var(--danger);

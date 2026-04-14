@@ -1,14 +1,99 @@
 import type { Plugin } from 'vite';
-import { readdir, readFile, writeFile, unlink, mkdir, access } from 'node:fs/promises';
+import { readdir, readFile, writeFile, unlink, mkdir, access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+
+interface MessageSummary {
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	projectCode?: string;
+	hasParent: boolean;
+}
+
+interface Message {
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	replyTo?: string;
+	projectCode?: string;
+	body: string;
+	parent?: Message;
+}
+
+interface MessagingAdapter {
+	hasMessages(member: string): Promise<boolean>;
+	sendMessage(args: {
+		from: string;
+		to: string[];
+		cc?: string[];
+		subject?: string;
+		body: string;
+		replyTo?: string;
+		projectCode?: string;
+	}): Promise<{ id: string; sentAt: string }>;
+	readMessage(id: string, opts?: { inlineParent?: boolean }): Promise<Message>;
+	listInbox(member: string): Promise<MessageSummary[]>;
+	listSent(member: string): Promise<MessageSummary[]>;
+	listArchives(member: string): Promise<MessageSummary[]>;
+	archiveMessage(member: string, id: string): Promise<void>;
+	unarchiveMessage(member: string, id: string): Promise<void>;
+	deleteInboxMessage(member: string, id: string): Promise<void>;
+	deleteArchivedMessage(member: string, id: string): Promise<void>;
+}
+
+interface ScheduleEvent {
+	id: string;
+	title: string;
+	description?: string;
+	time: string;
+	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
+	projectCode?: string;
+	isDue?: boolean;
+}
+
+interface ScheduleAdapter {
+	listEvents(member: string): Promise<ScheduleEvent[]>;
+	addEvent(
+		member: string,
+		input: {
+			title: string;
+			time: string;
+			description?: string;
+			recurrence?: { frequency: string; interval: number; endDate?: string };
+			projectCode?: string;
+		},
+	): Promise<{ id: string }>;
+	updateEvent(
+		member: string,
+		id: string,
+		patch: {
+			title?: string;
+			description?: string;
+			time?: string;
+			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
+			projectCode?: string;
+		},
+	): Promise<void>;
+	removeEvent(member: string, id: string): Promise<void>;
+}
 
 interface ApiOptions {
 	teamDir: string;
 	ticketsDir?: string;
 	siblingDir?: string;
 	siblingPort?: number;
+	messagingAdapter: MessagingAdapter;
+	messagingAdapterName: string;
+	scheduleAdapter: ScheduleAdapter;
+	scheduleAdapterName: string;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200) {
@@ -53,27 +138,81 @@ async function readText(path: string, fallback = ''): Promise<string> {
 	catch { return fallback; }
 }
 
-async function listMdFiles(dir: string): Promise<string[]> {
-	try {
-		const files = await readdir(dir);
-		return files.filter(f => f.endsWith('.md')).sort();
-	} catch { return []; }
+async function dirExists(path: string): Promise<boolean> {
+	try { await access(path, constants.F_OK); return true; } catch { return false; }
 }
 
 async function countMdFiles(dir: string): Promise<number> {
-	return (await listMdFiles(dir)).length;
-}
-
-async function dirExists(path: string): Promise<boolean> {
-	try { await access(path, constants.F_OK); return true; } catch { return false; }
+	try {
+		const files = await readdir(dir);
+		return files.filter(f => f.endsWith('.md')).length;
+	} catch { return 0; }
 }
 
 function slugify(text: string): string {
 	return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
 }
 
+function isValidMemberName(name: string): boolean {
+	return /^[A-Za-z][A-Za-z0-9_-]{0,48}$/.test(name);
+}
+
+interface ProfileFields {
+	title?: string;
+	description?: string;
+	type?: 'ai' | 'human';
+	active?: boolean;
+	roles?: string[];
+}
+
+function serializeRoles(roles: string[]): string {
+	const escaped = roles.map(r => r.includes(',') || r.includes(' ') ? `"${r.replace(/"/g, '\\"')}"` : r);
+	return `[${escaped.join(', ')}]`;
+}
+
+function renderProfileMd(name: string, fields: ProfileFields, body: string): string {
+	const roles = fields.roles ?? [];
+	const fm = [
+		'---',
+		`name: ${name}`,
+		`title: ${fields.title ?? ''}`,
+		`description: ${fields.description ?? ''}`,
+		`type: ${fields.type ?? 'ai'}`,
+		`active: ${fields.active ?? true}`,
+		`roles: ${serializeRoles(roles)}`,
+		'---',
+		'',
+	].join('\n');
+	return fm + (body ?? '') + (body && !body.endsWith('\n') ? '\n' : '');
+}
+
+function updateFrontmatterFields(content: string, patch: ProfileFields & { body?: string }): string {
+	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+	if (!match) return content;
+	let fm = match[1];
+	const body = patch.body !== undefined ? patch.body : match[2];
+
+	const setField = (key: string, value: string) => {
+		const re = new RegExp(`^(${key}):.*$`, 'm');
+		if (re.test(fm)) {
+			fm = fm.replace(re, `${key}: ${value}`);
+		} else {
+			fm = fm + `\n${key}: ${value}`;
+		}
+	};
+
+	if (patch.title !== undefined) setField('title', patch.title);
+	if (patch.description !== undefined) setField('description', patch.description);
+	if (patch.type !== undefined) setField('type', patch.type);
+	if (patch.active !== undefined) setField('active', String(patch.active));
+	if (patch.roles !== undefined) setField('roles', serializeRoles(patch.roles));
+
+	const trimmedBody = body.replace(/^\s*\n/, '');
+	return `---\n${fm}\n---\n\n${trimmedBody}${trimmedBody.endsWith('\n') ? '' : '\n'}`;
+}
+
 export function teamosApi(opts: ApiOptions): Plugin {
-	const { teamDir, siblingDir } = opts;
+	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter } = opts;
 	const siblingPort = opts.siblingPort ?? 3004;
 	let ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
@@ -88,16 +227,16 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
 		return Promise.all(manifest.members.map(async (m: Record<string, unknown>) => {
 			const dir = join(teamDir, 'members', m.name as string);
-			const inboxCount = await countMdFiles(join(dir, 'inbox'));
+			const inboxSummaries = await messagingAdapter.listInbox(m.name as string).catch(() => []);
 			const todos = await readJson(join(dir, 'todo.json'), { items: [] });
 			const items: any[] = todos.items ?? [];
-			const schedule = await readJson(join(dir, 'schedule.json'), { events: [] });
+			const events = await scheduleAdapter.listEvents(m.name as string).catch(() => []);
 			return {
 				...m,
-				inboxCount,
+				inboxCount: inboxSummaries.length,
 				todoCount: items.length,
 				blockedCount: items.filter((t: any) => t.status === 'blocked').length,
-				eventCount: (schedule.events ?? []).length,
+				eventCount: events.length,
 			};
 		}));
 	}
@@ -107,67 +246,41 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		const profileRaw = await readText(join(dir, 'profile.md'));
 		const state = await readText(join(dir, 'state.md'));
 		const todos = await readJson(join(dir, 'todo.json'), { items: [] });
-		const schedule = await readJson(join(dir, 'schedule.json'), { events: [] });
-		return { name, profile: parseFrontmatter(profileRaw), state, todos, schedule };
+		const events = await scheduleAdapter.listEvents(name).catch(() => []);
+		return {
+			name,
+			profile: parseFrontmatter(profileRaw),
+			state,
+			todos,
+			schedule: { events },
+		};
 	}
 
-	async function getInbox(name: string) {
-		const dir = join(teamDir, 'members', name, 'inbox');
-		const files = await listMdFiles(dir);
-		return Promise.all(files.map(async filename => {
-			const content = await readFile(join(dir, filename), 'utf-8');
-			const { meta, body } = parseFrontmatter(content);
-			return { filename, ...meta, body };
-		}));
+	async function sendMessage(msg: {
+		from: string;
+		to: string[];
+		cc?: string[];
+		subject?: string;
+		body: string;
+		replyTo?: string;
+		projectCode?: string;
+	}) {
+		return messagingAdapter.sendMessage(msg);
 	}
 
-	async function getArchives(name: string) {
-		const dir = join(teamDir, 'members', name, 'archives');
-		const files = await listMdFiles(dir);
-		return Promise.all(files.map(async filename => {
-			const content = await readFile(join(dir, filename), 'utf-8');
-			const { meta, body } = parseFrontmatter(content);
-			return { filename, ...meta, body };
-		}));
+	async function getTicketSummary(): Promise<Record<string, number> | null> {
+		if (!await hasTickets() || !ticketsDir) return null;
+		const stages = ['fix', 'plan', 'implement', 'review', 'blocked', 'complete'];
+		const counts: Record<string, number> = {};
+		for (const stage of stages) {
+			counts[stage] = await countMdFiles(join(ticketsDir, stage));
+		}
+		return counts;
 	}
 
-	async function sendMessage(recipientName: string, msg: { from: string; requestResponse?: boolean; projectCode?: string; subject?: string; body: string }) {
-		const inboxDir = join(teamDir, 'members', recipientName, 'inbox');
-		await mkdir(inboxDir, { recursive: true });
-		const slug = msg.subject ? slugify(msg.subject) : Date.now().toString();
-		const filename = `message-${slugify(msg.from)}-${slug}.md`;
-		const now = new Date().toISOString();
-		let frontmatter = `---\nfrom: ${msg.from}\nsentAt: ${now}\nrequestResponse: ${msg.requestResponse ?? false}`;
-		if (msg.projectCode) frontmatter += `\nprojectCode: ${msg.projectCode}`;
-		frontmatter += `\n---\n\n`;
-		await writeFile(join(inboxDir, filename), frontmatter + msg.body, 'utf-8');
-		return { filename, sentAt: now };
-	}
-
-	async function deleteInboxMessage(name: string, filename: string) {
-		await unlink(join(teamDir, 'members', name, 'inbox', filename));
-	}
-
-	async function archiveInboxMessage(name: string, filename: string) {
-		const inboxPath = join(teamDir, 'members', name, 'inbox', filename);
-		const archivesDir = join(teamDir, 'members', name, 'archives');
-		await mkdir(archivesDir, { recursive: true });
-		const content = await readFile(inboxPath, 'utf-8');
-		let archiveName = filename;
-		try {
-			await access(join(archivesDir, archiveName), constants.F_OK);
-			const stamp = Date.now().toString(36);
-			const ext = archiveName.endsWith('.md') ? '.md' : '';
-			const base = ext ? archiveName.slice(0, -ext.length) : archiveName;
-			archiveName = `${base}-${stamp}${ext}`;
-		} catch { /* no collision */ }
-		await writeFile(join(archivesDir, archiveName), content, 'utf-8');
-		await unlink(inboxPath);
-		return { archivedAs: archiveName };
-	}
-
-	async function deleteArchiveMessage(name: string, filename: string) {
-		await unlink(join(teamDir, 'members', name, 'archives', filename));
+	async function getSibling(): Promise<{ name: string; url: string } | null> {
+		if (!siblingDir || !await dirExists(siblingDir)) return null;
+		return { name: 'tess', url: `http://localhost:${siblingPort}` };
 	}
 
 	async function createMemo(memo: { title: string; content: string; importance: string; authorName: string; projectCodes?: string[]; expiresAt?: string }) {
@@ -208,6 +321,102 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return { archivedAs: filename };
 	}
 
+	async function createMember(input: {
+		name: string;
+		title?: string;
+		description?: string;
+		type?: 'ai' | 'human';
+		active?: boolean;
+		roles?: string[];
+		body?: string;
+	}) {
+		const name = (input.name ?? '').trim();
+		if (!isValidMemberName(name)) {
+			throw new Error('Invalid member name (letters, digits, _ or - only; must start with a letter)');
+		}
+
+		const manifestPath = join(teamDir, 'members.json');
+		const manifest = await readJson(manifestPath, { members: [] });
+		const members: any[] = manifest.members ?? [];
+		if (members.some((m: any) => m.name === name)) {
+			throw new Error(`Member "${name}" already exists`);
+		}
+
+		const fields: ProfileFields = {
+			title: input.title ?? '',
+			description: input.description ?? '',
+			type: input.type ?? 'ai',
+			active: input.active ?? true,
+			roles: input.roles ?? [],
+		};
+
+		const memberDir = join(teamDir, 'members', name);
+		await mkdir(memberDir, { recursive: true });
+		await mkdir(join(memberDir, 'inbox'), { recursive: true });
+		await mkdir(join(memberDir, 'archives'), { recursive: true });
+
+		const defaultBody = input.body?.trim() || `# ${name}\n\n${fields.description || ''}\n`;
+		await writeFile(join(memberDir, 'profile.md'), renderProfileMd(name, fields, defaultBody), 'utf-8');
+		await writeFile(join(memberDir, 'state.md'), '', 'utf-8');
+		await writeFile(join(memberDir, 'todo.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
+		await writeFile(join(memberDir, 'schedule.json'), JSON.stringify({ events: [] }, null, '\t'), 'utf-8');
+		await writeFile(join(memberDir, 'inbox.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
+		await writeFile(join(memberDir, 'sent.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
+		await writeFile(join(memberDir, 'archives.json'), JSON.stringify({ items: [] }, null, '\t'), 'utf-8');
+
+		const entry = {
+			name,
+			title: fields.title ?? '',
+			roles: fields.roles ?? [],
+			active: fields.active ?? true,
+			type: fields.type ?? 'ai',
+		};
+		members.push(entry);
+		manifest.members = members;
+		await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+		return entry;
+	}
+
+	async function updateMemberProfile(name: string, patch: ProfileFields & { body?: string }) {
+		const memberDir = join(teamDir, 'members', name);
+		const profilePath = join(memberDir, 'profile.md');
+		const existing = await readText(profilePath);
+		if (!existing) throw new Error(`Member "${name}" not found`);
+		const updated = updateFrontmatterFields(existing, patch);
+		await writeFile(profilePath, updated, 'utf-8');
+
+		const manifestPath = join(teamDir, 'members.json');
+		const manifest = await readJson(manifestPath, { members: [] });
+		const members: any[] = manifest.members ?? [];
+		const idx = members.findIndex((m: any) => m.name === name);
+		if (idx !== -1) {
+			const entry = { ...members[idx] };
+			if (patch.title !== undefined) entry.title = patch.title;
+			if (patch.type !== undefined) entry.type = patch.type;
+			if (patch.active !== undefined) entry.active = patch.active;
+			if (patch.roles !== undefined) entry.roles = patch.roles;
+			members[idx] = entry;
+			manifest.members = members;
+			await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+		}
+		return { ok: true };
+	}
+
+	async function deleteMember(name: string) {
+		const manifestPath = join(teamDir, 'members.json');
+		const manifest = await readJson(manifestPath, { members: [] });
+		const members: any[] = manifest.members ?? [];
+		const idx = members.findIndex((m: any) => m.name === name);
+		if (idx === -1) throw new Error(`Member "${name}" not found`);
+		members.splice(idx, 1);
+		manifest.members = members;
+		await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+
+		const memberDir = join(teamDir, 'members', name);
+		await rm(memberDir, { recursive: true, force: true });
+		return { ok: true };
+	}
+
 	async function stopCycle(): Promise<{ ok: boolean }> {
 		const stopFile = join(teamDir, '.stop');
 		await writeFile(stopFile, '', 'utf-8');
@@ -216,21 +425,6 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 	async function isStopPending(): Promise<boolean> {
 		return dirExists(join(teamDir, '.stop'));
-	}
-
-	async function getSibling(): Promise<{ name: string; url: string } | null> {
-		if (!siblingDir || !await dirExists(siblingDir)) return null;
-		return { name: 'tess', url: `http://localhost:${siblingPort}` };
-	}
-
-	async function getTicketSummary(): Promise<Record<string, number> | null> {
-		if (!await hasTickets() || !ticketsDir) return null;
-		const stages = ['fix', 'plan', 'implement', 'review', 'blocked', 'complete'];
-		const counts: Record<string, number> = {};
-		for (const stage of stages) {
-			counts[stage] = await countMdFiles(join(ticketsDir, stage));
-		}
-		return counts;
 	}
 
 	return {
@@ -244,8 +438,17 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				const method = req.method?.toUpperCase() ?? 'GET';
 
 				try {
+					if (path === '/api/messaging/info' && method === 'GET') {
+						return json(res, { adapter: messagingAdapterName });
+					}
+
 					if (path === '/api/members' && method === 'GET') {
 						return json(res, await getMemberSummaries());
+					}
+
+					if (path === '/api/members' && method === 'POST') {
+						const body = JSON.parse(await readBody(req));
+						return json(res, await createMember(body), 201);
 					}
 
 					if (path === '/api/memos' && method === 'GET') {
@@ -266,6 +469,62 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return json(res, await readJson(join(teamDir, 'projects.json'), { projects: [] }));
 					}
 
+					if (path === '/api/projects' && method === 'POST') {
+						const input = JSON.parse(await readBody(req));
+						const projectsPath = join(teamDir, 'projects.json');
+						const data = await readJson(projectsPath, { projects: [] });
+						const projects: any[] = data.projects ?? [];
+						const code = String(input.code ?? '').trim();
+						if (!code) throw new Error('Project code is required');
+						if (projects.some((p: any) => p.code === code)) {
+							throw new Error(`Project "${code}" already exists`);
+						}
+						const entry = {
+							code,
+							name: String(input.name ?? '').trim(),
+							description: String(input.description ?? '').trim(),
+							status: String(input.status ?? 'active').trim(),
+						};
+						projects.push(entry);
+						data.projects = projects;
+						await writeFile(projectsPath, JSON.stringify(data, null, '\t') + '\n', 'utf-8');
+						return json(res, entry, 201);
+					}
+
+					const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+					if (projectMatch && (method === 'PATCH' || method === 'DELETE')) {
+						const code = decodeURIComponent(projectMatch[1]);
+						const projectsPath = join(teamDir, 'projects.json');
+						const data = await readJson(projectsPath, { projects: [] });
+						const projects: any[] = data.projects ?? [];
+						const idx = projects.findIndex((p: any) => p.code === code);
+						if (idx === -1) return json(res, { error: 'Project not found' }, 404);
+						if (method === 'DELETE') {
+							projects.splice(idx, 1);
+						} else {
+							const patchBody = JSON.parse(await readBody(req));
+							const entry = { ...projects[idx] };
+							if (patchBody.name !== undefined) entry.name = String(patchBody.name).trim();
+							if (patchBody.description !== undefined) entry.description = String(patchBody.description).trim();
+							if (patchBody.status !== undefined) entry.status = String(patchBody.status).trim();
+							projects[idx] = entry;
+						}
+						data.projects = projects;
+						await writeFile(projectsPath, JSON.stringify(data, null, '\t') + '\n', 'utf-8');
+						return json(res, { ok: true });
+					}
+
+					if (path === '/api/org' && method === 'GET') {
+						const content = await readText(join(teamDir, 'org.md'));
+						return json(res, { content });
+					}
+
+					if (path === '/api/org' && method === 'PUT') {
+						const { content } = JSON.parse(await readBody(req));
+						await writeFile(join(teamDir, 'org.md'), content ?? '', 'utf-8');
+						return json(res, { ok: true });
+					}
+
 					if (path === '/api/tickets' && method === 'GET') {
 						return json(res, await getTicketSummary());
 					}
@@ -282,59 +541,83 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return json(res, { stopPending: await isStopPending() });
 					}
 
-					if (path.match(/^\/api\/members\/([^/]+)\/inbox\/([^/]+)$/) && method === 'GET') {
-						const m = path.match(/^\/api\/members\/([^/]+)\/inbox\/([^/]+)$/);
-						if (m) {
-							const mName = decodeURIComponent(m[1]);
-							const filename = decodeURIComponent(m[2]);
-							const filePath = join(teamDir, 'members', mName, 'inbox', filename);
-							const content = await readText(filePath);
-							if (!content) return json(res, { error: 'Not found' }, 404);
-							const { meta, body: msgBody } = parseFrontmatter(content);
-							return json(res, { filename, ...meta, body: msgBody });
+					// ─── Messages (id-scoped master store) ───────────────────
+					if (path === '/api/messages' && method === 'POST') {
+						const msg = JSON.parse(await readBody(req));
+						return json(res, await sendMessage(msg), 201);
+					}
+
+					let match = path.match(/^\/api\/messages\/([^/]+)$/);
+					if (match && method === 'GET') {
+						const id = decodeURIComponent(match[1]);
+						try {
+							const msg = await messagingAdapter.readMessage(id, { inlineParent: true });
+							return json(res, msg);
+						} catch {
+							return json(res, { error: 'Not found' }, 404);
 						}
 					}
 
-					let match = path.match(/^\/api\/members\/([^/]+)$/);
+					// ─── Member detail & mailboxes ───────────────────────────
+					match = path.match(/^\/api\/members\/([^/]+)$/);
 					if (match && method === 'GET') {
 						return json(res, await getMemberDetail(decodeURIComponent(match[1])));
 					}
+					if (match && method === 'DELETE') {
+						return json(res, await deleteMember(decodeURIComponent(match[1])));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/profile$/);
+					if (match && method === 'PATCH') {
+						const name = decodeURIComponent(match[1]);
+						const body = JSON.parse(await readBody(req));
+						return json(res, await updateMemberProfile(name, body));
+					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/inbox$/);
-					if (match) {
-						const name = decodeURIComponent(match[1]);
-						if (method === 'GET') return json(res, await getInbox(name));
-						if (method === 'POST') {
-							const msg = JSON.parse(await readBody(req));
-							return json(res, await sendMessage(name, msg), 201);
-						}
+					if (match && method === 'GET') {
+						return json(res, await messagingAdapter.listInbox(decodeURIComponent(match[1])));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/sent$/);
+					if (match && method === 'GET') {
+						return json(res, await messagingAdapter.listSent(decodeURIComponent(match[1])));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/archives$/);
+					if (match && method === 'GET') {
+						return json(res, await messagingAdapter.listArchives(decodeURIComponent(match[1])));
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/inbox\/([^/]+)\/archive$/);
 					if (match && method === 'POST') {
 						const name = decodeURIComponent(match[1]);
-						const filename = decodeURIComponent(match[2]);
-						return json(res, await archiveInboxMessage(name, filename));
+						const id = decodeURIComponent(match[2]);
+						await messagingAdapter.archiveMessage(name, id);
+						return json(res, { ok: true });
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/archives\/([^/]+)\/unarchive$/);
+					if (match && method === 'POST') {
+						const name = decodeURIComponent(match[1]);
+						const id = decodeURIComponent(match[2]);
+						await messagingAdapter.unarchiveMessage(name, id);
+						return json(res, { ok: true });
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/inbox\/([^/]+)$/);
 					if (match && method === 'DELETE') {
 						const name = decodeURIComponent(match[1]);
-						const filename = decodeURIComponent(match[2]);
-						await deleteInboxMessage(name, filename);
+						const id = decodeURIComponent(match[2]);
+						await messagingAdapter.deleteInboxMessage(name, id);
 						return json(res, { ok: true });
-					}
-
-					match = path.match(/^\/api\/members\/([^/]+)\/archives$/);
-					if (match && method === 'GET') {
-						return json(res, await getArchives(decodeURIComponent(match[1])));
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/archives\/([^/]+)$/);
 					if (match && method === 'DELETE') {
 						const name = decodeURIComponent(match[1]);
-						const filename = decodeURIComponent(match[2]);
-						await deleteArchiveMessage(name, filename);
+						const id = decodeURIComponent(match[2]);
+						await messagingAdapter.deleteArchivedMessage(name, id);
 						return json(res, { ok: true });
 					}
 
@@ -350,22 +633,39 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						}
 					}
 
-				match = path.match(/^\/api\/members\/([^/]+)\/state$/);
-				if (match && method === 'PUT') {
-					const name = decodeURIComponent(match[1]);
-					const { state } = JSON.parse(await readBody(req));
-					await writeFile(join(teamDir, 'members', name, 'state.md'), state, 'utf-8');
-					return json(res, { ok: true });
-				}
-
-				match = path.match(/^\/api\/members\/([^/]+)\/schedule$/);
-				if (match) {
+					match = path.match(/^\/api\/members\/([^/]+)\/state$/);
+					if (match && method === 'PUT') {
 						const name = decodeURIComponent(match[1]);
-						const schedulePath = join(teamDir, 'members', name, 'schedule.json');
-						if (method === 'GET') return json(res, await readJson(schedulePath, { events: [] }));
-						if (method === 'PUT') {
-							const data = JSON.parse(await readBody(req));
-							await writeFile(schedulePath, JSON.stringify(data, null, '\t'), 'utf-8');
+						const { state } = JSON.parse(await readBody(req));
+						await writeFile(join(teamDir, 'members', name, 'state.md'), state, 'utf-8');
+						return json(res, { ok: true });
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/schedule$/);
+					if (match) {
+						const name = decodeURIComponent(match[1]);
+						if (method === 'GET') {
+							const events = await scheduleAdapter.listEvents(name);
+							return json(res, { events });
+						}
+						if (method === 'POST') {
+							const input = JSON.parse(await readBody(req));
+							const { id } = await scheduleAdapter.addEvent(name, input);
+							return json(res, { id }, 201);
+						}
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/schedule\/([^/]+)$/);
+					if (match) {
+						const name = decodeURIComponent(match[1]);
+						const id = decodeURIComponent(match[2]);
+						if (method === 'PATCH') {
+							const patch = JSON.parse(await readBody(req));
+							await scheduleAdapter.updateEvent(name, id, patch);
+							return json(res, { ok: true });
+						}
+						if (method === 'DELETE') {
+							await scheduleAdapter.removeEvent(name, id);
 							return json(res, { ok: true });
 						}
 					}

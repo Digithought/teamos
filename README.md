@@ -2,7 +2,7 @@
 
 TeamOS is a virtual workplace system that orchestrates AI and human team members through structured work cycles. Each AI member gets a small *cycle* at a time to perform a unit of work, respond to messages, advance projects, and collaborate with other members.
 
-TeamOS lives as its own repository and integrates into any project, giving every repo the same team orchestration without duplicating code. It can run locally against a git repo or be deployed to the cloud (Fly.io) with S3 storage and Discord messaging.
+TeamOS lives as its own repository and integrates into any project, giving every repo the same team orchestration without duplicating code. It can run locally against a git repo or be deployed to the cloud (Fly.io) with S3 storage.
 
 ## How It Works
 
@@ -11,7 +11,8 @@ Team members are defined in a `team/` workspace directory within the host projec
 The runner provides full context — organization docs, news, projects, and the member's own files — then syncs after each member completes. A clerk agent runs after each pass for cleanup (archiving old news, removing stale schedule items, etc.).
 
 **Adapters** make the system pluggable:
-- **Messaging** — File-based inbox (default) or Discord bot
+- **Messaging** — File-backed master store exposed to agents over MCP (see `teamos/docs/messages.md`). The contract is designed so a future SMTP/IMAP adapter could drop in without changing the agent contract.
+- **Tasks** — File-backed per-member todo list exposed to agents over MCP (see `teamos/docs/tasks.md`). A future GitHub Issues / Linear / Jira adapter can drop in against the same tool surface.
 - **Sync** — Git commit/push (default) or S3-compatible storage (Tigris, MinIO)
 - **Agent** — Claude Code CLI (default, works headless), Cursor, or Augment (local only)
 
@@ -32,7 +33,7 @@ teamos/
 │       ├── scheduler.mjs        # Vruntime fair scheduler, weights, cadences
 │       ├── state.mjs            # Scheduler state persistence (load/save/idle)
 │       ├── config.mjs           # Config file loader + env var resolver
-│       ├── work-detection.mjs   # Member loading, work scanning, recurring events
+│       ├── work-detection.mjs   # Member loading, work scanning, system-event injection
 │       ├── cycle.mjs            # Cycle/pass execution, prompt building
 │       ├── maintenance.mjs      # Housekeeping, clerk invocation, efficiency
 │       ├── agents/
@@ -42,8 +43,14 @@ teamos/
 │       │   └── auggie.mjs       # Augment adapter
 │       ├── messaging/
 │       │   ├── index.mjs        # Interface + factory
-│       │   ├── file.mjs         # File-based inbox (default)
-│       │   └── discord.mjs      # Discord bot adapter
+│       │   ├── file.mjs         # File-backed master store + mailbox json
+│       │   └── mcp-server.mjs   # Stdio MCP server exposing messaging + task + schedule tools
+│       ├── tasks/
+│       │   ├── index.mjs        # Interface + factory
+│       │   └── file.mjs         # File-backed todo.json adapter
+│       ├── schedule/
+│       │   ├── index.mjs        # Interface + factory
+│       │   └── file.mjs         # File-backed schedule.json adapter + recurrence advancement
 │       └── sync/
 │           ├── index.mjs        # Interface + factory
 │           ├── git.mjs          # Git add/commit/push (default)
@@ -72,19 +79,24 @@ team/
 ├── members.json         # Member manifest
 ├── projects.json        # Goals and projects
 ├── memos.json           # Timely information for all members
+├── messages/            # Master store — one file per message
+│   └── <id>.md
 ├── members/
 │   └── [memberName]/
-│       ├── profile.md   # Member description
-│       ├── state.md     # Current state of work
-│       ├── todo.json    # Task list
+│       ├── profile.md       # Member description
+│       ├── state.md         # Current state of work
+│       ├── todo.json        # Task list
 │       ├── schedule.json
-│       ├── inbox/       # Messages from other members
-│       └── archives/
+│       ├── inbox.json       # { items: [<messageId>, ...] } — current mail
+│       ├── sent.json        # { items: [...] } — what this member has sent
+│       └── archives.json    # { items: [...] } — handled / archived mail
 ├── data/                # Shared data artifacts
 ├── docs/                # Shared documentation
-├── archives/            # Archived org-level items
+├── archives/            # Archived org-level items (memos, projects)
 └── .logs/               # Agent execution logs (git-ignored)
 ```
+
+Messages live in a single master store (`team/messages/`). Per-member mailboxes are just lists of message ids — content is never duplicated. See `teamos/docs/messages.md` for the full protocol.
 
 ## Quick Start
 
@@ -110,8 +122,10 @@ This creates the `team/` workspace with directories, empty manifests, and agent-
 Create a member directory with a profile:
 
 ```bash
-mkdir -p team/members/alice/inbox
+mkdir -p team/members/alice
 ```
+
+The member's `inbox.json`/`sent.json`/`archives.json` are created on demand the first time a message lands for or from them — there's no scaffolding step.
 
 `team/members/alice/profile.md`:
 ```markdown
@@ -174,9 +188,6 @@ node teamos/scripts/run.mjs --agent cursor
 # Use S3 sync instead of git
 node teamos/scripts/run.mjs --sync s3
 
-# Use Discord messaging instead of file inbox
-node teamos/scripts/run.mjs --messaging discord
-
 # Don't auto-commit
 node teamos/scripts/run.mjs --no-commit
 ```
@@ -186,7 +197,9 @@ node teamos/scripts/run.mjs --no-commit
 | Option | Default | Description |
 |---|---|---|
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
-| `--messaging <name>` | `file` | Messaging adapter: `file` or `discord` |
+| `--messaging <name>` | `file` | Messaging adapter: `file` |
+| `--tasks <name>` | `file` | Tasks adapter: `file` |
+| `--schedule <name>` | `file` | Schedule adapter: `file` |
 | `--sync <name>` | `git` | Sync adapter: `git` or `s3` |
 | `--priority <level>` | `pressing` | Highest priority to include |
 | `--member <name>` | — | Only run cycles for a specific member |
@@ -271,9 +284,22 @@ The runner automatically ensures every active AI member has a recurring **Daily 
 
 When the event fires, the member follows the rules in `teamos/agent-rules/daily-checkin.md`. Check-ins are intentionally lightweight — if there's nothing to do, the member just goes back to sleep.
 
+Automatic injection is on by default. Disable it by setting `schedule.autoEvents.dailyCheckin` to `false` in `teamos.config.json`:
+
+```json
+{
+  "schedule": {
+    "adapter": "file",
+    "autoEvents": { "dailyCheckin": false }
+  }
+}
+```
+
 ### Weekly Self-Assessment
 
 The runner automatically ensures every active AI member has a recurring **Weekly Self-Assessment** schedule event (Fridays at 18:00 UTC). On startup, if a member's `schedule.json` lacks this event, the runner injects it.
+
+Automatic injection is on by default. Disable it by setting `schedule.autoEvents.weeklySelfAssessment` to `false` in `teamos.config.json`.
 
 When the event fires, the member follows the rules in `teamos/agent-rules/self-assessment.md` to produce a reflective evaluation covering:
 
@@ -285,7 +311,7 @@ When the event fires, the member follows the rules in `teamos/agent-rules/self-a
 - **Communication quality** — clear, actionable, appropriately targeted
 - **Project impact** — meaningful progress toward team goals
 
-Assessments are saved to `team/members/<name>/archives/self-assessments/assessment-YYYY-MM-DD.md`. After completing the assessment, the member bumps the event's `time` forward by one week to maintain the recurrence.
+Assessments are saved to `team/members/<name>/archives/self-assessments/assessment-YYYY-MM-DD.md`. The runner advances the recurring event's `time` automatically after a successful cycle — the member never bumps it manually. See `teamos/docs/schedule.md` for the full schedule protocol.
 
 ## Priority Levels
 
@@ -303,42 +329,55 @@ The runner uses a weighted fair scheduler to allocate cycles across priorities. 
 ## Work Detection
 
 A member is given a cycle when any of these are true:
-- They have **inbox messages** (markdown files in their `inbox/` directory)
-- They have **todo items** at or above the current priority level
+- Their `inbox.json` has at least one id (O(1) — the runner reads the json directly)
+- They have **todo items** at or above the current priority level (checked via the tasks adapter's `hasActionableTodos` contract)
 - They have **schedule events** that are due
 
 ## Cycle Behavior
 
 During a cycle, the agent:
-1. Reviews organization context (org, news, projects)
-2. Processes inbox messages (reads and deletes them)
+1. Reviews organization context (org, memos, projects)
+2. Processes inbox messages — reads them via MCP and calls `archive_message` for each one it has fully handled. Anything left in the inbox carries to the next cycle.
 3. Performs one unit of work at the current priority
 4. Updates state.md with what was accomplished
-5. Maintains todos (completes items, adds new ones)
+5. Maintains todos through MCP tools — `complete_todo` / `update_todo` / `add_todo`. The cycle prompt already lists the member's open todos, so `list_todos` is only needed after several mutations.
 
 A unit of work can include:
 - Maintaining TODOs or schedule
 - Advancing a project by a modest increment
 - Building a tool (JS/TS library) for self or team
-- Sending messages to other members' inboxes
+- Sending messages to other members via `send_message`
 - Outputting artifacts to `team/data/` or `team/docs/`
 
 ## Member Communication
 
-Members communicate through the messaging adapter. With the default file adapter, messages are markdown files in each other's `inbox/` directories:
+Messages behave like email — `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer that forms a thread. Every message is stored once in `team/messages/<id>.md` with YAML frontmatter; per-member mailboxes (`inbox.json`, `sent.json`, `archives.json`) are lists of message ids.
+
+Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly:
+
+| Tool | Purpose |
+|---|---|
+| `send_message` | Send to one or more members. `subject` required on new threads; replies may omit it and the adapter derives `Re: <parent>`. |
+| `read_message` | Fetch any message by id. The immediate parent is inlined as `parent` (one hop); walk further back via `parent.replyTo`. |
+| `list_inbox` / `list_sent` / `list_archives` | Summaries (newest first) of the member's mailboxes. |
+| `archive_message` / `unarchive_message` | Move a message between inbox and archives. |
+
+Example stored message (`team/messages/2026-04-13T10-30-45.123Z-a3f2.md`):
 
 ```markdown
 ---
+id: 2026-04-13T10-30-45.123Z-a3f2
 from: alice
-sentAt: 2026-03-13T10:00:00Z
-requestResponse: true
+to: [bob, carol]
+cc: [dave]
+subject: Auth module review
+sentAt: 2026-04-13T10:30:45.123Z
 projectCode: AUTH
 ---
-
 The auth module is ready for review.
 ```
 
-With the Discord adapter, messages are posted to channels or DMs instead. The message format and semantics are the same regardless of backend.
+See `teamos/docs/messages.md` for the full protocol — id format, retention policy, and the mapping to a future SMTP/IMAP backend.
 
 ## Acting as a Team Member (Interactive Mode)
 
@@ -352,9 +391,9 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 6. **Team roster** — `team/members.json`
 7. **Your profile** — `team/members/<you>/profile.md`
 8. **Your state** — `team/members/<you>/state.md`
-9. **Your TODOs** — `team/members/<you>/todo.json`
+9. **Your TODOs** — `team/members/<you>/todo.json` (read-only; mutate via the task MCP tools — see `teamos/docs/tasks.md`)
 10. **Your schedule** — `team/members/<you>/schedule.json`
-11. **Your inbox** — all `.md` files in `team/members/<you>/inbox/`
+11. **Your inbox** — ids listed in `team/members/<you>/inbox.json`, with bodies in `team/messages/<id>.md`
 
 The runner also passes a header with the current priority level and timestamp. When working interactively, default to priority `pressing` and follow the priority levels as described above.
 
@@ -368,10 +407,27 @@ TeamOS uses a pluggable adapter architecture. Agents always work on a local file
 
 | Adapter | Flag | Description |
 |---|---|---|
-| `file` | `--messaging file` | File-based inbox (default). Messages are markdown files in `inbox/` directories. |
-| `discord` | `--messaging discord` | Discord bot. Messages are posted to channels/DMs. |
+| `file` | `--messaging file` | File-backed master store at `team/messages/<id>.md` with per-member `inbox.json`/`sent.json`/`archives.json` id lists. Exposed to agents via an MCP server (default, and currently the only adapter). |
 
-All adapters expose the same interface: `hasMessages()`, `getMessages()`, `sendMessage()`, `acknowledgeMessage()`, `listConversations()`.
+All adapters implement the stable MCP contract documented in `teamos/docs/messages.md`: `send_message`, `read_message`, `list_inbox`, `list_sent`, `list_archives`, `archive_message`, `unarchive_message`. A future SMTP/IMAP adapter can drop in without changing the agent contract.
+
+### Tasks Adapters
+
+| Adapter | Flag | Description |
+|---|---|---|
+| `file` | `--tasks file` | Per-member open todo list at `team/members/<name>/todo.json`. Only holds incomplete items — completion removes the item. Exposed through the same MCP server as messaging. |
+
+All adapters implement the stable MCP contract documented in `teamos/docs/tasks.md`: `list_todos`, `add_todo`, `update_todo`, `complete_todo`. A future GitHub Issues / Linear / Jira adapter can drop in without changing the agent contract — agents treat ids as opaque strings.
+
+### Schedule Adapters
+
+| Adapter | Flag | Description |
+|---|---|---|
+| `file` | `--schedule file` | Per-member events at `team/members/<name>/schedule.json`. Opaque ids, recurrence descriptors, and automatic advancement of recurring events / cleanup of fired one-time events on each successful cycle. Exposed through the same MCP server as messaging and tasks. |
+
+All adapters implement the stable MCP contract documented in `teamos/docs/schedule.md`: `list_events`, `add_event`, `update_event`, `remove_event`. The runner owns recurrence advancement (`acknowledgeDue`); agents never bump `time` by hand. A future Google Calendar / CalDAV adapter can drop in without changing the agent contract — agents treat ids as opaque strings and never own recurrence logic.
+
+Legacy `schedule.json` files (missing ids, using the old `recurring: true` flag alongside `recurrence`) are migrated on read — the adapter allocates ids and strips the redundant flag, then persists the canonical form.
 
 ### Sync Adapters
 
@@ -399,25 +455,10 @@ Adapters can be configured via `teamos.config.json` at the project root, with CL
 ```json
 {
   "messaging": { "adapter": "file" },
+  "tasks": { "adapter": "file" },
+  "schedule": { "adapter": "file" },
   "sync": { "adapter": "git" },
   "agent": "claude"
-}
-```
-
-For Discord messaging:
-```json
-{
-  "messaging": {
-    "adapter": "discord",
-    "discord": {
-      "botToken": "$DISCORD_BOT_TOKEN",
-      "guildId": "...",
-      "memberMap": {
-        "alice": "discord-user-id",
-        "bob": "discord-user-id"
-      }
-    }
-  }
 }
 ```
 
@@ -441,7 +482,7 @@ Values prefixed with `$` are resolved from environment variables. Secrets should
 
 ## Cloud Deployment
 
-TeamOS can run as a container on Fly.io (or any container host) with S3 storage and Discord messaging.
+TeamOS can run as a container on Fly.io (or any container host) with S3 storage.
 
 ### Quick deploy to Fly.io
 
@@ -451,7 +492,7 @@ fly apps create teamos-runner
 fly volumes create team_workspace --size 1
 
 # Set secrets
-fly secrets set ANTHROPIC_API_KEY=sk-... DISCORD_BOT_TOKEN=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+fly secrets set ANTHROPIC_API_KEY=sk-... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 
 # Deploy
 fly deploy
@@ -510,8 +551,8 @@ node teamos/scripts/run.mjs
 │             │          │          │               │
 └─────────────┼──────────┼──────────┼───────────────┘
               │          │          │
-         Discord /    Claude /   Tigris /
-         Files        Cursor     Git
+         Files /      Claude /   Tigris /
+         MCP          Cursor     Git
 ```
 
 Agents always see a local filesystem. The sync adapter handles durability *around* the cycle — pull before, push after — so the agent never knows it's running in a container.
@@ -554,6 +595,8 @@ The dashboard auto-discovers the `team/` directory by resolving `../../` from th
 ```bash
 TEAMOS_PROJECT_ROOT=/path/to/project npm run dev
 ```
+
+The dashboard reads `teamos.config.json` at startup and instantiates the configured messaging adapter, so inbox views, compose, reply, archive, and delete all flow through the same adapter the runner uses. Archive moves a message id from `inbox.json` to `archives.json` — the master store at `team/messages/<id>.md` holds the single copy of the body.
 
 If a `tickets/` directory exists at the project root (e.g. from a ticket management system like tess), the dashboard displays a ticket pipeline summary. This feature is optional and hidden when no tickets directory is found.
 

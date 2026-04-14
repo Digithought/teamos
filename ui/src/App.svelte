@@ -6,11 +6,13 @@
 	import MemberDetail from './components/MemberDetail.svelte';
 	import ComposeMessage from './components/ComposeMessage.svelte';
 	import IdentityPicker from './components/IdentityPicker.svelte';
+	import OrgEditor from './components/OrgEditor.svelte';
 
 	let sibling: SiblingInfo | null = $state(null);
 
 	const memberMatch = $derived(router.match('/member/:name'));
 	const isCompose = $derived(router.path === '/compose');
+	const isOrg = $derived(router.path === '/org');
 
 	$effect(() => {
 		api.sibling().then(s => sibling = s).catch(() => {});
@@ -23,6 +25,7 @@
 	<a class="nav-brand" href="#/">TeamOS</a>
 	<div class="nav-links">
 		<a class="nav-link" class:active={router.path === '/'} href="#/">Dashboard</a>
+		<a class="nav-link" class:active={isOrg} href="#/org">Org</a>
 		<a class="nav-link" class:active={isCompose} href="#/compose">Compose</a>
 	</div>
 	{#if sibling}
@@ -37,6 +40,8 @@
 		<MemberDetail name={memberMatch.name} />
 	{:else if isCompose}
 		<ComposeMessage />
+	{:else if isOrg}
+		<OrgEditor />
 	{:else}
 		<Dashboard />
 	{/if}

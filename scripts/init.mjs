@@ -51,7 +51,7 @@ const DEFAULT_ORG = `# Organization
 ## Policies
 
 ### Communication
-- Members communicate via inbox messages
+- Members communicate via the messaging MCP tools (send_message, read_message, archive_message, ...)
 - Urgent matters use priority: pressing
 - Respond to messages within their priority timeframe
 

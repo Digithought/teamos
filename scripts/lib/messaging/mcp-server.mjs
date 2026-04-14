@@ -1,141 +1,350 @@
 #!/usr/bin/env node
 /**
- * Minimal MCP server for TeamOS messaging tools.
+ * MCP server for TeamOS agent tools.
  *
- * Implements the Model Context Protocol over stdio (JSON-RPC 2.0)
- * so that agents (Claude CLI) can send/read messages through the
- * active messaging adapter.
+ * Implements the Model Context Protocol over stdio (JSON-RPC 2.0) so that
+ * agents (Claude CLI) can send/read messages, manage their todo list, and
+ * maintain their schedule through the file-backed adapters. The messaging
+ * tool contract matches teamos/docs/messages.md; the task tool contract
+ * matches teamos/docs/tasks.md; the schedule tool contract matches
+ * teamos/docs/schedule.md.
  *
  * Environment variables:
- *   TEAMOS_TEAM_DIR       — path to the team/ directory
- *   TEAMOS_MEMBER_NAME    — the member this cycle is running for
- *   TEAMOS_MESSAGING_ADAPTER — 'file' or 'discord'
- *   TEAMOS_DISCORD_CONFIG — JSON string of discord config (if adapter=discord)
+ *   TEAMOS_TEAM_DIR          — path to the team/ directory
+ *   TEAMOS_MEMBER_NAME       — the member this cycle is running for
+ *   TEAMOS_MESSAGING_ADAPTER — messaging adapter name (default: file)
+ *   TEAMOS_TASKS_ADAPTER     — tasks adapter name     (default: file)
+ *   TEAMOS_SCHEDULE_ADAPTER  — schedule adapter name  (default: file)
  */
 
 import { createInterface } from 'node:readline';
 import { FileMessagingAdapter } from './file.mjs';
+import { FileTasksAdapter } from '../tasks/file.mjs';
+import { FileScheduleAdapter } from '../schedule/file.mjs';
 
-// ─── Resolve adapter from env ──────────────────────────────────────────────────
+// ─── Resolve adapters from env ─────────────────────────────────────────────────
 
 const teamDir = process.env.TEAMOS_TEAM_DIR;
 const memberName = process.env.TEAMOS_MEMBER_NAME;
-const adapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
 
 if (!teamDir || !memberName) {
 	process.stderr.write('[mcp-server] Missing TEAMOS_TEAM_DIR or TEAMOS_MEMBER_NAME\n');
 	process.exit(1);
 }
 
-let adapter;
-if (adapterName === 'file') {
-	adapter = new FileMessagingAdapter(teamDir);
-} else if (adapterName === 'discord') {
-	const configStr = process.env.TEAMOS_DISCORD_CONFIG;
-	if (configStr) {
-		const { DiscordMessagingAdapter } = await import('./discord.mjs');
-		adapter = new DiscordMessagingAdapter(JSON.parse(configStr));
-	} else {
-		process.stderr.write('[mcp-server] Discord adapter requires TEAMOS_DISCORD_CONFIG\n');
-		process.exit(1);
+const messagingAdapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
+const tasksAdapterName = process.env.TEAMOS_TASKS_ADAPTER || 'file';
+const scheduleAdapterName = process.env.TEAMOS_SCHEDULE_ADAPTER || 'file';
+
+function makeMessagingAdapter(name) {
+	switch (name) {
+		case 'file': return new FileMessagingAdapter(teamDir);
+		default:
+			process.stderr.write(`[mcp-server] Unknown messaging adapter: ${name}\n`);
+			process.exit(1);
 	}
-} else {
-	process.stderr.write(`[mcp-server] Unknown adapter: ${adapterName}\n`);
-	process.exit(1);
 }
+
+function makeTasksAdapter(name) {
+	switch (name) {
+		case 'file': return new FileTasksAdapter(teamDir);
+		default:
+			process.stderr.write(`[mcp-server] Unknown tasks adapter: ${name}\n`);
+			process.exit(1);
+	}
+}
+
+function makeScheduleAdapter(name) {
+	switch (name) {
+		case 'file': return new FileScheduleAdapter(teamDir);
+		default:
+			process.stderr.write(`[mcp-server] Unknown schedule adapter: ${name}\n`);
+			process.exit(1);
+	}
+}
+
+const adapter = makeMessagingAdapter(messagingAdapterName);
+const tasks = makeTasksAdapter(tasksAdapterName);
+const schedule = makeScheduleAdapter(scheduleAdapterName);
 
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
 const TOOLS = [
 	{
 		name: 'send_message',
-		description: 'Send a message to one or more team members. The message will be delivered to their inbox.',
+		description: 'Send a message to one or more team members. Behaves like email: a message can target multiple parties, carry a subject, and reference a preceding message to form a thread. Delivered to each recipient\'s inbox.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				recipients: { type: 'array', items: { type: 'string' }, description: 'List of recipient member names' },
+				to: { type: 'array', items: { type: 'string' }, description: 'Primary recipient member names' },
+				subject: { type: 'string', description: 'Thread subject (required on new threads; auto-derived as "Re: <parent>" for replies if omitted)' },
 				body: { type: 'string', description: 'Message body (markdown)' },
-				projectCode: { type: 'string', description: 'Optional project code to associate with the message' },
-				conversationId: { type: 'string', description: 'Optional conversation/thread ID for grouping' },
-				replyTo: { type: 'string', description: 'Optional message ID being replied to' },
+				cc: { type: 'array', items: { type: 'string' }, description: 'Optional cc\'d member names' },
+				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
+				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
 			},
-			required: ['recipients', 'body'],
+			required: ['to', 'body'],
 		},
 	},
 	{
-		name: 'read_messages',
-		description: 'Read all pending messages in your inbox. Returns an array of messages with metadata.',
-		inputSchema: {
-			type: 'object',
-			properties: {},
-		},
-	},
-	{
-		name: 'acknowledge_message',
-		description: 'Mark a message as processed and remove it from your inbox. Call this after you have handled a message.',
+		name: 'read_message',
+		description: 'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				messageId: { type: 'string', description: 'The message ID (filename) to acknowledge' },
+				id: { type: 'string', description: 'The message id' },
 			},
-			required: ['messageId'],
+			required: ['id'],
 		},
 	},
 	{
-		name: 'list_conversations',
-		description: 'List active conversations you are part of, grouped by conversation ID.',
+		name: 'list_inbox',
+		description: 'List summaries for every message in your inbox (newest first).',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'list_sent',
+		description: 'List summaries for every message you have sent (newest first).',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'list_archives',
+		description: 'List summaries for every message you have archived (newest first).',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'archive_message',
+		description: 'Move a message from your inbox to your archives. Call this after you have fully handled a message. No-op if already archived; errors if the id is not in your inbox.',
 		inputSchema: {
 			type: 'object',
-			properties: {},
+			properties: {
+				id: { type: 'string', description: 'The message id to archive' },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'unarchive_message',
+		description: 'Inverse of archive_message — move a message from your archives back to your inbox.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The message id to unarchive' },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'list_todos',
+		description: 'List every open todo on your list, priority order (pressing → later). Blocked items appear after actionable ones within each priority. The cycle prompt already includes your todos — call this when you want a fresh view after several mutations.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'add_todo',
+		description: 'Add a new todo to your list. Returns the allocated id. Pick the priority that matches how the runner should cycle you for this item: pressing / today / thisWeek / later. Mislabelling wastes your cycles.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				title: { type: 'string', description: 'One-line summary' },
+				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'], description: 'Scheduling priority' },
+				description: { type: 'string', description: 'Longer body — rationale, acceptance criteria, links' },
+				notes: { type: 'string', description: 'Free-form context, blockers, or progress' },
+				projectCode: { type: 'string', description: 'Optional project tag' },
+				status: { type: 'string', enum: ['blocked'], description: 'Rare — usually added unblocked and blocked later' },
+			},
+			required: ['title', 'priority'],
+		},
+	},
+	{
+		name: 'update_todo',
+		description: 'Partial update of a todo. Only supplied fields change. Use this to demote a priority, record progress in notes, or block/unblock an item. Pass status: "blocked" to mark blocked, status: null to clear it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The todo id' },
+				title: { type: 'string' },
+				description: { type: 'string' },
+				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'] },
+				notes: { type: 'string' },
+				projectCode: { type: 'string' },
+				status: { type: ['string', 'null'], enum: ['blocked', null], description: 'Set to "blocked" or null to clear' },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'complete_todo',
+		description: 'Remove a todo from your list — there is no "done" state. History belongs in state.md or commit messages. Errors if the id is not on your list.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The todo id to complete' },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'list_events',
+		description: 'List every event on your schedule (sorted by time ascending). Each entry includes an `isDue` flag so you can see at a glance what is firing this cycle. The cycle prompt already includes your due and upcoming events — call this when you want a fresh view after several mutations.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'add_event',
+		description: 'Add a new event to your schedule. For recurring events, `time` is the first occurrence — the runner handles advancement automatically; never bump `time` yourself. Returns the allocated id.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				title: { type: 'string', description: 'One-line summary' },
+				time: { type: 'string', description: 'ISO-8601 timestamp of the first occurrence' },
+				description: { type: 'string', description: 'Longer body — what to do when this fires, links to rules, etc.' },
+				recurrence: {
+					type: 'object',
+					description: 'Optional recurrence descriptor. Absent means one-time.',
+					properties: {
+						frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+						interval: { type: 'integer', minimum: 1, description: 'Every N days/weeks/months' },
+						endDate: { type: 'string', description: 'Optional ISO-8601 cutoff; the event is removed after this point' },
+					},
+					required: ['frequency', 'interval'],
+				},
+				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
+			},
+			required: ['title', 'time'],
+		},
+	},
+	{
+		name: 'update_event',
+		description: 'Partial update of an event. Only supplied fields change. Setting `recurrence` to null converts a recurring event into a one-time event at its current `time`. Passing a new `time` resets the next occurrence; for recurring events the adapter continues to advance from the new anchor.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The event id' },
+				title: { type: 'string' },
+				description: { type: 'string' },
+				time: { type: 'string', description: 'ISO-8601 timestamp' },
+				recurrence: {
+					description: 'Recurrence descriptor, or null to clear.',
+					oneOf: [
+						{ type: 'null' },
+						{
+							type: 'object',
+							properties: {
+								frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+								interval: { type: 'integer', minimum: 1 },
+								endDate: { type: 'string' },
+							},
+							required: ['frequency', 'interval'],
+						},
+					],
+				},
+				projectCode: { type: 'string' },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'remove_event',
+		description: 'Delete an event entirely, including cancelling all future occurrences of a recurring event. Use this only for cancellations or truly unneeded events — for one-time events that have fired, the runner removes them automatically.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The event id to remove' },
+			},
+			required: ['id'],
 		},
 	},
 ];
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────────
 
+function textResult(payload) {
+	const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+	return { content: [{ type: 'text', text }] };
+}
+
 async function handleToolCall(name, args) {
 	switch (name) {
 		case 'send_message': {
-			const { recipients, body, projectCode, conversationId, replyTo } = args;
-			await adapter.sendMessage(recipients, {
+			const { to, subject, body, cc, replyTo, projectCode } = args;
+			const { id, sentAt } = await adapter.sendMessage({
 				from: memberName,
-				sentAt: new Date().toISOString(),
+				to,
+				cc,
+				subject,
 				body,
-				projectCode,
-				conversationId,
 				replyTo,
+				projectCode,
 			});
-			return { content: [{ type: 'text', text: `Message sent to: ${recipients.join(', ')}` }] };
+			return textResult({ id, sentAt, to, cc: cc ?? [] });
 		}
 
-		case 'read_messages': {
-			const messages = await adapter.getMessages(memberName);
-			if (messages.length === 0) {
-				return { content: [{ type: 'text', text: 'No pending messages.' }] };
-			}
-			const formatted = messages.map(m => ({
-				id: m.id || m._file,
-				from: m.from,
-				sentAt: m.sentAt,
-				projectCode: m.projectCode,
-				conversationId: m.conversationId,
-				body: m.body,
-			}));
-			return { content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }] };
+		case 'read_message': {
+			const { id } = args;
+			const msg = await adapter.readMessage(id, { inlineParent: true });
+			return textResult(msg);
 		}
 
-		case 'acknowledge_message': {
-			const { messageId } = args;
-			await adapter.acknowledgeMessage(memberName, messageId);
-			return { content: [{ type: 'text', text: `Message ${messageId} acknowledged.` }] };
+		case 'list_inbox':
+			return textResult(await adapter.listInbox(memberName));
+
+		case 'list_sent':
+			return textResult(await adapter.listSent(memberName));
+
+		case 'list_archives':
+			return textResult(await adapter.listArchives(memberName));
+
+		case 'archive_message': {
+			const { id } = args;
+			await adapter.archiveMessage(memberName, id);
+			return textResult(`Archived ${id}`);
 		}
 
-		case 'list_conversations': {
-			const conversations = await adapter.listConversations(memberName);
-			if (conversations.length === 0) {
-				return { content: [{ type: 'text', text: 'No active conversations.' }] };
-			}
-			return { content: [{ type: 'text', text: JSON.stringify(conversations, null, 2) }] };
+		case 'unarchive_message': {
+			const { id } = args;
+			await adapter.unarchiveMessage(memberName, id);
+			return textResult(`Unarchived ${id}`);
+		}
+
+		case 'list_todos':
+			return textResult(await tasks.listTodos(memberName));
+
+		case 'add_todo': {
+			const { title, priority, description, notes, projectCode, status } = args;
+			const { id } = await tasks.addTodo(memberName, { title, priority, description, notes, projectCode, status });
+			return textResult({ id });
+		}
+
+		case 'update_todo': {
+			const { id, ...patch } = args;
+			await tasks.updateTodo(memberName, id, patch);
+			return textResult(`Updated ${id}`);
+		}
+
+		case 'complete_todo': {
+			const { id } = args;
+			await tasks.completeTodo(memberName, id);
+			return textResult(`Completed ${id}`);
+		}
+
+		case 'list_events':
+			return textResult(await schedule.listEvents(memberName));
+
+		case 'add_event': {
+			const { title, time, description, recurrence, projectCode } = args;
+			const { id } = await schedule.addEvent(memberName, { title, time, description, recurrence, projectCode });
+			return textResult({ id });
+		}
+
+		case 'update_event': {
+			const { id, ...patch } = args;
+			await schedule.updateEvent(memberName, id, patch);
+			return textResult(`Updated ${id}`);
+		}
+
+		case 'remove_event': {
+			const { id } = args;
+			await schedule.removeEvent(memberName, id);
+			return textResult(`Removed ${id}`);
 		}
 
 		default:
@@ -146,18 +355,11 @@ async function handleToolCall(name, args) {
 // ─── JSON-RPC / MCP protocol ──────────────────────────────────────────────────
 
 function sendResponse(id, result) {
-	const msg = JSON.stringify({ jsonrpc: '2.0', id, result });
-	process.stdout.write(msg + '\n');
+	process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 }
 
 function sendError(id, code, message) {
-	const msg = JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
-	process.stdout.write(msg + '\n');
-}
-
-function sendNotification(method, params) {
-	const msg = JSON.stringify({ jsonrpc: '2.0', method, params });
-	process.stdout.write(msg + '\n');
+	process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
 }
 
 async function handleMessage(message) {
@@ -167,18 +369,12 @@ async function handleMessage(message) {
 		case 'initialize':
 			sendResponse(id, {
 				protocolVersion: '2024-11-05',
-				capabilities: {
-					tools: {},
-				},
-				serverInfo: {
-					name: 'teamos-messaging',
-					version: '1.0.0',
-				},
+				capabilities: { tools: {} },
+				serverInfo: { name: 'teamos-tools', version: '2.1.0' },
 			});
 			break;
 
 		case 'notifications/initialized':
-			// Client acknowledged initialization — nothing to do
 			break;
 
 		case 'tools/list':
@@ -208,10 +404,7 @@ async function handleMessage(message) {
 			break;
 
 		default:
-			if (id != null) {
-				sendError(id, -32601, `Method not found: ${method}`);
-			}
-			// Ignore unknown notifications (no id)
+			if (id != null) sendError(id, -32601, `Method not found: ${method}`);
 			break;
 	}
 }
@@ -235,4 +428,4 @@ rl.on('close', () => {
 	process.exit(0);
 });
 
-process.stderr.write(`[mcp-server] Started for member=${memberName} adapter=${adapterName}\n`);
+process.stderr.write(`[mcp-server] Started for member=${memberName}\n`);

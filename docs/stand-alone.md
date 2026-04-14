@@ -1,5 +1,7 @@
 # TeamOS Stand-alone: Cloud Deployment Plan
 
+> **Historical design doc.** This was the original plan for the stand-alone refactor. The shipped messaging architecture has since been replaced — see `teamos/docs/messages.md` for the current email-like protocol (Discord adapter dropped, MCP tool surface is `send_message` / `read_message` / `list_inbox` / `list_sent` / `list_archives` / `archive_message` / `unarchive_message`). The cloud / sync / runner-decomposition sections below still reflect what shipped.
+
 TeamOS currently runs as a local process tightly coupled to a git repo. This document plans the migration to a stand-alone, cloud-deployable architecture that can run on Fly.io (or locally for development) while keeping the file-based workspace model that agents depend on.
 
 ## Goals

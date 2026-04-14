@@ -12,4 +12,4 @@ COPY teamos/ ./teamos/
 # Working directory for the team workspace (Fly Volume mount point)
 RUN mkdir -p /workspace/team
 
-CMD ["node", "teamos/scripts/run.mjs", "--sync", "s3", "--messaging", "discord"]
+CMD ["node", "teamos/scripts/run.mjs", "--sync", "s3", "--messaging", "file"]

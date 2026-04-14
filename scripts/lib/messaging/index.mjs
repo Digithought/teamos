@@ -1,42 +1,39 @@
 /**
- * @typedef {Object} Message
+ * @typedef {Object} MessageSummary
+ * @property {string} id
  * @property {string} from
- * @property {string} sentAt      - ISO-8601
- * @property {boolean} [requestResponse]
+ * @property {string[]} to
+ * @property {string[]} [cc]
+ * @property {string} subject
+ * @property {string} sentAt
  * @property {string} [projectCode]
- * @property {string} [conversationId] - thread/group ID
- * @property {string} [replyTo]        - message being replied to
- * @property {string} body
+ * @property {boolean} hasParent
  */
 
 /**
  * @typedef {Object} MessagingAdapter
  * @property {(member: string) => Promise<boolean>} hasMessages
- * @property {(member: string) => Promise<Message[]>} getMessages
- * @property {(member: string, messageId: string) => Promise<void>} acknowledgeMessage
- * @property {(recipients: string[], message: Message) => Promise<void>} sendMessage
- * @property {(member: string) => Promise<Object[]>} listConversations
- * @property {() => Object[]} getMcpTools - MCP tool definitions for the agent
+ * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string }) => Promise<{ id: string, sentAt: string }>} sendMessage
+ * @property {(id: string, opts?: { inlineParent?: boolean }) => Promise<Object>} readMessage
+ * @property {(member: string) => Promise<MessageSummary[]>} listInbox
+ * @property {(member: string) => Promise<MessageSummary[]>} listSent
+ * @property {(member: string) => Promise<MessageSummary[]>} listArchives
+ * @property {(member: string, id: string) => Promise<void>} archiveMessage
+ * @property {(member: string, id: string) => Promise<void>} unarchiveMessage
  */
 
 import { FileMessagingAdapter } from './file.mjs';
 
 /**
  * Create a messaging adapter based on configuration.
- * @param {string} adapterName - 'file' or 'discord'
- * @param {Object} config - adapter-specific configuration
- * @param {string} teamDir - path to the team directory
- * @returns {Promise<MessagingAdapter>}
+ * Currently only the file adapter ships; see teamos/docs/messages.md for the
+ * protocol contract a future SMTP/IMAP adapter would implement.
  */
-export async function createMessagingAdapter(adapterName, config, teamDir) {
+export async function createMessagingAdapter(adapterName, _config, teamDir) {
 	switch (adapterName) {
 		case 'file':
 			return new FileMessagingAdapter(teamDir);
-		case 'discord': {
-			const { DiscordMessagingAdapter } = await import('./discord.mjs');
-			return new DiscordMessagingAdapter(config.discord);
-		}
 		default:
-			throw new Error(`Unknown messaging adapter: ${adapterName}. Available: file, discord`);
+			throw new Error(`Unknown messaging adapter: ${adapterName}. Available: file`);
 	}
 }

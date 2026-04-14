@@ -11,13 +11,32 @@ export interface MemberSummary {
 	eventCount: number;
 }
 
-export interface InboxMessage {
-	filename: string;
+export interface MessageSummary {
+	id: string;
 	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
 	sentAt: string;
-	requestResponse?: boolean;
+	projectCode?: string;
+	hasParent: boolean;
+}
+
+export interface Message {
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	replyTo?: string;
 	projectCode?: string;
 	body: string;
+	parent?: Message;
+}
+
+export interface MessagingInfo {
+	adapter: string;
 }
 
 export interface TodoItem {
@@ -30,9 +49,13 @@ export interface TodoItem {
 }
 
 export interface ScheduleEvent {
+	id: string;
+	title: string;
+	description?: string;
 	time: string;
-	title?: string;
-	[key: string]: unknown;
+	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
+	projectCode?: string;
+	isDue?: boolean;
 }
 
 export interface MemberDetail {

@@ -1,6 +1,8 @@
 # Daily Check-in
 
-Your daily check-in has fired. This is a lightweight cycle to ensure you stay current even when you have no explicit tasks, messages, or events queued.  
+Your daily check-in has fired. This is a lightweight cycle to ensure you stay current even when you have no explicit tasks, messages, or events queued.
+
+The runner has already queued the next occurrence of this event automatically — you do not need to call `update_event` to bump the `time` forward.
 
 ## What to Do
 

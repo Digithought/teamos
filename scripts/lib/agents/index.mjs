@@ -44,15 +44,16 @@ async function writeMcpConfig(cwd, mcpContext) {
 		...existing,
 		mcpServers: {
 			...(existing.mcpServers || {}),
-			'teamos-messaging': {
+			'teamos-tools': {
 				type: 'stdio',
 				command: 'node',
 				args: [MCP_SERVER_PATH],
 				env: {
 					TEAMOS_TEAM_DIR: mcpContext.teamDir,
 					TEAMOS_MEMBER_NAME: mcpContext.memberName,
-					TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapter || 'file',
-					...(mcpContext.discordConfig ? { TEAMOS_DISCORD_CONFIG: JSON.stringify(mcpContext.discordConfig) } : {}),
+					TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapterName || 'file',
+					TEAMOS_TASKS_ADAPTER: mcpContext.tasksAdapterName || 'file',
+					TEAMOS_SCHEDULE_ADAPTER: mcpContext.scheduleAdapterName || 'file',
 				},
 			},
 		},
@@ -73,6 +74,7 @@ async function cleanupMcpConfig(mcpState) {
 			// Restore original content (minus our injected server)
 			const restored = { ...mcpState.original };
 			if (restored.mcpServers) {
+				delete restored.mcpServers['teamos-tools'];
 				delete restored.mcpServers['teamos-messaging'];
 			}
 			await writeFile(mcpState.path, JSON.stringify(restored, null, '\t') + '\n', 'utf-8');
@@ -91,8 +93,6 @@ async function cleanupMcpConfig(mcpState) {
  * @param {Object} [mcpContext] - Optional MCP context for messaging tools
  * @param {string} [mcpContext.teamDir] - Path to team/ directory
  * @param {string} [mcpContext.memberName] - Member name for this cycle
- * @param {string} [mcpContext.messagingAdapter] - Adapter name (file|discord)
- * @param {Object} [mcpContext.discordConfig] - Discord config (if adapter=discord)
  */
 export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 	const adapter = agents[agentName];

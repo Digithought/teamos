@@ -2,7 +2,7 @@
 	import { api } from '../lib/api.js';
 	import { router } from '../lib/router.svelte.js';
 	import { identity } from '../lib/identity.svelte.js';
-	import type { MemberSummary, Project, InboxMessage } from '../lib/types.js';
+	import type { MemberSummary, Project, Message } from '../lib/types.js';
 
 	let members: MemberSummary[] = $state([]);
 	let projects: Project[] = $state([]);
@@ -10,14 +10,14 @@
 	let sending = $state(false);
 	let sent = $state(false);
 
-	let selected: Set<string> = $state(new Set());
+	let to: Set<string> = $state(new Set());
+	let cc: Set<string> = $state(new Set());
 	let from = $state(identity.name ?? '');
 	let subject = $state('');
 	let projectCode = $state('');
-	let requestResponse = $state(false);
 	let body = $state('');
 
-	let replyMessage: InboxMessage | null = $state(null);
+	let replyMessage: Message | null = $state(null);
 	let inboxOwner: string | null = $state(null);
 
 	const isReply = $derived(!!replyMessage);
@@ -32,17 +32,20 @@
 		members = m;
 		projects = p.projects ?? [];
 
-		const to = router.query.to;
-		if (to) selected = new Set(to.split(','));
-
 		const re = router.query.re;
 		const inbox = router.query.inbox;
-		if (re && inbox) {
-			inboxOwner = inbox;
+		if (re) {
+			inboxOwner = inbox ?? null;
 			try {
-				replyMessage = await api.inboxMessage(inbox, re);
+				replyMessage = await api.message(re);
 				if (replyMessage.projectCode) projectCode = replyMessage.projectCode;
-			} catch { /* original may have been archived */ }
+				to = new Set([replyMessage.from]);
+				// Subject auto-derives server-side, but show a preview to the user
+				if (!subject) {
+					const stripped = (replyMessage.subject ?? '').replace(/^(re:\s*)+/i, '').trim();
+					subject = stripped ? `Re: ${stripped}` : '';
+				}
+			} catch { /* original may have been deleted */ }
 		}
 
 		loading = false;
@@ -50,28 +53,32 @@
 
 	$effect(() => { load(); });
 
-	function toggleRecipient(name: string) {
-		const next = new Set(selected);
+	function toggle(set: Set<string>, name: string): Set<string> {
+		const next = new Set(set);
 		if (next.has(name)) next.delete(name);
 		else next.add(name);
-		selected = next;
+		return next;
 	}
 
+	function toggleTo(name: string) { to = toggle(to, name); }
+	function toggleCc(name: string) { cc = toggle(cc, name); }
+
 	function selectAllAI() {
-		selected = new Set(members.filter(m => m.type === 'ai').map(m => m.name));
+		to = new Set(members.filter(m => m.type === 'ai').map(m => m.name));
 	}
 
 	async function send() {
-		if (selected.size === 0 || !body.trim() || !from.trim()) return;
+		if (to.size === 0 || !body.trim() || !from.trim()) return;
 		sending = true;
-		const msg = {
+		await api.sendMessage({
 			from,
-			requestResponse,
-			projectCode: projectCode || undefined,
+			to: [...to],
+			cc: cc.size > 0 ? [...cc] : undefined,
 			subject: subject || undefined,
 			body: body.trim(),
-		};
-		await Promise.all([...selected].map(name => api.sendMessage(name, msg)));
+			replyTo: replyMessage?.id,
+			projectCode: projectCode || undefined,
+		});
 		sending = false;
 		if (isReply) {
 			router.navigate(backPath);
@@ -81,10 +88,10 @@
 	}
 
 	function reset() {
-		selected = new Set();
+		to = new Set();
+		cc = new Set();
 		subject = '';
 		projectCode = '';
-		requestResponse = false;
 		body = '';
 		sent = false;
 		replyMessage = null;
@@ -101,7 +108,7 @@
 	{#if sent}
 		<div class="sent-confirmation">
 			<div class="sent-icon">&#10003;</div>
-			<p>Message sent to {[...selected].join(', ')}</p>
+			<p>Message sent to {[...to].join(', ')}</p>
 			<div class="sent-actions">
 				<button class="btn btn-primary" onclick={reset}>Compose Another</button>
 				<button class="btn btn-ghost" onclick={() => router.navigate(backPath)}>
@@ -119,8 +126,8 @@
 				{#each members as member}
 					<button
 						class="recipient"
-						class:selected={selected.has(member.name)}
-						onclick={() => toggleRecipient(member.name)}
+						class:selected={to.has(member.name)}
+						onclick={() => toggleTo(member.name)}
 					>
 						{member.name}
 						{#if identity.name === member.name}
@@ -132,14 +139,33 @@
 			</div>
 		</div>
 
+		<div class="form-group">
+			<!-- svelte-ignore a11y_label_has_associated_control -->
+			<label class="label">Cc (optional)</label>
+			<div class="recipients">
+				{#each members as member}
+					<button
+						class="recipient"
+						class:selected={cc.has(member.name)}
+						onclick={() => toggleCc(member.name)}
+						disabled={to.has(member.name)}
+					>
+						{member.name}
+					</button>
+				{/each}
+			</div>
+		</div>
+
 		<div class="form-row">
 			<div class="form-group" style="flex:1">
 				<label class="label" for="from">From</label>
 				<input id="from" type="text" bind:value={from} placeholder="Your name" />
 			</div>
-			<div class="form-group" style="flex:1">
-				<label class="label" for="subject">Subject (optional, used in filename)</label>
-				<input id="subject" type="text" bind:value={subject} placeholder="e.g. deployment-status" />
+			<div class="form-group" style="flex:2">
+				<label class="label" for="subject">
+					Subject {isReply ? '(optional — derived from parent)' : ''}
+				</label>
+				<input id="subject" type="text" bind:value={subject} placeholder="Thread subject" />
 			</div>
 		</div>
 
@@ -153,12 +179,6 @@
 					{/each}
 				</select>
 			</div>
-			<div class="form-group" style="flex:1; display:flex; align-items:flex-end;">
-				<label class="checkbox-label">
-					<input type="checkbox" bind:checked={requestResponse} />
-					Request response
-				</label>
-			</div>
 		</div>
 
 		{#if replyMessage}
@@ -167,8 +187,8 @@
 					<span class="reply-label">Replying to</span>
 					<span class="reply-from">{replyMessage.from}</span>
 					<span class="reply-date">{new Date(replyMessage.sentAt).toLocaleString()}</span>
-					{#if replyMessage.projectCode}
-						<span class="reply-project">{replyMessage.projectCode}</span>
+					{#if replyMessage.subject}
+						<span class="reply-subject">{replyMessage.subject}</span>
 					{/if}
 				</div>
 				<pre class="reply-body">{replyMessage.body}</pre>
@@ -184,9 +204,9 @@
 			<button
 				class="btn btn-primary"
 				onclick={send}
-				disabled={selected.size === 0 || !body.trim() || !from.trim() || sending}
+				disabled={to.size === 0 || !body.trim() || !from.trim() || sending || (!isReply && !subject.trim())}
 			>
-				{sending ? 'Sending...' : `Send to ${selected.size} recipient${selected.size !== 1 ? 's' : ''}`}
+				{sending ? 'Sending...' : `Send to ${to.size} recipient${to.size !== 1 ? 's' : ''}`}
 			</button>
 		</div>
 	{/if}
@@ -232,12 +252,13 @@
 		transition: all var(--transition);
 		background: var(--surface);
 	}
-	.recipient:hover { border-color: var(--primary); color: var(--text); }
+	.recipient:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
 	.recipient.selected {
 		background: var(--primary);
 		color: var(--on-primary);
 		border-color: var(--primary);
 	}
+	.recipient:disabled { opacity: 0.4; cursor: not-allowed; }
 	.recipient-type { font-size: 0.7rem; opacity: 0.7; }
 	.recipient.select-all {
 		border-style: dashed;
@@ -245,19 +266,6 @@
 	}
 	.recipient.select-all:hover {
 		background: var(--primary-subtle);
-	}
-
-	.checkbox-label {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.875rem;
-		cursor: pointer;
-	}
-	.checkbox-label input[type="checkbox"] {
-		width: 1rem;
-		height: 1rem;
-		accent-color: var(--primary);
 	}
 
 	input, select, textarea {
@@ -305,8 +313,8 @@
 	}
 	.reply-from { font-weight: 600; }
 	.reply-date { color: var(--text-muted); }
-	.reply-project {
-		font-size: 0.7rem;
+	.reply-subject {
+		font-size: 0.75rem;
 		font-weight: 600;
 		padding: 0.06rem 0.4rem;
 		border-radius: 99px;

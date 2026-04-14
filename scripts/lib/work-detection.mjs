@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathExists } from './util.mjs';
 import { PRIORITY_ORDER } from './scheduler.mjs';
@@ -15,123 +15,68 @@ export async function loadMembers(teamDir) {
 // ─── Work detection ────────────────────────────────────────────────────────────
 
 /**
- * Determine if a schedule event is currently due.
- */
-export function isEventDue(event, now) {
-	return new Date(event.time) <= now;
-}
-
-/**
- * Compute the next occurrence of a recurring event after `after`.
- */
-export function nextOccurrence(base, recurrence, after) {
-	const { frequency, interval = 1 } = recurrence;
-
-	if (frequency === 'daily') {
-		const ms = interval * 24 * 60 * 60 * 1000;
-		const periods = Math.ceil((after - base) / ms);
-		return new Date(base.getTime() + Math.max(1, periods) * ms);
-	}
-
-	if (frequency === 'weekly') {
-		const ms = interval * 7 * 24 * 60 * 60 * 1000;
-		const periods = Math.ceil((after - base) / ms);
-		return new Date(base.getTime() + Math.max(1, periods) * ms);
-	}
-
-	if (frequency === 'monthly') {
-		let d = new Date(base);
-		while (d <= after) {
-			d = new Date(d);
-			d.setMonth(d.getMonth() + interval);
-		}
-		return d;
-	}
-
-	return new Date(base.getTime() + interval * 24 * 60 * 60 * 1000);
-}
-
-/**
  * Check if a member has work at the given priority level.
- * Uses messagingAdapter.hasMessages() instead of directly scanning inbox/.
- * Falls back to direct inbox scanning if no messaging adapter is provided.
+ *
+ * Inbox work is detected in O(1) by reading inbox.json directly — no master
+ * store lookups are needed for "does this member have a message?".
+ *
+ * @param {import('./tasks/index.mjs').TasksAdapter} [tasksAdapter] — if provided,
+ *   todos are checked through the adapter contract (`hasActionableTodos`).
+ *   Otherwise the file falls back to reading todo.json directly.
  */
-export async function memberHasWork(memberName, priority, teamDir, messagingAdapter) {
+export async function memberHasWork(memberName, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter) {
 	const memberDir = join(teamDir, 'members', memberName);
 
-	// Check inbox for messages via adapter
+	// Check inbox.json for pending messages
 	if (messagingAdapter) {
 		if (await messagingAdapter.hasMessages(memberName)) return true;
 	} else {
-		// Fallback: direct inbox scanning (backwards compat)
-		const inboxDir = join(memberDir, 'inbox');
-		if (await pathExists(inboxDir)) {
+		const inboxJson = join(memberDir, 'inbox.json');
+		if (await pathExists(inboxJson)) {
 			try {
-				const files = await readdir(inboxDir);
-				if (files.some(f => f.endsWith('.md'))) return true;
+				const data = JSON.parse(await readFile(inboxJson, 'utf-8'));
+				if (Array.isArray(data.items) && data.items.length > 0) return true;
 			} catch { /* ignore */ }
 		}
 	}
 
 	// Check todos at this priority or higher
-	const todoPath = join(memberDir, 'todo.json');
-	if (await pathExists(todoPath)) {
-		try {
-			const todos = JSON.parse(await readFile(todoPath, 'utf-8'));
-			const priorityIdx = PRIORITY_ORDER.indexOf(priority);
-			if (todos.items.some(t => t.status !== 'blocked' && PRIORITY_ORDER.indexOf(t.priority) <= priorityIdx)) return true;
-		} catch { /* ignore */ }
+	if (tasksAdapter) {
+		if (await tasksAdapter.hasActionableTodos(memberName, priority)) return true;
+	} else {
+		const todoPath = join(memberDir, 'todo.json');
+		if (await pathExists(todoPath)) {
+			try {
+				const todos = JSON.parse(await readFile(todoPath, 'utf-8'));
+				const priorityIdx = PRIORITY_ORDER.indexOf(priority);
+				if (todos.items.some(t => t.status !== 'blocked' && PRIORITY_ORDER.indexOf(t.priority) <= priorityIdx)) return true;
+			} catch { /* ignore */ }
+		}
 	}
 
-	// Check schedule for due events
-	const schedulePath = join(memberDir, 'schedule.json');
-	if (await pathExists(schedulePath)) {
-		try {
-			const schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
-			const now = new Date();
-			if (schedule.events.some(e => isEventDue(e, now))) return true;
-		} catch { /* ignore */ }
+	// Check schedule for due events — always via adapter so the contract stays
+	// stable across file / calendar backends.
+	if (scheduleAdapter) {
+		if (await scheduleAdapter.hasDueEvents(memberName, new Date())) return true;
 	}
 
 	return false;
 }
 
-/**
- * After a member's cycle, advance any due recurring events to their next
- * occurrence so they don't re-trigger until the next period.
- */
-export async function advanceRecurringEvents(memberName, teamDir) {
-	const schedulePath = join(teamDir, 'members', memberName, 'schedule.json');
-	try {
-		const raw = await readFile(schedulePath, 'utf-8');
-		const schedule = JSON.parse(raw);
-		const now = new Date();
-		let changed = false;
-		for (const event of (schedule.events ?? [])) {
-			if (event.recurring && event.recurrence && new Date(event.time) <= now) {
-				event.time = nextOccurrence(new Date(event.time), event.recurrence, now).toISOString();
-				changed = true;
-			}
-		}
-		if (changed) {
-			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
-		}
-	} catch { /* missing or invalid schedule is fine */ }
-}
-
-export async function getMembersWithWork(members, priority, teamDir, messagingAdapter) {
+export async function getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter) {
 	const results = [];
 	for (const member of members) {
-		if (await memberHasWork(member.name, priority, teamDir, messagingAdapter)) {
+		if (await memberHasWork(member.name, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter)) {
 			results.push(member);
 		}
 	}
 	return results;
 }
 
-// ─── Self-assessment schedule injection ─────────────────────────────────────────
+// ─── System-injected schedule events ──────────────────────────────────────────
 
 const SELF_ASSESSMENT_TITLE = 'Weekly Self-Assessment';
+const DAILY_CHECKIN_TITLE = 'Daily Check-in';
 
 function nextFriday(from = new Date()) {
 	const d = new Date(from);
@@ -142,49 +87,6 @@ function nextFriday(from = new Date()) {
 	return d;
 }
 
-function buildSelfAssessmentEvent(fromDate) {
-	return {
-		title: SELF_ASSESSMENT_TITLE,
-		description:
-			'Conduct a weekly self-assessment following the rules in teamos/agent-rules/self-assessment.md. ',
-		time: nextFriday(fromDate).toISOString(),
-		recurring: true,
-		recurrence: {
-			frequency: 'weekly',
-			interval: 1,
-		},
-	};
-}
-
-export async function ensureSelfAssessmentEvents(members, teamDir) {
-	let added = 0;
-	for (const member of members) {
-		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
-		let schedule;
-		try {
-			schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
-		} catch {
-			schedule = { events: [] };
-		}
-
-		const hasAssessment = schedule.events.some(
-			e => e.title === SELF_ASSESSMENT_TITLE,
-		);
-		if (!hasAssessment) {
-			schedule.events.push(buildSelfAssessmentEvent(new Date()));
-			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
-			added++;
-		}
-	}
-	if (added > 0) {
-		console.log(`[runner] Added self-assessment schedule event to ${added} member(s).`);
-	}
-}
-
-// ─── Daily check-in schedule injection ────────────────────────────────────────
-
-const DAILY_CHECKIN_TITLE = 'Daily Check-in';
-
 function nextMorning(from = new Date()) {
 	const d = new Date(from);
 	d.setUTCHours(9, 0, 0, 0);
@@ -192,39 +94,44 @@ function nextMorning(from = new Date()) {
 	return d;
 }
 
-function buildDailyCheckinEvent(fromDate) {
-	return {
-		title: DAILY_CHECKIN_TITLE,
-		description:
-			'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
-		time: nextMorning(fromDate).toISOString(),
-		recurring: true,
-		recurrence: {
-			frequency: 'daily',
-			interval: 1,
-		},
-	};
-}
-
-export async function ensureDailyCheckinEvents(members, teamDir) {
+export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 	let added = 0;
 	for (const member of members) {
-		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
-		let schedule;
-		try {
-			schedule = JSON.parse(await readFile(schedulePath, 'utf-8'));
-		} catch {
-			schedule = { events: [] };
-		}
+		if (await scheduleAdapter.hasEventWithTitle(member.name, SELF_ASSESSMENT_TITLE)) continue;
+		// Skip the first occurrence so a freshly-added member doesn't immediately
+		// think it needs to self-assess on its first cycle.
+		const first = nextFriday(new Date());
+		first.setUTCDate(first.getUTCDate() + 7);
+		await scheduleAdapter.addEvent(member.name, {
+			title: SELF_ASSESSMENT_TITLE,
+			description:
+				'Conduct a weekly self-assessment following the rules in teamos/agent-rules/self-assessment.md.',
+			time: first.toISOString(),
+			recurrence: { frequency: 'weekly', interval: 1 },
+		});
+		added++;
+	}
+	if (added > 0) {
+		console.log(`[runner] Added self-assessment schedule event to ${added} member(s).`);
+	}
+}
 
-		const hasCheckin = schedule.events.some(
-			e => e.title === DAILY_CHECKIN_TITLE,
-		);
-		if (!hasCheckin) {
-			schedule.events.push(buildDailyCheckinEvent(new Date()));
-			await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
-			added++;
-		}
+export async function ensureDailyCheckinEvents(members, scheduleAdapter) {
+	let added = 0;
+	for (const member of members) {
+		if (await scheduleAdapter.hasEventWithTitle(member.name, DAILY_CHECKIN_TITLE)) continue;
+		// Skip the first occurrence so a freshly-added member doesn't immediately
+		// think it needs to check in on its first cycle.
+		const first = nextMorning(new Date());
+		first.setUTCDate(first.getUTCDate() + 1);
+		await scheduleAdapter.addEvent(member.name, {
+			title: DAILY_CHECKIN_TITLE,
+			description:
+				'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
+			time: first.toISOString(),
+			recurrence: { frequency: 'daily', interval: 1 },
+		});
+		added++;
 	}
 	if (added > 0) {
 		console.log(`[runner] Added daily check-in schedule event to ${added} member(s).`);

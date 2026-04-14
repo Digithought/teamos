@@ -1,10 +1,10 @@
-import { readdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop } from './util.mjs';
 import { PRIORITY_ORDER, pickNextPriority, normalizeVruntimes, rotateAfter } from './scheduler.mjs';
 import { runAgent } from './agents/index.mjs';
-import { advanceRecurringEvents, getMembersWithWork } from './work-detection.mjs';
+import { getMembersWithWork } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,28 +16,103 @@ const BACKOFF_MAX_MS = 30 * 60 * 1000;   // cap at 30 minutes
 
 // ─── Prompt building ───────────────────────────────────────────────────────────
 
-async function readInboxMessages(memberDir) {
-	const inboxDir = join(memberDir, 'inbox');
-	try {
-		const files = await readdir(inboxDir);
-		const mdFiles = files.filter(f => f.endsWith('.md'));
-		const messages = [];
-		for (const file of mdFiles) {
-			const content = await readTextOrEmpty(join(inboxDir, file));
-			if (content) messages.push({ file, content });
-		}
-		return messages;
-	} catch {
-		return [];
-	}
+function formatRecipients(to, cc) {
+	const parts = [`To: ${(to ?? []).join(', ') || '(none)'}`];
+	if (cc && cc.length) parts.push(`Cc: ${cc.join(', ')}`);
+	return parts.join('  ');
 }
 
-export async function buildCyclePrompt(member, priority, teamDir, messagingAdapter) {
+function renderMessage(msg, { heading, headingLevel = '###' }) {
+	const lines = [];
+	lines.push(`${headingLevel} ${heading}`);
+	lines.push('');
+	lines.push(`**Id:** ${msg.id}`);
+	lines.push(`**From:** ${msg.from}`);
+	lines.push(formatRecipients(msg.to, msg.cc));
+	lines.push(`**Subject:** ${msg.subject || '(no subject)'}`);
+	lines.push(`**Sent:** ${msg.sentAt}`);
+	if (msg.projectCode) lines.push(`**Project:** ${msg.projectCode}`);
+	if (msg.replyTo) lines.push(`**In reply to:** ${msg.replyTo}`);
+	lines.push('');
+	lines.push(msg.body || '');
+	return lines;
+}
+
+async function buildInboxSection(member, messagingAdapter) {
+	const summaries = await messagingAdapter.listInbox(member);
+	if (summaries.length === 0) {
+		return ['', '## Inbox', '', 'No pending messages.', ''];
+	}
+
+	const out = ['', `## Inbox (${summaries.length})`, ''];
+	for (const summary of summaries) {
+		const msg = await messagingAdapter.readMessage(summary.id, { inlineParent: true }).catch(() => null);
+		if (!msg) continue;
+
+		out.push(...renderMessage(msg, { heading: msg.subject || summary.subject || '(no subject)' }));
+
+		if (msg.parent) {
+			out.push('');
+			out.push('<details><summary>Previous message in thread</summary>');
+			out.push('');
+			out.push(...renderMessage(msg.parent, { heading: msg.parent.subject || '(no subject)', headingLevel: '####' }));
+			out.push('');
+			out.push('</details>');
+		}
+		out.push('', '---', '');
+	}
+	return out;
+}
+
+function formatTodoForPrompt(item) {
+	const parts = [];
+	parts.push(`- [${item.priority}]${item.status === 'blocked' ? ' [BLOCKED]' : ''} ${item.title}  \`(id: ${item.id})\``);
+	if (item.description) parts.push(`    ${item.description.replace(/\n/g, '\n    ')}`);
+	if (item.projectCode) parts.push(`    project: ${item.projectCode}`);
+	if (item.notes) parts.push(`    notes: ${item.notes.replace(/\n/g, '\n    ')}`);
+	return parts.join('\n');
+}
+
+async function buildTodoSection(member, tasksAdapter) {
+	if (!tasksAdapter) return '_(tasks adapter unavailable)_';
+	const items = await tasksAdapter.listTodos(member).catch(() => []);
+	if (items.length === 0) return '_No open todos._';
+	return items.map(formatTodoForPrompt).join('\n');
+}
+
+function formatEventForPrompt(event) {
+	const parts = [];
+	const rec = event.recurrence
+		? ` (${event.recurrence.frequency} ×${event.recurrence.interval}${event.recurrence.endDate ? `, until ${event.recurrence.endDate}` : ''})`
+		: '';
+	parts.push(`- **${event.title || '(untitled)'}** — ${event.time}${rec}  \`(id: ${event.id})\``);
+	if (event.description) parts.push(`    ${event.description.replace(/\n/g, '\n    ')}`);
+	if (event.projectCode) parts.push(`    project: ${event.projectCode}`);
+	return parts.join('\n');
+}
+
+async function buildScheduleSections(member, scheduleAdapter) {
+	if (!scheduleAdapter) {
+		return {
+			due: '_(schedule adapter unavailable)_',
+			upcoming: '_(schedule adapter unavailable)_',
+		};
+	}
+	const events = await scheduleAdapter.listEvents(member).catch(() => []);
+	const due = events.filter(e => e.isDue);
+	const upcoming = events.filter(e => !e.isDue);
+	return {
+		due: due.length === 0 ? '_No events due this cycle._' : due.map(formatEventForPrompt).join('\n'),
+		upcoming: upcoming.length === 0 ? '_No upcoming events._' : upcoming.map(formatEventForPrompt).join('\n'),
+	};
+}
+
+export async function buildCyclePrompt(member, priority, teamDir, messagingAdapter, tasksAdapter, scheduleAdapter) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
 
 	const [rules, orgDoc, memosDoc, projectsDoc, membersDoc,
-		profile, state, todos, schedule] = await Promise.all([
+		profile, state, todosText, scheduleSections] = await Promise.all([
 		readTextOrEmpty(rulesFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
 		readTextOrEmpty(join(teamDir, 'memos.json')),
@@ -45,11 +120,9 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 		readTextOrEmpty(join(teamDir, 'members.json')),
 		readTextOrEmpty(join(memberDir, 'profile.md')),
 		readTextOrEmpty(join(memberDir, 'state.md')),
-		readTextOrEmpty(join(memberDir, 'todo.json')),
-		readTextOrEmpty(join(memberDir, 'schedule.json')),
+		buildTodoSection(member.name, tasksAdapter),
+		buildScheduleSections(member.name, scheduleAdapter),
 	]);
-
-	const inboxMessages = await readInboxMessages(memberDir);
 
 	const parts = [
 		`# TeamOS Cycle: ${member.name} (${member.title})`,
@@ -86,40 +159,51 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 		'',
 		'## Your TODOs',
 		'',
-		todos || '{"items":[]}',
+		todosText,
 		'',
-		'## Your Schedule',
+		'## Due Events',
 		'',
-		schedule || '{"events":[]}',
+		scheduleSections.due,
+		'',
+		'## Upcoming Events',
+		'',
+		scheduleSections.upcoming,
 	];
 
-	// If a messaging adapter is available, tell the agent about its tools
-	// and still include a preview of pending messages for context
-	if (messagingAdapter) {
-		const messages = await messagingAdapter.getMessages(member.name);
-		parts.push('', '## Messaging');
-		parts.push('', 'You have messaging tools available via MCP:');
-		parts.push('- **send_message** — Send a message to team members');
-		parts.push('- **read_messages** — Read your pending inbox messages');
-		parts.push('- **acknowledge_message** — Mark a message as processed');
-		parts.push('- **list_conversations** — List active conversations');
-		parts.push('');
-		if (messages.length > 0) {
-			parts.push(`You have **${messages.length}** pending message(s). Use read_messages to read them and acknowledge_message after processing each one.`);
-		} else {
-			parts.push('No pending messages.');
-		}
-	} else {
-		// Fallback: inline inbox messages (original behavior, no MCP)
-		if (inboxMessages.length > 0) {
-			parts.push('', '## Your Inbox Messages', '');
-			for (const msg of inboxMessages) {
-				parts.push(`### ${msg.file}`, '', msg.content, '');
-			}
-		} else {
-			parts.push('', '## Your Inbox', '', 'No messages.', '');
-		}
-	}
+	const inboxSection = await buildInboxSection(member.name, messagingAdapter);
+	parts.push(...inboxSection);
+
+	parts.push(
+		'',
+		'## Agent Tools',
+		'',
+		'You have the following MCP tools available.',
+		'',
+		'**Messaging** — see `teamos/docs/messages.md` for the full protocol:',
+		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`.',
+		'- **read_message** — Read any message by id (parent inlined one hop).',
+		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes.',
+		'- **archive_message** — Move a message from your inbox to your archives after handling it.',
+		'- **unarchive_message** — Put an archived message back in your inbox.',
+		'',
+		'Archive each inbox message you have fully handled. Messages left in your inbox carry forward to your next cycle.',
+		'',
+		'**Tasks** — see `teamos/docs/tasks.md`. Your open todos are already shown above; call `list_todos` for a fresh view after several mutations:',
+		'- **list_todos** — Fetch every open todo on your list (priority order).',
+		'- **add_todo** — Create a new todo (`title`, `priority`, optional `description`, `notes`, `projectCode`, `status`). Returns `{ id }`.',
+		'- **update_todo** — Partial update of a todo by id (`title`, `description`, `priority`, `notes`, `projectCode`, `status`). Pass `status: "blocked"` to block, `status: null` to unblock.',
+		'- **complete_todo** — Remove a todo from your list by id. There is no "done" state — completed work simply disappears.',
+		'',
+		'Treat todo ids as opaque strings. Never edit `team/members/<you>/todo.json` directly.',
+		'',
+		'**Schedule** — see `teamos/docs/schedule.md`. Your due and upcoming events are already shown above; call `list_events` for a fresh view after mutations:',
+		'- **list_events** — Fetch every event on your schedule (sorted by time, each tagged with `isDue`).',
+		'- **add_event** — Create a new event (`title`, `time`, optional `description`, `recurrence`, `projectCode`). For recurring events, `time` is the first occurrence. Returns `{ id }`.',
+		'- **update_event** — Partial update of an event by id. Pass `recurrence: null` to convert a recurring event into a one-time event at its current time.',
+		'- **remove_event** — Delete an event entirely (cancels all future occurrences of a recurring event).',
+		'',
+		'**Do not advance recurrence yourself.** When a recurring event fires, the runner automatically advances its `time` to the next occurrence after this cycle completes. Do not call `update_event` just to bump the `time`. One-time events that fire are removed automatically — no `complete_event` needed. Treat event ids as opaque strings and never edit `team/members/<you>/schedule.json` directly.',
+	);
 
 	parts.push(
 		'',
@@ -137,7 +221,7 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
 
-export async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState, syncAdapter, messagingAdapter }) {
+export async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter }) {
 	let memberRuns = 0;
 	let lastError = null;
 	let stopped = false;
@@ -175,11 +259,17 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 			'',
 		].join('\n'));
 
-		const prompt = await buildCyclePrompt(member, priority, teamDir, messagingAdapter);
-		const mcpContext = messagingAdapter ? {
+		// Capture cycleStart before building the prompt so acknowledgeDue uses
+		// the same "now" the agent saw — events that become due mid-cycle wait
+		// for the next pass instead of being silently advanced.
+		const cycleStart = new Date();
+		const prompt = await buildCyclePrompt(member, priority, teamDir, messagingAdapter, tasksAdapter, scheduleAdapter);
+		const mcpContext = (messagingAdapter || tasksAdapter || scheduleAdapter) ? {
 			teamDir,
 			memberName: member.name,
-			messagingAdapter: opts.messaging || 'file',
+			messagingAdapterName: opts.messaging,
+			tasksAdapterName: opts.tasks,
+			scheduleAdapterName: opts.schedule,
 		} : undefined;
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext);
 
@@ -190,11 +280,16 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 			console.error(`Log: ${currentLog}`);
 		} else {
 			failureState.consecutive = 0;
+			// Only acknowledge on success — on failure, due events fire again
+			// next cycle (at-least-once semantics).
+			if (scheduleAdapter) {
+				await scheduleAdapter.acknowledgeDue(member.name, cycleStart).catch(err => {
+					console.error(`[runner] acknowledgeDue failed for ${member.name}: ${err.message}`);
+				});
+			}
 		}
 
 		console.log(`\n  Complete: ${member.name}\n`);
-
-		await advanceRecurringEvents(member.name, teamDir);
 
 		if (membersWithWork.indexOf(member) < membersWithWork.length - 1 && failureState.consecutive === 0) {
 			await new Promise(r => setTimeout(r, 500));
@@ -213,7 +308,7 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 
 // ─── Pass execution ────────────────────────────────────────────────────────────
 
-export async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, useTimeout, syncAdapter, messagingAdapter }) {
+export async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, useTimeout, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter }) {
 	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
 	const weights = opts.weights;
 	const startTime = Date.now();
@@ -253,7 +348,7 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 			if (isBudgetExhausted(priority)) continue;
 			const cadence = opts.cadences[priority];
 			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
-			const membersWithWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter);
+			const membersWithWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter);
 			if (membersWithWork.length > 0) {
 				candidates.push({ priority, members: membersWithWork });
 			}
@@ -287,7 +382,7 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 		const result = await runCycle({
 			membersWithWork: membersToRun, priority: pickedPriority, cycleCount,
 			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState,
-			syncAdapter, messagingAdapter,
+			syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);

@@ -1,5 +1,7 @@
 {
 	"messaging": { "adapter": "file" },
+	"tasks": { "adapter": "file" },
+	"schedule": { "adapter": "file" },
 	"sync": { "adapter": "git" },
 	"agent": "claude"
 }

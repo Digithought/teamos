@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathExists } from './util.mjs';
 
@@ -34,8 +35,38 @@ export async function loadConfig(repoRoot) {
 }
 
 /**
+ * Load a .env file into process.env. Existing env vars are NOT overridden.
+ * Supports # comments, KEY=VALUE, and quoted values ("val" or 'val').
+ */
+export function loadDotEnv(dir) {
+	const candidates = [join(dir, '.env')];
+	for (const filePath of candidates) {
+		try {
+			const content = readFileSync(filePath, 'utf-8');
+			let loaded = 0;
+			for (const line of content.split('\n')) {
+				const trimmed = line.trim();
+				if (!trimmed || trimmed.startsWith('#')) continue;
+				const eqIdx = trimmed.indexOf('=');
+				if (eqIdx <= 0) continue;
+				const key = trimmed.slice(0, eqIdx).trim();
+				const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+				if (!(key in process.env)) {
+					process.env[key] = value;
+					loaded++;
+				}
+			}
+			if (loaded > 0) console.log(`[runner] Loaded ${loaded} env var(s) from ${filePath}`);
+			return;
+		} catch {
+			// No .env file — that's fine
+		}
+	}
+}
+
+/**
  * Resolve environment variable references in config values.
- * Values like "$DISCORD_BOT_TOKEN" are replaced with process.env.DISCORD_BOT_TOKEN.
+ * Values like "$FOO" are replaced with process.env.FOO.
  */
 export function resolveEnvVars(obj) {
 	if (typeof obj === 'string' && obj.startsWith('$')) {

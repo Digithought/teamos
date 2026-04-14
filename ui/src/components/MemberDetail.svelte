@@ -2,17 +2,18 @@
 	import { api } from '../lib/api.js';
 	import { router } from '../lib/router.svelte.js';
 	import { identity } from '../lib/identity.svelte.js';
-	import type { MemberDetail, InboxMessage, TodoItem } from '../lib/types.js';
+	import type { MemberDetail, MessageSummary, Message, TodoItem } from '../lib/types.js';
 
 	let { name }: { name: string } = $props();
 
 	let detail: MemberDetail | null = $state(null);
-	let inbox: InboxMessage[] = $state([]);
-	let archives: InboxMessage[] = $state([]);
+	let inbox: MessageSummary[] = $state([]);
+	let archives: MessageSummary[] = $state([]);
 	let showArchives = $state(false);
 	let loading = $state(true);
 	let tab: 'inbox' | 'todos' | 'state' | 'schedule' = $state('inbox');
 	let expandedMsg: string | null = $state(null);
+	let msgCache: Record<string, Message> = $state({});
 
 	const isMe = $derived(identity.name === name);
 
@@ -31,20 +32,34 @@
 
 	$effect(() => { name; load(); });
 
-	async function deleteMessage(filename: string) {
-		await api.deleteMessage(name, filename);
-		inbox = inbox.filter(m => m.filename !== filename);
+	async function toggleExpand(id: string) {
+		if (expandedMsg === id) {
+			expandedMsg = null;
+			return;
+		}
+		expandedMsg = id;
+		if (!msgCache[id]) {
+			try {
+				const msg = await api.message(id);
+				msgCache[id] = msg;
+			} catch { /* missing from store */ }
+		}
 	}
 
-	async function archiveMessage(filename: string) {
-		await api.archiveMessage(name, filename);
-		inbox = inbox.filter(m => m.filename !== filename);
+	async function deleteMessage(id: string) {
+		await api.deleteMessage(name, id);
+		inbox = inbox.filter(m => m.id !== id);
+	}
+
+	async function archiveMessage(id: string) {
+		await api.archiveMessage(name, id);
+		inbox = inbox.filter(m => m.id !== id);
 		archives = await api.archives(name);
 	}
 
-	async function deleteArchive(filename: string) {
-		await api.deleteArchive(name, filename);
-		archives = archives.filter(m => m.filename !== filename);
+	async function deleteArchive(id: string) {
+		await api.deleteArchive(name, id);
+		archives = archives.filter(m => m.id !== id);
 	}
 
 	let newTodoTitle = $state('');
@@ -80,18 +95,21 @@
 
 	async function addEvent() {
 		if (!newEventTime || !detail) return;
-		const events = [...detail.schedule.events, { time: new Date(newEventTime).toISOString(), title: newEventTitle.trim() || undefined }];
-		await api.updateSchedule(name, { events });
-		detail.schedule.events = events;
+		const title = newEventTitle.trim() || '(untitled)';
+		await api.addEvent(name, {
+			title,
+			time: new Date(newEventTime).toISOString(),
+		});
+		const fresh = await api.schedule(name);
+		detail.schedule.events = fresh.events as typeof detail.schedule.events;
 		newEventTitle = '';
 		newEventTime = '';
 	}
 
-	async function removeEvent(idx: number) {
-		if (!detail) return;
-		const events = detail.schedule.events.filter((_, i) => i !== idx);
-		await api.updateSchedule(name, { events });
-		detail.schedule.events = events;
+	async function removeEvent(id: string) {
+		if (!detail || !id) return;
+		await api.removeEvent(name, id);
+		detail.schedule.events = detail.schedule.events.filter(e => (e as { id?: string }).id !== id);
 	}
 
 	function priorityColor(p: string): string {
@@ -139,6 +157,65 @@
 	}
 
 	const profileMeta = $derived(detail?.profile.meta ?? {});
+
+	let editingProfile = $state(false);
+	let savingProfile = $state(false);
+	let profileError = $state('');
+	let editTitle = $state('');
+	let editType: 'ai' | 'human' = $state('ai');
+	let editActive = $state(true);
+	let editRoles = $state('');
+	let editDescription = $state('');
+	let editBody = $state('');
+
+	function startEditProfile() {
+		if (!detail) return;
+		const meta = detail.profile.meta as Record<string, unknown>;
+		editTitle = (meta.title as string) ?? '';
+		editType = (meta.type as 'ai' | 'human') ?? 'ai';
+		editActive = meta.active !== false;
+		const roles = Array.isArray(meta.roles) ? (meta.roles as string[]) : [];
+		editRoles = roles.join(', ');
+		editDescription = (meta.description as string) ?? '';
+		editBody = detail.profile.body ?? '';
+		profileError = '';
+		editingProfile = true;
+	}
+
+	async function saveProfile() {
+		if (!detail) return;
+		savingProfile = true;
+		profileError = '';
+		try {
+			const roles = editRoles.split(',').map(r => r.trim()).filter(Boolean);
+			await api.updateMemberProfile(name, {
+				title: editTitle.trim(),
+				type: editType,
+				active: editActive,
+				roles,
+				description: editDescription.trim(),
+				body: editBody,
+			});
+			editingProfile = false;
+			await load();
+		} catch (err) {
+			profileError = err instanceof Error ? err.message : 'Failed to save';
+		} finally {
+			savingProfile = false;
+		}
+	}
+
+	async function deleteMember() {
+		if (!detail) return;
+		const confirmed = window.confirm(`Delete member "${name}"? This will remove their profile, mailbox, todos, and schedule. This cannot be undone.`);
+		if (!confirmed) return;
+		try {
+			await api.deleteMember(name);
+			router.navigate('/');
+		} catch (err) {
+			profileError = err instanceof Error ? err.message : 'Failed to delete';
+		}
+	}
 </script>
 
 {#if loading}
@@ -156,8 +233,60 @@
 				{profileMeta.type ?? 'unknown'}
 			</span>
 		</div>
-		<a class="compose-btn" href="#/compose?to={name}">Send Message</a>
+		<div class="header-actions">
+			<a class="compose-btn" href="#/compose">Send Message</a>
+			{#if !editingProfile}
+				<button class="edit-btn" onclick={startEditProfile}>Edit</button>
+			{/if}
+			<button class="delete-btn" onclick={deleteMember}>Delete</button>
+		</div>
 	</div>
+
+	{#if editingProfile}
+		<div class="profile-form">
+			<div class="form-row">
+				<div class="form-group" style="flex:2">
+					<label class="label" for="edit-title">Title</label>
+					<input id="edit-title" type="text" bind:value={editTitle} />
+				</div>
+				<div class="form-group" style="flex:1">
+					<label class="label" for="edit-type">Type</label>
+					<select id="edit-type" bind:value={editType}>
+						<option value="ai">ai</option>
+						<option value="human">human</option>
+					</select>
+				</div>
+				<div class="form-group" style="flex:0 0 auto">
+					<label class="label" for="edit-active">Active</label>
+					<label class="checkbox-label">
+						<input id="edit-active" type="checkbox" bind:checked={editActive} />
+						<span>active</span>
+					</label>
+				</div>
+			</div>
+			<div class="form-group">
+				<label class="label" for="edit-roles">Roles (comma separated)</label>
+				<input id="edit-roles" type="text" bind:value={editRoles} />
+			</div>
+			<div class="form-group">
+				<label class="label" for="edit-description">Description</label>
+				<textarea id="edit-description" rows="2" bind:value={editDescription}></textarea>
+			</div>
+			<div class="form-group">
+				<label class="label" for="edit-body">Profile body (markdown)</label>
+				<textarea id="edit-body" rows="6" bind:value={editBody}></textarea>
+			</div>
+			{#if profileError}
+				<div class="form-error">{profileError}</div>
+			{/if}
+			<div class="form-actions">
+				<button class="add-btn" onclick={saveProfile} disabled={savingProfile}>
+					{savingProfile ? 'Saving...' : 'Save'}
+				</button>
+				<button class="cancel-btn" onclick={() => editingProfile = false}>Cancel</button>
+			</div>
+		</div>
+	{/if}
 
 	{#if profileMeta.roles}
 		<div class="roles">
@@ -187,25 +316,45 @@
 			{:else}
 				<div class="messages">
 					{#each inbox as msg}
-						<div class="message" class:expanded={expandedMsg === msg.filename}>
-							<button class="message-header" onclick={() => expandedMsg = expandedMsg === msg.filename ? null : msg.filename}>
-								<span class="msg-from">From: {msg.from}</span>
+						{@const full = msgCache[msg.id]}
+						<div class="message" class:expanded={expandedMsg === msg.id}>
+							<button class="message-header" onclick={() => toggleExpand(msg.id)}>
+								<span class="msg-subject">{msg.subject || '(no subject)'}</span>
+								<span class="msg-from">{msg.from}</span>
 								<span class="msg-date">{new Date(msg.sentAt).toLocaleString()}</span>
 								{#if msg.projectCode}
 									<span class="msg-project">{msg.projectCode}</span>
 								{/if}
-								{#if msg.requestResponse}
-									<span class="msg-rr">reply requested</span>
+								{#if msg.hasParent}
+									<span class="msg-thread">thread</span>
 								{/if}
-								<span class="msg-toggle">{expandedMsg === msg.filename ? '▼' : '▶'}</span>
+								<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
 							</button>
-							{#if expandedMsg === msg.filename}
+							{#if expandedMsg === msg.id}
 								<div class="message-body">
-									<pre class="msg-text">{msg.body}</pre>
+									<div class="msg-meta">
+										<span>To: {msg.to.join(', ')}</span>
+										{#if msg.cc?.length}<span>Cc: {msg.cc.join(', ')}</span>{/if}
+									</div>
+									{#if full}
+										<pre class="msg-text">{full.body}</pre>
+										{#if full.parent}
+											<div class="parent-block">
+												<div class="parent-label">Previous message in thread</div>
+												<div class="parent-meta">
+													<span class="msg-from">{full.parent.from}</span>
+													<span class="msg-date">{new Date(full.parent.sentAt).toLocaleString()}</span>
+												</div>
+												<pre class="msg-text parent">{full.parent.body}</pre>
+											</div>
+										{/if}
+									{:else}
+										<div class="empty">Loading...</div>
+									{/if}
 									<div class="msg-actions">
-										<a class="action-btn reply" href="#/compose?to={msg.from}&re={msg.filename}&inbox={name}">Reply</a>
-										<button class="action-btn archive" onclick={() => archiveMessage(msg.filename)}>Archive</button>
-										<button class="action-btn delete" onclick={() => deleteMessage(msg.filename)}>Delete</button>
+										<a class="action-btn reply" href="#/compose?re={encodeURIComponent(msg.id)}&inbox={name}">Reply</a>
+										<button class="action-btn archive" onclick={() => archiveMessage(msg.id)}>Archive</button>
+										<button class="action-btn delete" onclick={() => deleteMessage(msg.id)}>Delete</button>
 									</div>
 								</div>
 							{/if}
@@ -221,17 +370,23 @@
 				{#if showArchives}
 					<div class="messages archives">
 						{#each archives as msg}
+							{@const full = msgCache[msg.id]}
 							<div class="message">
-								<button class="message-header" onclick={() => expandedMsg = expandedMsg === msg.filename ? null : msg.filename}>
-									<span class="msg-from">From: {msg.from}</span>
+								<button class="message-header" onclick={() => toggleExpand(msg.id)}>
+									<span class="msg-subject">{msg.subject || '(no subject)'}</span>
+									<span class="msg-from">{msg.from}</span>
 									<span class="msg-date">{msg.sentAt ? new Date(msg.sentAt).toLocaleString() : ''}</span>
-									<span class="msg-toggle">{expandedMsg === msg.filename ? '▼' : '▶'}</span>
+									<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
 								</button>
-								{#if expandedMsg === msg.filename}
+								{#if expandedMsg === msg.id}
 									<div class="message-body">
-										<pre class="msg-text">{msg.body}</pre>
+										{#if full}
+											<pre class="msg-text">{full.body}</pre>
+										{:else}
+											<div class="empty">Loading...</div>
+										{/if}
 										<div class="msg-actions">
-											<button class="action-btn delete" onclick={() => deleteArchive(msg.filename)}>Delete</button>
+											<button class="action-btn delete" onclick={() => deleteArchive(msg.id)}>Delete</button>
 										</div>
 									</div>
 								{/if}
@@ -308,13 +463,13 @@
 			{#if detail.schedule.events.length === 0}
 				<div class="empty">No scheduled events</div>
 			{:else}
-				{#each detail.schedule.events as event, i}
+				{#each detail.schedule.events as event (event.id)}
 					<div class="event">
 						<span class="event-time">{new Date(event.time).toLocaleString()}</span>
 						{#if event.title}
 							<span class="event-title">{event.title}</span>
 						{/if}
-						<button class="event-remove" onclick={() => removeEvent(i)} title="Remove">×</button>
+						<button class="event-remove" onclick={() => removeEvent(event.id)} title="Remove">×</button>
 					</div>
 				{/each}
 			{/if}
@@ -382,6 +537,78 @@
 		text-decoration: none;
 	}
 	.compose-btn:hover { background: var(--primary-hover); text-decoration: none; }
+	.header-actions { display: flex; gap: 0.5rem; align-items: center; }
+	.edit-btn {
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-weight: 600;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		background: var(--surface);
+		transition: all var(--transition);
+	}
+	.edit-btn:hover { background: var(--bg); color: var(--text); }
+	.delete-btn {
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--danger);
+		border-radius: var(--radius);
+		font-weight: 600;
+		font-size: 0.8rem;
+		color: var(--danger);
+		background: transparent;
+		transition: all var(--transition);
+	}
+	.delete-btn:hover { background: var(--danger); color: var(--on-primary); }
+	.profile-form {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		margin-bottom: 1rem;
+	}
+	.profile-form .form-row { display: flex; gap: 1rem; align-items: flex-end; }
+	.profile-form .form-group { margin-bottom: 0.75rem; }
+	.profile-form .label {
+		display: block;
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--text-muted);
+		margin-bottom: 0.25rem;
+	}
+	.profile-form input[type="text"],
+	.profile-form select,
+	.profile-form textarea {
+		width: 100%;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-family: var(--font);
+		font-size: 0.875rem;
+		background: var(--bg);
+		color: var(--text);
+	}
+	.profile-form input:focus, .profile-form select:focus, .profile-form textarea:focus {
+		outline: none;
+		border-color: var(--primary);
+	}
+	.checkbox-label {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		font-size: 0.875rem;
+		color: var(--text);
+		padding: 0.5rem 0;
+	}
+	.form-error {
+		font-size: 0.8rem;
+		color: var(--danger);
+		padding: 0.5rem 0.75rem;
+		background: var(--danger-subtle);
+		border-radius: var(--radius);
+		margin-bottom: 0.5rem;
+	}
+	.form-actions { display: flex; gap: 0.5rem; }
 	.roles { display: flex; gap: 0.375rem; margin-bottom: 1rem; }
 	.role-tag {
 		font-size: 0.7rem;
@@ -446,7 +673,8 @@
 		font-size: 0.875rem;
 	}
 	.message-header:hover { background: var(--bg); }
-	.msg-from { font-weight: 600; }
+	.msg-subject { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.msg-from { color: var(--text-muted); font-size: 0.8rem; }
 	.msg-date { color: var(--text-muted); font-size: 0.8rem; }
 	.msg-project {
 		font-size: 0.7rem;
@@ -456,14 +684,44 @@
 		background: var(--primary-subtle);
 		color: var(--primary);
 	}
-	.msg-rr {
+	.msg-thread {
 		font-size: 0.7rem;
 		font-weight: 600;
 		padding: 0.06rem 0.4rem;
 		border-radius: 99px;
-		background: var(--warning-subtle);
-		color: var(--warning);
+		background: var(--bg);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
 	}
+	.msg-meta {
+		display: flex;
+		gap: 1rem;
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		padding-top: 0.75rem;
+	}
+	.parent-block {
+		margin-top: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		background: var(--bg);
+		border-left: 2px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.parent-label {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 0.25rem;
+	}
+	.parent-meta {
+		display: flex;
+		gap: 0.75rem;
+		font-size: 0.75rem;
+		margin-bottom: 0.25rem;
+	}
+	.msg-text.parent { font-size: 0.8rem; color: var(--text-muted); }
 	.msg-toggle { margin-left: auto; color: var(--text-light); }
 	.message-body {
 		padding: 0 1rem 1rem;

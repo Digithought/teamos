@@ -15,7 +15,7 @@ If an error or issue is described in the context, prioritize diagnosing and fixi
 - Fix malformed JSON files or structural inconsistencies
 - Diagnose and resolve errors from the context
 - Check for semantic issues the automated housekeeping can't catch:
-  - Todos referencing completed/removed tickets
+  - Todos referencing completed/removed tickets — use `update_todo` or `complete_todo` on the affected member's list (never edit `todo.json` by hand; see `teamos/docs/tasks.md`)
   - Stale state.md entries that no longer reflect reality
   - Schedule events that should exist but don't (e.g. a member said "I'll check Wednesday" but has no event)
 

@@ -43,14 +43,18 @@ export async function runHousekeeping(teamDir, members) {
 		errors.push(`memos.json: ${e.message}`);
 	}
 
-	// 2. Prune schedule events older than 1 week (non-recurring only)
+	// 2. Prune non-recurring schedule events more than a week past due.
+	// The adapter advances recurring events and clears fired one-time events
+	// in acknowledgeDue; this guard only catches orphans from repeated cycle
+	// failures. Presence of `recurrence` is the signal — the legacy
+	// `recurring: true` flag is ignored because the adapter migrates it away.
 	const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 	for (const member of members) {
 		const schedulePath = join(teamDir, 'members', member.name, 'schedule.json');
 		try {
 			const raw = await readFile(schedulePath, 'utf-8');
 			const schedule = JSON.parse(raw);
-			const stale = (schedule.events ?? []).filter(e => !e.recurring && new Date(e.time) < weekAgo);
+			const stale = (schedule.events ?? []).filter(e => !e.recurrence && new Date(e.time) < weekAgo);
 			if (stale.length > 0) {
 				schedule.events = schedule.events.filter(e => !stale.includes(e));
 				await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
@@ -196,31 +200,34 @@ export async function buildEfficiencyPrompt(teamDir, logsDir) {
 		'',
 		rules,
 		'',
+		'## Messaging Tools',
+		'',
+		'You are running as `clerk` and have the messaging MCP tools available. Send feedback with `send_message({ to: [<member>], subject: "Efficiency feedback — <topic>", body: ... })`.',
+		'',
 		'## Instructions',
 		'',
 		'Analyze the logs listed above for repeated inefficiency patterns.',
 		'Read the actual log files (in team/.logs/) to understand what the agent did.',
-		'Send inbox messages ONLY for repeated patterns — not one-time fumbles.',
+		'Use `send_message` ONLY for repeated patterns — not one-time fumbles.',
 		'Do NOT commit — the runner handles commits after you complete.',
 	].join('\n');
 }
 
 export async function buildClerkPrompt(teamDir, error) {
 	const clerkRules = await readTextOrEmpty(join(TEAMOS_ROOT, 'agent-rules', 'clerk.md'));
-	const systemDoc = await readTextOrEmpty(join(TEAMOS_ROOT, 'README.md'));
 
 	const parts = [
 		'# TeamOS Clerk',
 		`# Time: ${formatTimestamp()}`,
 		`# Team directory: team/`,
 		'',
-		'## System Architecture',
-		'',
-		systemDoc,
-		'',
 		'## Clerk Rules',
 		'',
 		clerkRules,
+		'',
+		'## Messaging Tools',
+		'',
+		'You are running as `clerk` and have the messaging MCP tools available: `send_message`, `read_message`, `list_inbox`, `list_sent`, `list_archives`, `archive_message`, `unarchive_message`. Use `send_message` to notify members of issues you find.',
 	];
 
 	if (error) {
@@ -285,7 +292,13 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 		].join('\n'));
 
 		const clerkPrompt = await buildClerkPrompt(teamDir, errorContext.length > 0 ? errorContext.join('\n') : null);
-		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog);
+		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog, {
+			teamDir,
+			memberName: 'clerk',
+			messagingAdapterName: opts.messaging,
+			tasksAdapterName: opts.tasks,
+			scheduleAdapterName: opts.schedule,
+		});
 
 		if (clerkExit !== 0) {
 			console.error(`[runner] Clerk exited with code ${clerkExit}`);
@@ -315,7 +328,13 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 		].join('\n'));
 
 		const prompt = await buildEfficiencyPrompt(teamDir, logsDir);
-		const analysisExit = await runAgent(opts.agent, prompt, repoRoot, analysisLog);
+		const analysisExit = await runAgent(opts.agent, prompt, repoRoot, analysisLog, {
+			teamDir,
+			memberName: 'clerk',
+			messagingAdapterName: opts.messaging,
+			tasksAdapterName: opts.tasks,
+			scheduleAdapterName: opts.schedule,
+		});
 
 		if (analysisExit !== 0) {
 			console.error(`[runner] Efficiency analysis exited with code ${analysisExit}`);

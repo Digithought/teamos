@@ -2,6 +2,8 @@
 
 It's time for an honest review of your effectiveness over the past week. This is not a status update — it is a reflective evaluation of *how well* you are performing your role.  This isn't just generating a document though, it is primarily a chance to *make changes* to your state, tasks, events, etc. in order to affect positive change going forward.
 
+The runner has already queued next week's self-assessment automatically — you do not need to call `update_event` to bump the `time` forward.
+
 Save the assessment to `team/members/<your name>/archives/assessments/YYYY-MM-DD.md` (create the directory if needed).
 
 ## Assessment Format
@@ -25,7 +27,7 @@ Am I building reusable tools (scripts, libraries) where appropriate? Am I mainta
 
 ## State, Tasks & Schedule Hygiene (1-5)
 - **State**: Is my state.md concise, current, and useful — or bloated and stale?  Don't overly condense your state either or you'll "forget" things - if something doesn't need to be remembered every cycle, can you put it elsewhere and reference it?
-- **Tasks**: Are my todos well-prioritized, correctly labeled, and kept clean?
+- **Tasks**: Are my todos well-prioritized, correctly labeled, and kept clean? Am I using `update_todo` / `complete_todo` to keep the list actionable, not stale?
 - **Schedule**: Am I using schedule events effectively for deferred work instead of leaving unactionable items at high priority?
 
 ## Communication Quality (1-5)
@@ -52,4 +54,4 @@ From here, make whatever adjustments to state, tasks, events, or other docs or c
 - **Reference your archives.** Look at your recent state history and archives to ground the assessment in facts.
 - **Track trends.** 
 - **Keep it brief.** The assessment should take a single cycle. Don't over-analyze — identify and address the top signals and move on.
-- **Send a summary.** After saving the full assessment, send a brief inbox message to your manager with your overall scores and planned improvements.
+- **Send a summary.** After saving the full assessment, call `send_message` with your manager in `to`, a subject like `"Weekly self-assessment — YYYY-MM-DD"`, and a brief body listing your overall scores and planned improvements.
