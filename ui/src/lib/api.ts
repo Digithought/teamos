@@ -47,6 +47,7 @@ export interface CreateMemberArgs {
 	active?: boolean;
 	roles?: string[];
 	body?: string;
+	email?: string;
 }
 
 export interface UpdateMemberProfileArgs {
@@ -56,6 +57,18 @@ export interface UpdateMemberProfileArgs {
 	active?: boolean;
 	roles?: string[];
 	body?: string;
+	email?: string | null;
+}
+
+export interface MeInfo {
+	/** Resolved member name, or null if no header matched and client should use its local selection. */
+	name: string | null;
+	/** True when the server resolved identity from a trusted proxy header. Clients should treat this as read-only. */
+	locked: boolean;
+	/** Source header name that matched (only set when locked). */
+	source?: string;
+	/** Email that was looked up (only set when locked). */
+	email?: string;
 }
 
 export interface SendMessageArgs {
@@ -125,4 +138,5 @@ export const api = {
 	cycleStop: () => post<{ ok: boolean }>('/api/cycle/stop', {}),
 	cycleStatus: () => get<{ stopPending: boolean }>('/api/cycle/status'),
 	messagingInfo: () => get<MessagingInfo>('/api/messaging/info'),
+	me: () => get<MeInfo>('/api/me'),
 };

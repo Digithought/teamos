@@ -3,5 +3,14 @@
 	"tasks": { "adapter": "file" },
 	"schedule": { "adapter": "file" },
 	"sync": { "adapter": "git" },
-	"agent": "claude"
+	"agent": "claude",
+	"auth": {
+		"trustProxy": false,
+		"identityHeaders": [
+			"cf-access-authenticated-user-email",
+			"x-forwarded-email",
+			"x-auth-request-email",
+			"tailscale-user-login"
+		]
+	}
 }

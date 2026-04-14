@@ -5,6 +5,7 @@ export interface MemberSummary {
 	type: 'ai' | 'human';
 	active: boolean;
 	notes?: string;
+	email?: string;
 	inboxCount: number;
 	todoCount: number;
 	blockedCount: number;
