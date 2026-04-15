@@ -28,6 +28,17 @@
 		inbox = inb;
 		archives = arch;
 		loading = false;
+
+		const expandId = router.query.msg;
+		if (expandId) {
+			tab = 'inbox';
+			expandedMsg = expandId;
+			if (!msgCache[expandId]) {
+				try {
+					msgCache[expandId] = await api.message(expandId);
+				} catch { /* missing from store */ }
+			}
+		}
 	}
 
 	$effect(() => { name; load(); });
@@ -353,6 +364,9 @@
 									{/if}
 									<div class="msg-actions">
 										<a class="action-btn reply" href="#/compose?re={encodeURIComponent(msg.id)}&inbox={name}">Reply</a>
+										{#if msg.to.length + (msg.cc?.length ?? 0) > 1}
+											<a class="action-btn reply" href="#/compose?re={encodeURIComponent(msg.id)}&inbox={name}&all=1">Reply All</a>
+										{/if}
 										<button class="action-btn archive" onclick={() => archiveMessage(msg.id)}>Archive</button>
 										<button class="action-btn delete" onclick={() => deleteMessage(msg.id)}>Delete</button>
 									</div>

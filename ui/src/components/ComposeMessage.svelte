@@ -19,9 +19,14 @@
 
 	let replyMessage: Message | null = $state(null);
 	let inboxOwner: string | null = $state(null);
+	let isReplyAll = $state(false);
 
 	const isReply = $derived(!!replyMessage);
-	const backPath = $derived(inboxOwner ? `/member/${inboxOwner}` : '/');
+	const backPath = $derived.by(() => {
+		if (!inboxOwner) return '/';
+		const msg = replyMessage;
+		return msg ? `/member/${inboxOwner}?msg=${encodeURIComponent(msg.id)}` : `/member/${inboxOwner}`;
+	});
 
 	$effect(() => {
 		if (identity.name && !from) from = identity.name;
@@ -34,12 +39,23 @@
 
 		const re = router.query.re;
 		const inbox = router.query.inbox;
+		const replyAll = router.query.all === '1';
+		isReplyAll = replyAll;
 		if (re) {
 			inboxOwner = inbox ?? null;
 			try {
 				replyMessage = await api.message(re);
 				if (replyMessage.projectCode) projectCode = replyMessage.projectCode;
-				to = new Set([replyMessage.from]);
+				const self = inboxOwner;
+				const toSet = new Set<string>([replyMessage.from]);
+				const ccSet = new Set<string>();
+				if (replyAll) {
+					for (const r of replyMessage.to ?? []) if (r !== self) toSet.add(r);
+					for (const r of replyMessage.cc ?? []) if (r !== self) ccSet.add(r);
+				}
+				if (self) toSet.delete(self);
+				to = toSet;
+				cc = ccSet;
 				// Subject auto-derives server-side, but show a preview to the user
 				if (!subject) {
 					const stripped = (replyMessage.subject ?? '').replace(/^(re:\s*)+/i, '').trim();
@@ -96,13 +112,14 @@
 		sent = false;
 		replyMessage = null;
 		inboxOwner = null;
+		isReplyAll = false;
 	}
 </script>
 
 <div class="compose">
 	<div class="compose-header">
 		<button class="back" onclick={() => router.navigate(backPath)}>← Back</button>
-		<h1 class="compose-title">{isReply ? 'Reply' : 'Compose Message'}</h1>
+		<h1 class="compose-title">{isReply ? (isReplyAll ? 'Reply All' : 'Reply') : 'Compose Message'}</h1>
 	</div>
 
 	{#if sent}
