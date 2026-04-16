@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop } from './util.mjs';
+import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop, buildToolsPromptSection } from './util.mjs';
 import { PRIORITY_ORDER, pickNextPriority, normalizeVruntimes, rotateAfter } from './scheduler.mjs';
 import { runAgent } from './agents/index.mjs';
 import { getMembersWithWork } from './work-detection.mjs';
@@ -173,37 +173,7 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 	const inboxSection = await buildInboxSection(member.name, messagingAdapter);
 	parts.push(...inboxSection);
 
-	parts.push(
-		'',
-		'## Agent Tools',
-		'',
-		'You have the following MCP tools available.',
-		'',
-		'**Messaging** — see `teamos/docs/messages.md` for the full protocol:',
-		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`.',
-		'- **read_message** — Read any message by id (parent inlined one hop).',
-		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes.',
-		'- **archive_message** — Move a message from your inbox to your archives after handling it.',
-		'- **unarchive_message** — Put an archived message back in your inbox.',
-		'',
-		'Archive each inbox message you have fully handled. Messages left in your inbox carry forward to your next cycle.',
-		'',
-		'**Tasks** — see `teamos/docs/tasks.md`. Your open todos are already shown above; call `list_todos` for a fresh view after several mutations:',
-		'- **list_todos** — Fetch every open todo on your list (priority order).',
-		'- **add_todo** — Create a new todo (`title`, `priority`, optional `description`, `notes`, `projectCode`, `status`). Returns `{ id }`.',
-		'- **update_todo** — Partial update of a todo by id (`title`, `description`, `priority`, `notes`, `projectCode`, `status`). Pass `status: "blocked"` to block, `status: null` to unblock.',
-		'- **complete_todo** — Remove a todo from your list by id. There is no "done" state — completed work simply disappears.',
-		'',
-		'Treat todo ids as opaque strings. Never edit `team/members/<you>/todo.json` directly.',
-		'',
-		'**Schedule** — see `teamos/docs/schedule.md`. Your due and upcoming events are already shown above; call `list_events` for a fresh view after mutations:',
-		'- **list_events** — Fetch every event on your schedule (sorted by time, each tagged with `isDue`).',
-		'- **add_event** — Create a new event (`title`, `time`, optional `description`, `recurrence`, `projectCode`). For recurring events, `time` is the first occurrence. Returns `{ id }`.',
-		'- **update_event** — Partial update of an event by id. Pass `recurrence: null` to convert a recurring event into a one-time event at its current time.',
-		'- **remove_event** — Delete an event entirely (cancels all future occurrences of a recurring event).',
-		'',
-		'**Do not advance recurrence yourself.** When a recurring event fires, the runner automatically advances its `time` to the next occurrence after this cycle completes. Do not call `update_event` just to bump the `time`. One-time events that fire are removed automatically — no `complete_event` needed. Treat event ids as opaque strings and never edit `team/members/<you>/schedule.json` directly.',
-	);
+	parts.push(...buildToolsPromptSection('cycle'));
 
 	parts.push(
 		'',

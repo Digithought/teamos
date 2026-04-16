@@ -1,7 +1,7 @@
 import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readTextOrEmpty, formatTimestamp, slugify, buildLogPath } from './util.mjs';
+import { readTextOrEmpty, formatTimestamp, slugify, buildLogPath, buildToolsPromptSection } from './util.mjs';
 import { runAgent } from './agents/index.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -200,9 +200,9 @@ export async function buildEfficiencyPrompt(teamDir, logsDir) {
 		'',
 		rules,
 		'',
-		'## Messaging Tools',
+		...buildToolsPromptSection('efficiency'),
 		'',
-		'You are running as `clerk` and have the messaging MCP tools available. Send feedback with `send_message({ to: [<member>], subject: "Efficiency feedback — <topic>", body: ... })`.',
+		'Use `send_message` to notify members of issues you find.',
 		'',
 		'## Instructions',
 		'',
@@ -224,10 +224,7 @@ export async function buildClerkPrompt(teamDir, error) {
 		'## Clerk Rules',
 		'',
 		clerkRules,
-		'',
-		'## Messaging Tools',
-		'',
-		'You are running as `clerk` and have the messaging MCP tools available: `send_message`, `read_message`, `list_inbox`, `list_sent`, `list_archives`, `archive_message`, `unarchive_message`. Use `send_message` to notify members of issues you find.',
+		...buildToolsPromptSection('clerk'),
 	];
 
 	if (error) {

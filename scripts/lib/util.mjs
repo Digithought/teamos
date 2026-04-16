@@ -54,3 +54,61 @@ export function buildLogPath(logsDir, label, priority) {
 	const ts = new Date().toISOString().replace(/[:.]/g, '-');
 	return join(logsDir, `${label}.${priority}.${ts}.log`);
 }
+
+/**
+ * Build the "Agent Tools" prompt section describing available MCP tools.
+ * @param {'cycle'|'clerk'|'efficiency'} role
+ *   - cycle: all tools, with "your open todos are already shown above" context
+ *   - clerk: all tools, without the per-member context hints
+ *   - efficiency: messaging tools only (clerk efficiency analysis just sends feedback)
+ * @returns {string[]} prompt lines to spread into a parts array
+ */
+export function buildToolsPromptSection(role) {
+	const lines = [
+		'',
+		'## Agent Tools',
+		'',
+		'You have the following MCP tools available.',
+		'',
+		'**Messaging** — see `teamos/docs/messages.md` for the full protocol:',
+		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`.',
+		'- **read_message** — Read any message by id (parent inlined one hop).',
+		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes.',
+		'- **archive_message** — Move a message from your inbox to your archives after handling it.',
+		'- **unarchive_message** — Put an archived message back in your inbox.',
+	];
+
+	if (role === 'cycle') {
+		lines.push('', 'Archive each inbox message you have fully handled. Messages left in your inbox carry forward to your next cycle.');
+	}
+
+	if (role === 'efficiency') return lines;
+
+	const todoContext = role === 'cycle'
+		? '. Your open todos are already shown above; call `list_todos` for a fresh view after several mutations'
+		: '';
+	const scheduleContext = role === 'cycle'
+		? '. Your due and upcoming events are already shown above; call `list_events` for a fresh view after mutations'
+		: '';
+
+	lines.push(
+		'',
+		`**Tasks** — see \`teamos/docs/tasks.md\`${todoContext}:`,
+		'- **list_todos** — Fetch every open todo on your list (priority order).',
+		'- **add_todo** — Create a new todo (`title`, `priority`, optional `description`, `notes`, `projectCode`, `status`). Returns `{ id }`.',
+		'- **update_todo** — Partial update of a todo by id (`title`, `description`, `priority`, `notes`, `projectCode`, `status`). Pass `status: "blocked"` to block, `status: null` to unblock.',
+		'- **complete_todo** — Remove a todo from your list by id. There is no "done" state — completed work simply disappears.',
+		'',
+		'Treat todo ids as opaque strings. Never edit `team/members/<you>/todo.json` directly.',
+		'',
+		`**Schedule** — see \`teamos/docs/schedule.md\`${scheduleContext}:`,
+		'- **list_events** — Fetch every event on your schedule (sorted by time, each tagged with `isDue`).',
+		'- **add_event** — Create a new event (`title`, `time`, optional `description`, `recurrence`, `projectCode`). For recurring events, `time` is the first occurrence. Returns `{ id }`.',
+		'- **update_event** — Partial update of an event by id. Pass `recurrence: null` to convert a recurring event into a one-time event at its current time.',
+		'- **remove_event** — Delete an event entirely (cancels all future occurrences of a recurring event).',
+		'',
+		'**Do not advance recurrence yourself.** When a recurring event fires, the runner automatically advances its `time` to the next occurrence after this cycle completes. Do not call `update_event` just to bump the `time`. One-time events that fire are removed automatically — no `complete_event` needed. Treat event ids as opaque strings and never edit `team/members/<you>/schedule.json` directly.',
+	);
+
+	return lines;
+}

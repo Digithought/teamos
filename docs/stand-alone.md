@@ -40,7 +40,7 @@ Local volume: /workspace/team/  (Fly Volume or local dir)
 
 ### Key principle: agents always see a local filesystem
 
-Agents are trained around files. They read `state.md`, edit `todo.json`, write scripts, create documents. The sync adapter handles durability *around* the cycle — pull before, push after — so the agent never knows it's running in a container. The local volume is the working copy; Tigris/S3 is the durable store.
+Agents work with a local filesystem. They read `state.md`, manage todos and schedule through MCP tools, write scripts, and create documents. The sync adapter handles durability *around* the cycle — pull before, push after — so the agent never knows it's running in a container. The local volume is the working copy; Tigris/S3 is the durable store.
 
 ## Runner Decomposition
 

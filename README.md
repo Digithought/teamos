@@ -399,7 +399,7 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 
 The runner also passes a header with the current priority level and timestamp. When working interactively, default to priority `pressing` and follow the priority levels as described above.
 
-Depending on your interaction, you may update your state, TODOs, and schedule. Do not commit — let the human handle that.
+Depending on your interaction, you may update your state file (`state.md`) directly. TODOs and schedule must be mutated through the MCP tools — never edit `todo.json` or `schedule.json` by hand. Do not commit — let the human handle that.
 
 ## Adapters
 
