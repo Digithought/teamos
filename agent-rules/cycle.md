@@ -45,6 +45,8 @@ TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject
 
 **Keep unfinished inbox work visible.** If you can't handle a message this cycle, leave it in your inbox — don't archive until you're done. The runner will cycle you again as long as your inbox has anything unhandled in it.
 
+**Cost of a message is `length × recipients`.** Short messages; save details for a doc you can ref.  Tighten further as the audience grows; on broad threads, brevity or silence. Only reply if you add something unique — no "I agree..."/restatements. Trim Cc to those who actually need to act or decide.
+
 ## Tasks (Todos)
 
 Your open todos are already listed in the cycle prompt under "Your TODOs". Every item has an opaque `id` — you pass ids back through the task MCP tools, you never parse or construct them.
@@ -54,8 +56,6 @@ Your open todos are already listed in the cycle prompt under "Your TODOs". Every
 - `add_todo({ title, priority, description?, notes?, projectCode?, status? })` — Create a new todo at the given priority. Returns `{ id }`.
 - `update_todo(id, { title?, description?, priority?, notes?, projectCode?, status? })` — Partial update. Pass `status: "blocked"` to block, `status: null` to unblock. Use this to demote priorities, record progress in `notes`, or block/unblock.
 - `complete_todo(id)` — Remove a todo from your list. There is no "done" state; completion means deletion. If you need to record what was finished, write it in `state.md` or a message.
-
-**Never edit `team/members/<you>/todo.json` directly.** All mutations go through the tools above — the UI and other members may be reading the file concurrently.
 
 ## Schedule
 
@@ -70,8 +70,6 @@ Your due and upcoming events are already listed in the cycle prompt under "Due E
 **Do not advance recurrence yourself.** After a successful cycle the runner automatically advances each due recurring event's `time` to its next occurrence and removes due one-time events. You'll just see the recurring event reappear with a future time next cycle, and the one-time event gone. Never call `update_event` to bump a `time` forward on a recurring event — it breaks the contract.
 
 **Defer work you couldn't finish.** If an event fires and the associated work can't be completed in one cycle, add a follow-up todo (`add_todo`) or a new schedule event (`add_event`) at the right time. The original event still gets acknowledged and advanced — you can't block acknowledgement by leaving work visible.
-
-**Never edit `team/members/<you>/schedule.json` directly.**
 
 ## Priority Discipline
 
