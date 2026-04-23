@@ -13,6 +13,8 @@ interface MessageSummary {
 	sentAt: string;
 	projectCode?: string;
 	hasParent: boolean;
+	supersedes?: string[];
+	supersededBy?: string;
 }
 
 interface Message {
@@ -23,6 +25,8 @@ interface Message {
 	subject: string;
 	sentAt: string;
 	replyTo?: string;
+	supersedes?: string[];
+	supersededBy?: string;
 	projectCode?: string;
 	body: string;
 	parent?: Message;
@@ -39,9 +43,19 @@ interface MessagingAdapter {
 		replyTo?: string;
 		projectCode?: string;
 	}): Promise<{ id: string; sentAt: string }>;
+	supersedeMessage(args: {
+		from: string;
+		supersedes: string[];
+		to: string[];
+		cc?: string[];
+		subject?: string;
+		body: string;
+		replyTo?: string;
+		projectCode?: string;
+	}): Promise<{ id: string; sentAt: string; supersededIds: string[]; unreadRemoved: number; alreadyDelivered: number }>;
 	readMessage(id: string, opts?: { inlineParent?: boolean }): Promise<Message>;
 	listInbox(member: string): Promise<MessageSummary[]>;
-	listSent(member: string): Promise<MessageSummary[]>;
+	listSent(member: string, opts?: { to?: string[] }): Promise<MessageSummary[]>;
 	listArchives(member: string): Promise<MessageSummary[]>;
 	archiveMessage(member: string, id: string): Promise<void>;
 	unarchiveMessage(member: string, id: string): Promise<void>;

@@ -339,6 +339,11 @@
 								{#if msg.hasParent}
 									<span class="msg-thread">thread</span>
 								{/if}
+								{#if msg.supersedes?.length}
+									<span class="msg-supersedes" title="Consolidates {msg.supersedes.length} earlier message{msg.supersedes.length === 1 ? '' : 's'}">
+										supersedes {msg.supersedes.length}
+									</span>
+								{/if}
 								<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
 							</button>
 							{#if expandedMsg === msg.id}
@@ -390,6 +395,14 @@
 									<span class="msg-subject">{msg.subject || '(no subject)'}</span>
 									<span class="msg-from">{msg.from}</span>
 									<span class="msg-date">{msg.sentAt ? new Date(msg.sentAt).toLocaleString() : ''}</span>
+									{#if msg.supersededBy}
+										<span class="msg-superseded" title="Replaced by a later consolidated message">superseded</span>
+									{/if}
+									{#if msg.supersedes?.length}
+										<span class="msg-supersedes" title="Consolidates {msg.supersedes.length} earlier message{msg.supersedes.length === 1 ? '' : 's'}">
+											supersedes {msg.supersedes.length}
+										</span>
+									{/if}
 									<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
 								</button>
 								{#if expandedMsg === msg.id}
@@ -706,6 +719,25 @@
 		background: var(--bg);
 		color: var(--text-muted);
 		border: 1px solid var(--border);
+	}
+	.msg-supersedes {
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 0.06rem 0.4rem;
+		border-radius: 99px;
+		background: var(--warning-subtle, var(--bg));
+		color: var(--warning, var(--text-muted));
+		border: 1px solid var(--warning, var(--border));
+	}
+	.msg-superseded {
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 0.06rem 0.4rem;
+		border-radius: 99px;
+		background: var(--bg);
+		color: var(--text-light);
+		border: 1px dashed var(--border);
+		text-decoration: line-through;
 	}
 	.msg-meta {
 		display: flex;

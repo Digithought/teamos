@@ -21,6 +21,8 @@ export interface MessageSummary {
 	sentAt: string;
 	projectCode?: string;
 	hasParent: boolean;
+	supersedes?: string[];
+	supersededBy?: string;
 }
 
 export interface Message {
@@ -31,6 +33,8 @@ export interface Message {
 	subject: string;
 	sentAt: string;
 	replyTo?: string;
+	supersedes?: string[];
+	supersededBy?: string;
 	projectCode?: string;
 	body: string;
 	parent?: Message;

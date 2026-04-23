@@ -360,8 +360,9 @@ Agents interact with messages exclusively through MCP tools — they never touch
 | Tool | Purpose |
 |---|---|
 | `send_message` | Send to one or more members. `subject` required on new threads; replies may omit it and the adapter derives `Re: <parent>`. |
+| `supersede_message` | Send a new message that consolidates / replaces one or more earlier messages YOU sent. Predecessors are silently removed from recipient inboxes when still unread. The new `to`+`cc` must cover every recipient any predecessor reached. |
 | `read_message` | Fetch any message by id. The immediate parent is inlined as `parent` (one hop); walk further back via `parent.replyTo`. |
-| `list_inbox` / `list_sent` / `list_archives` | Summaries (newest first) of the member's mailboxes. |
+| `list_inbox` / `list_sent` / `list_archives` | Summaries (newest first) of the member's mailboxes. `list_sent` accepts an optional `to: [<member>, ...]` filter — call it before composing to recipients you have already messaged this cycle so you can spot threads to consolidate. |
 | `archive_message` / `unarchive_message` | Move a message between inbox and archives. |
 
 Example stored message (`team/messages/2026-04-13T10-30-45.123Z-a3f2.md`):
@@ -411,7 +412,7 @@ TeamOS uses a pluggable adapter architecture. Agents always work on a local file
 |---|---|---|
 | `file` | `--messaging file` | File-backed master store at `team/messages/<id>.md` with per-member `inbox.json`/`sent.json`/`archives.json` id lists. Exposed to agents via an MCP server (default, and currently the only adapter). |
 
-All adapters implement the stable MCP contract documented in `teamos/docs/messages.md`: `send_message`, `read_message`, `list_inbox`, `list_sent`, `list_archives`, `archive_message`, `unarchive_message`. A future SMTP/IMAP adapter can drop in without changing the agent contract.
+All adapters implement the stable MCP contract documented in `teamos/docs/messages.md`: `send_message`, `supersede_message`, `read_message`, `list_inbox`, `list_sent`, `list_archives`, `archive_message`, `unarchive_message`. A future SMTP/IMAP adapter can drop in without changing the agent contract.
 
 ### Tasks Adapters
 

@@ -71,9 +71,10 @@ export function buildToolsPromptSection(role) {
 		'You have the following MCP tools available.',
 		'',
 		'**Messaging** — see `teamos/docs/messages.md` for the full protocol:',
-		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`.',
-		'- **read_message** — Read any message by id (parent inlined one hop).',
-		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes.',
+		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`. Before composing to a recipient set you have already messaged this cycle, call `list_sent({ to: [...] })` — prefer `supersede_message` over stacking another message on the same topic.',
+		'- **supersede_message** — Send a new message that consolidates / replaces one or more earlier messages YOU sent (`supersedes`, `to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Predecessors are silently removed from recipients\' inboxes when still unread; the new `to`+`cc` must cover every recipient any predecessor reached.',
+		'- **read_message** — Read any message by id (parent inlined one hop). `supersedes` and `supersededBy` fields surface consolidation links.',
+		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes. `list_sent` accepts an optional `to: [<member>, ...]` filter.',
 		'- **archive_message** — Move a message from your inbox to your archives after handling it.',
 		'- **unarchive_message** — Put an archived message back in your inbox.',
 	];

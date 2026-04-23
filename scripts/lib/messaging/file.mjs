@@ -53,12 +53,17 @@ function serializeMessage(msg) {
 	lines.push(`subject: ${msg.subject ?? ''}`);
 	lines.push(`sentAt: ${msg.sentAt}`);
 	if (msg.replyTo) lines.push(`replyTo: ${msg.replyTo}`);
+	if (msg.supersedes && msg.supersedes.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
+	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
 	lines.push('---', '', (msg.body ?? '').trimEnd(), '');
 	return lines.join('\n');
 }
 
 function normalizeMessage(metadata, body) {
+	const supersedes = Array.isArray(metadata.supersedes)
+		? metadata.supersedes
+		: (metadata.supersedes ? [metadata.supersedes] : []);
 	return {
 		id: typeof metadata.id === 'string' ? metadata.id : '',
 		from: typeof metadata.from === 'string' ? metadata.from : 'unknown',
@@ -67,6 +72,8 @@ function normalizeMessage(metadata, body) {
 		subject: typeof metadata.subject === 'string' ? metadata.subject : '',
 		sentAt: typeof metadata.sentAt === 'string' ? metadata.sentAt : '',
 		replyTo: typeof metadata.replyTo === 'string' && metadata.replyTo ? metadata.replyTo : undefined,
+		supersedes,
+		supersededBy: typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		body,
 	};
@@ -74,6 +81,10 @@ function normalizeMessage(metadata, body) {
 
 function stripReplyPrefix(subject) {
 	return (subject ?? '').replace(/^(re:\s*)+/i, '').trim();
+}
+
+function recipientsOf(msg) {
+	return [...(msg.to ?? []), ...(msg.cc ?? [])];
 }
 
 export class FileMessagingAdapter {
@@ -119,11 +130,20 @@ export class FileMessagingAdapter {
 		}
 	}
 
+	async _removeFromMailbox(member, kind, id) {
+		const items = await this._readMailbox(member, kind);
+		const idx = items.indexOf(id);
+		if (idx === -1) return false;
+		items.splice(idx, 1);
+		await this._writeMailbox(member, kind, items);
+		return true;
+	}
+
 	// ─── Core operations ───────────────────────────────────────────────────────
 
 	async hasMessages(member) {
-		const items = await this._readMailbox(member, 'inbox');
-		return items.length > 0;
+		const summaries = await this.listInbox(member);
+		return summaries.length > 0;
 	}
 
 	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode }) {
@@ -160,6 +180,106 @@ export class FileMessagingAdapter {
 		return { id, sentAt };
 	}
 
+	/**
+	 * Send a new message that consolidates / replaces one or more earlier
+	 * messages from the same sender. The new message gets `supersedes: [...]`
+	 * pointing back at its predecessors; each predecessor is rewritten with
+	 * `supersededBy: <newId>` so reverse-traversal is O(1). For every
+	 * recipient in the union of the predecessors' to+cc:
+	 *   - if the predecessor is still in their inbox, we remove it so they
+	 *     only see the consolidated version on next read
+	 *   - if they have already archived (or otherwise dropped) the
+	 *     predecessor, we leave their archive alone — list_inbox/list_archives
+	 *     will mark the lingering copy with supersededBy so the agent knows
+	 *
+	 * The new message is delivered to its `to`/`cc` recipients using the same
+	 * inbox-append rules as `sendMessage`.
+	 *
+	 * `to` (plus optional `cc`) on the new message must cover every recipient
+	 * the predecessors reached — otherwise dropped recipients would be left
+	 * with neither the predecessor (if removed from inbox) nor a replacement.
+	 */
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo }) {
+		if (!from) throw new Error('supersedeMessage: from is required');
+		if (!Array.isArray(supersedes) || supersedes.length === 0) {
+			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
+		}
+		if (!Array.isArray(to) || to.length === 0) throw new Error('supersedeMessage: to is required');
+		if (body == null) throw new Error('supersedeMessage: body is required');
+
+		// Load and validate every predecessor up front — no partial commits.
+		const predecessors = [];
+		for (const prevId of supersedes) {
+			const prev = await this._readRawMessage(prevId).catch(() => null);
+			if (!prev) throw new Error(`supersedeMessage: predecessor ${prevId} not found`);
+			if (prev.from !== from) {
+				throw new Error(`supersedeMessage: ${prevId} was sent by ${prev.from}, not ${from} — only the original sender can supersede`);
+			}
+			if (prev.supersededBy) {
+				throw new Error(`supersedeMessage: ${prevId} is already superseded by ${prev.supersededBy}`);
+			}
+			predecessors.push(prev);
+		}
+
+		const newRecipients = new Set([...to, ...(cc ?? [])]);
+		const droppedRecipients = [];
+		for (const prev of predecessors) {
+			for (const r of recipientsOf(prev)) {
+				if (!newRecipients.has(r)) droppedRecipients.push({ id: prev.id, recipient: r });
+			}
+		}
+		if (droppedRecipients.length) {
+			const sample = droppedRecipients.slice(0, 3).map(d => `${d.recipient} (from ${d.id})`).join(', ');
+			throw new Error(
+				`supersedeMessage: new recipients must cover every predecessor recipient. Missing: ${sample}` +
+				(droppedRecipients.length > 3 ? `, and ${droppedRecipients.length - 3} more` : '') +
+				'. To address a smaller audience, send a regular message instead of superseding.',
+			);
+		}
+
+		// Fall back to the most recent predecessor's subject if none provided —
+		// keeps the thread title stable in inboxes.
+		let derivedSubject = subject;
+		if (!derivedSubject || !derivedSubject.trim()) {
+			derivedSubject = predecessors[predecessors.length - 1].subject;
+		}
+		if (!derivedSubject || !derivedSubject.trim()) {
+			throw new Error('supersedeMessage: subject could not be derived');
+		}
+
+		const id = makeMessageId();
+		const sentAt = new Date().toISOString();
+
+		await mkdir(this.messagesDir, { recursive: true });
+		const content = serializeMessage({
+			id, from, to, cc, subject: derivedSubject, sentAt,
+			replyTo, supersedes: [...supersedes], projectCode, body,
+		});
+		await writeFile(this._messagePath(id), content, 'utf-8');
+
+		// Mark each predecessor with supersededBy + remove from any inbox where
+		// it still sits unread (so recipients see only the consolidated message).
+		let unreadRemoved = 0;
+		const stillReachable = [];
+		for (const prev of predecessors) {
+			const updated = { ...prev, supersededBy: id };
+			await writeFile(this._messagePath(prev.id), serializeMessage(updated), 'utf-8');
+			for (const recipient of recipientsOf(prev)) {
+				const removed = await this._removeFromMailbox(recipient, 'inbox', prev.id);
+				if (removed) unreadRemoved++;
+				else stillReachable.push({ id: prev.id, recipient });
+			}
+		}
+
+		// Deliver the new message normally.
+		for (const recipient of [...to, ...(cc ?? [])]) {
+			await this._appendToMailbox(recipient, 'inbox', id);
+		}
+		await this._appendToMailbox(from, 'sent', id);
+
+		return { id, sentAt, supersededIds: [...supersedes], unreadRemoved, alreadyDelivered: stillReachable.length };
+	}
+
 	async _readRawMessage(id) {
 		const content = await readFile(this._messagePath(id), 'utf-8');
 		const { metadata, body } = parseFrontmatter(content);
@@ -194,25 +314,62 @@ export class FileMessagingAdapter {
 				sentAt: msg.sentAt,
 				projectCode: msg.projectCode,
 				hasParent: !!msg.replyTo,
+				supersedes: msg.supersedes && msg.supersedes.length ? msg.supersedes : undefined,
+				supersededBy: msg.supersededBy,
 			});
 		}
 		entries.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
 		return entries;
 	}
 
-	async listInbox(member) {
-		const ids = await this._readMailbox(member, 'inbox');
-		return this._summariesFromIds(ids);
+	/**
+	 * Drop entries whose supersededBy target is also present in `visibleIds`.
+	 * The lingering predecessor is hidden because the consolidated version is
+	 * reachable in the same mailbox; if the consolidation isn't reachable we
+	 * keep the predecessor visible so the recipient never silently loses a
+	 * message.
+	 */
+	_collapseSuperseded(entries, visibleIds) {
+		const visible = new Set(visibleIds);
+		return entries.filter(e => !(e.supersededBy && visible.has(e.supersededBy)));
 	}
 
-	async listSent(member) {
+	async listInbox(member) {
+		const ids = await this._readMailbox(member, 'inbox');
+		const archived = await this._readMailbox(member, 'archives');
+		const entries = await this._summariesFromIds(ids);
+		// A predecessor is hidden if its consolidated version is reachable in
+		// either the inbox or the archives — both count as "the recipient has
+		// the new message".
+		return this._collapseSuperseded(entries, [...ids, ...archived]);
+	}
+
+	/**
+	 * @param {string} member
+	 * @param {{ to?: string[] }} [opts] — when `to` is provided, only sent
+	 *   messages whose to+cc intersects the requested member set are returned.
+	 *   Used by agents to find recent threads with a given audience before
+	 *   composing or superseding.
+	 */
+	async listSent(member, opts = {}) {
 		const ids = await this._readMailbox(member, 'sent');
-		return this._summariesFromIds(ids);
+		const entries = await this._summariesFromIds(ids);
+		const filter = opts.to;
+		if (Array.isArray(filter) && filter.length > 0) {
+			const want = new Set(filter);
+			return entries.filter(e => {
+				const recipients = [...(e.to ?? []), ...(e.cc ?? [])];
+				return recipients.some(r => want.has(r));
+			});
+		}
+		return entries;
 	}
 
 	async listArchives(member) {
 		const ids = await this._readMailbox(member, 'archives');
-		return this._summariesFromIds(ids);
+		const inbox = await this._readMailbox(member, 'inbox');
+		const entries = await this._summariesFromIds(ids);
+		return this._collapseSuperseded(entries, [...ids, ...inbox]);
 	}
 
 	async archiveMessage(member, id) {

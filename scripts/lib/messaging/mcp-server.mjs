@@ -72,7 +72,7 @@ const schedule = makeScheduleAdapter(scheduleAdapterName);
 const TOOLS = [
 	{
 		name: 'send_message',
-		description: 'Send a message to one or more team members. Behaves like email: a message can target multiple parties, carry a subject, and reference a preceding message to form a thread. Delivered to each recipient\'s inbox.',
+		description: 'Send a message to one or more team members. Behaves like email: targets multiple parties, carries a subject, can reference a preceding message via replyTo. Cost scales with length × recipients — keep messages tight, especially on broad threads. Before composing to a recipient set you have already messaged this cycle, call list_sent({ to: [...] }) and prefer supersede_message to consolidate over stacking another message on the same topic.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -84,6 +84,23 @@ const TOOLS = [
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
 			},
 			required: ['to', 'body'],
+		},
+	},
+	{
+		name: 'supersede_message',
+		description: 'Send a new message that consolidates / replaces one or more earlier messages YOU sent. The consolidated message is delivered normally; each predecessor is marked supersededBy and silently removed from any recipient inbox where it had not yet been read. Recipients who already archived the predecessor keep it (audit trail preserved) and see the new message arrive separately. Use this when you have more to say to the same audience on the same topic — it is strictly better than sending an additional message. The new recipient set (to + cc) must cover every recipient any predecessor reached; to address a smaller audience send a regular message instead.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				supersedes: { type: 'array', items: { type: 'string' }, description: 'Ids of one or more prior messages you sent that this message replaces. All predecessors must be from you and not already superseded.' },
+				to: { type: 'array', items: { type: 'string' }, description: 'Primary recipient member names. Must cover every recipient any predecessor reached.' },
+				body: { type: 'string', description: 'Message body (markdown). Treat this as the standalone replacement — no need to repeat predecessor wording verbatim.' },
+				subject: { type: 'string', description: 'Thread subject. If omitted, derived from the latest predecessor.' },
+				cc: { type: 'array', items: { type: 'string' }, description: 'Optional cc\'d member names.' },
+				replyTo: { type: 'string', description: 'Optional id of the message this thread replies to (carries through to the new message; usually omit).' },
+				projectCode: { type: 'string', description: 'Optional project tag.' },
+			},
+			required: ['supersedes', 'to', 'body'],
 		},
 	},
 	{
@@ -104,8 +121,13 @@ const TOOLS = [
 	},
 	{
 		name: 'list_sent',
-		description: 'List summaries for every message you have sent (newest first).',
-		inputSchema: { type: 'object', properties: {} },
+		description: 'List summaries for every message you have sent (newest first). Pass `to: [<member>, ...]` to filter to messages whose to+cc intersects that member set — use this before composing to recipients you have already messaged this cycle, so you can spot threads that should be consolidated via supersede_message instead of stacked.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				to: { type: 'array', items: { type: 'string' }, description: 'Optional recipient filter — only return sent messages whose to+cc includes at least one of these members.' },
+			},
+		},
 	},
 	{
 		name: 'list_archives',
@@ -278,6 +300,21 @@ async function handleToolCall(name, args) {
 			return textResult({ id, sentAt, to, cc: cc ?? [] });
 		}
 
+		case 'supersede_message': {
+			const { supersedes, to, subject, body, cc, replyTo, projectCode } = args;
+			const result = await adapter.supersedeMessage({
+				from: memberName,
+				supersedes,
+				to,
+				cc,
+				subject,
+				body,
+				replyTo,
+				projectCode,
+			});
+			return textResult(result);
+		}
+
 		case 'read_message': {
 			const { id } = args;
 			const msg = await adapter.readMessage(id, { inlineParent: true });
@@ -288,7 +325,7 @@ async function handleToolCall(name, args) {
 			return textResult(await adapter.listInbox(memberName));
 
 		case 'list_sent':
-			return textResult(await adapter.listSent(memberName));
+			return textResult(await adapter.listSent(memberName, { to: args.to }));
 
 		case 'list_archives':
 			return textResult(await adapter.listArchives(memberName));
@@ -370,7 +407,7 @@ async function handleMessage(message) {
 			sendResponse(id, {
 				protocolVersion: '2024-11-05',
 				capabilities: { tools: {} },
-				serverInfo: { name: 'teamos-tools', version: '2.1.0' },
+				serverInfo: { name: 'teamos-tools', version: '2.2.0' },
 			});
 			break;
 

@@ -2,9 +2,10 @@
  * TeamOS messaging shapes.
  *
  * These are the shapes the messaging MCP tools return. Send, read, and
- * manage messages via `send_message`, `read_message`, `list_inbox`,
- * `list_sent`, `list_archives`, `archive_message`, `unarchive_message`.
- * There is no supported way to access messages outside those tools.
+ * manage messages via `send_message`, `supersede_message`, `read_message`,
+ * `list_inbox`, `list_sent`, `list_archives`, `archive_message`,
+ * `unarchive_message`. There is no supported way to access messages outside
+ * those tools.
  */
 
 /**
@@ -23,6 +24,10 @@ export interface Message {
   subject: string;       // required on new threads; replies auto-derive `Re: <parent>`
   sentAt: string;        // ISO-8601
   replyTo?: string;      // id of the immediately preceding message in the thread
+  /** Ids of prior messages this one consolidates / replaces (set by `supersede_message`). */
+  supersedes?: string[];
+  /** Id of a later message that consolidates / replaces this one (written by the adapter). */
+  supersededBy?: string;
   projectCode?: string;  // optional project tag
   body: string;          // markdown
 
@@ -37,6 +42,11 @@ export interface Message {
  * What `list_inbox` / `list_sent` / `list_archives` return — summaries
  * only, newest first. `hasParent` is true when `replyTo` is set, so a
  * caller can show "this is part of a thread" without fetching the body.
+ * `supersedes` / `supersededBy` surface consolidation links so the UI
+ * or agent can mark consolidated messages without fetching the body.
+ *
+ * Inbox/archives listings collapse a predecessor when its consolidated
+ * version is reachable in the same mailbox; sent listings do not collapse.
  */
 export interface MessageSummary {
   id: string;
@@ -47,6 +57,8 @@ export interface MessageSummary {
   sentAt: string;
   projectCode?: string;
   hasParent: boolean;
+  supersedes?: string[];
+  supersededBy?: string;
 }
 
 /**
@@ -56,6 +68,27 @@ export interface SendMessageArgs {
   to: string[];
   body: string;
   subject?: string;      // required on new threads; optional on replies
+  cc?: string[];
+  replyTo?: string;
+  projectCode?: string;
+}
+
+/**
+ * Arguments to `supersede_message`. The new message replaces one or more
+ * earlier messages YOU sent. The new `to`+`cc` must cover every recipient
+ * any predecessor reached.
+ *
+ * Returns `{ id, sentAt, supersededIds, unreadRemoved, alreadyDelivered }`.
+ *   - `unreadRemoved` — predecessor copies pulled from recipient inboxes.
+ *   - `alreadyDelivered` — recipients who had already moved the predecessor
+ *     out of their inbox (typically archived); they receive the new message
+ *     normally and can re-read.
+ */
+export interface SupersedeMessageArgs {
+  supersedes: string[];
+  to: string[];
+  body: string;
+  subject?: string;
   cc?: string[];
   replyTo?: string;
   projectCode?: string;

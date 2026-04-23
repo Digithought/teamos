@@ -8,15 +8,18 @@
  * @property {string} sentAt
  * @property {string} [projectCode]
  * @property {boolean} hasParent
+ * @property {string[]} [supersedes] — ids of prior messages this one consolidates / replaces
+ * @property {string} [supersededBy] — id of a later message that consolidates / replaces this one
  */
 
 /**
  * @typedef {Object} MessagingAdapter
  * @property {(member: string) => Promise<boolean>} hasMessages
  * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string }) => Promise<{ id: string, sentAt: string }>} sendMessage
+ * @property {(args: { from: string, supersedes: string[], to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string }) => Promise<{ id: string, sentAt: string, supersededIds: string[], unreadRemoved: number, alreadyDelivered: number }>} supersedeMessage
  * @property {(id: string, opts?: { inlineParent?: boolean }) => Promise<Object>} readMessage
  * @property {(member: string) => Promise<MessageSummary[]>} listInbox
- * @property {(member: string) => Promise<MessageSummary[]>} listSent
+ * @property {(member: string, opts?: { to?: string[] }) => Promise<MessageSummary[]>} listSent
  * @property {(member: string) => Promise<MessageSummary[]>} listArchives
  * @property {(member: string, id: string) => Promise<void>} archiveMessage
  * @property {(member: string, id: string) => Promise<void>} unarchiveMessage

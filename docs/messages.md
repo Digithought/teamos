@@ -13,6 +13,7 @@ Only one adapter ships today: the **file adapter**, which stores messages on the
 - **Agent-managed inbox.** There is no unread pointer. A message is either in a member's `inbox.json` or their `archives.json` — never both. Members maintain their inboxes as part of their cycle work.
 - **One hop of context is free.** `read_message(id)` inlines the immediately preceding message as a real nested object (same shape, minus its own parent). Deeper history is reached by calling `read_message` again with `parent.id`.
 - **Ids are opaque to agents.** The format is an implementation detail. Agents pass ids through — they do not parse them.
+- **Supersede over stack.** When a sender has more to say to the same audience on the same topic, they consolidate via `supersede_message` instead of stacking another message. The new message points back via `supersedes: [...]`; each predecessor is rewritten with `supersededBy` and silently removed from any recipient inbox where it was still unread. Recipients who already archived the predecessor keep it (audit trail) and see the new message arrive separately. Listings collapse a predecessor whenever the consolidated version is reachable in the same mailbox.
 
 ## On-Disk Layout
 
@@ -70,6 +71,8 @@ Field reference:
 | `subject` | yes | Thread subject; auto-derived as `Re: ...` for replies |
 | `sentAt` | yes | ISO-8601 timestamp |
 | `replyTo` | no | Id of the immediately preceding message; omit to start a new thread |
+| `supersedes` | no | Array of prior message ids this message consolidates / replaces. Set when the message was created via `supersede_message`. |
+| `supersededBy` | no | Id of a later message that supersedes this one. Written by the adapter when `supersede_message` runs; never set by the original sender. |
 | `projectCode` | no | Optional project tag for filtering/grouping |
 
 ### Mailbox files
@@ -105,6 +108,36 @@ send_message({
 
 Allocates a new id, writes the message to the master store, appends the id to each recipient's `inbox.json` (both To and Cc) and to the sender's `sent.json`. If `replyTo` is set and no explicit `subject` is provided, the adapter derives `Re: <parent.subject>` (stripping any existing `Re: ` prefix to avoid stacking). Explicit subjects are used verbatim.
 
+### `supersede_message`
+
+```
+supersede_message({
+  supersedes: string[],  // required — ids of prior messages YOU sent
+  to: string[],          // required — must cover every predecessor recipient
+  body: string,          // required — markdown; the standalone replacement
+  subject?: string,      // optional — defaults to the latest predecessor's subject
+  cc?: string[],         // optional
+  replyTo?: string,      // optional — usually omit
+  projectCode?: string,  // optional
+}) → { id, sentAt, supersededIds, unreadRemoved, alreadyDelivered }
+```
+
+Sends a new message that consolidates / replaces one or more earlier messages from the same sender. The adapter:
+
+1. Validates every predecessor exists, was sent by the caller, and is not already superseded.
+2. Validates the new `to`+`cc` covers every recipient any predecessor reached. (To narrow the audience, send a regular message instead.)
+3. Allocates a new id and writes the consolidated message with `supersedes: [...]`.
+4. Rewrites each predecessor's frontmatter to add `supersededBy: <newId>` (body untouched — the audit trail is preserved).
+5. For every recipient of every predecessor: if the predecessor id is still in their `inbox.json`, removes it. If they already archived (or otherwise dropped) it, leaves their archives alone; their `list_archives` entry will surface `supersededBy` so they know.
+6. Delivers the new message normally — appends to each recipient's `inbox.json` and to the sender's `sent.json`.
+
+Return fields:
+
+- `unreadRemoved` — number of `(predecessor, recipient)` pairs the adapter removed from inboxes (i.e. the recipient had not yet read the predecessor).
+- `alreadyDelivered` — number of pairs where the predecessor was no longer in the inbox (already read or archived); those recipients see both messages with the supersede markers connecting them.
+
+Recipients whose AI cycle had already fired between the original send and the supersede will already have processed the predecessor; they re-read the consolidated version on next cycle. The supersede is still strictly cheaper than another stacked message — the inbox holds one item, not two.
+
 ### `read_message`
 
 ```
@@ -135,18 +168,20 @@ list_inbox() → InboxEntry[]
 Returns summaries for every id in the caller's `inbox.json`, newest first:
 
 ```
-{ id, from, to, cc, subject, sentAt, projectCode, hasParent }
+{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy? }
 ```
 
-`hasParent` is `true` when `replyTo` is set, so the UI or agent can indicate "this is part of a thread" without fetching the full message.
+`hasParent` is `true` when `replyTo` is set, so the UI or agent can indicate "this is part of a thread" without fetching the full message. `supersedes` (when present) lists the predecessor ids that this message consolidates; `supersededBy` (when present) is the id of a later message that consolidates this one.
+
+**Collapse rule:** an entry whose `supersededBy` target is reachable in the caller's inbox or archives is omitted from the listing — the consolidated version is the canonical one. If the consolidated version isn't reachable, the predecessor stays visible so the recipient never silently loses a message.
 
 ### `list_sent`
 
 ```
-list_sent() → SentEntry[]
+list_sent({ to?: string[] }) → SentEntry[]
 ```
 
-Same shape as `list_inbox`, reading from `sent.json`. Used when an agent needs to find something they previously said.
+Same shape as `list_inbox`, reading from `sent.json`. Pass an optional `to` filter to restrict to messages whose `to`+`cc` includes at least one of the named members — agents call this before composing to a recipient set they have already messaged this cycle, so they can spot threads that should be consolidated via `supersede_message` instead of stacked. Sent listings do **not** apply the supersede collapse — the sender sees their full history with `supersedes` / `supersededBy` markers.
 
 ### `list_archives`
 
@@ -154,7 +189,7 @@ Same shape as `list_inbox`, reading from `sent.json`. Used when an agent needs t
 list_archives() → InboxEntry[]
 ```
 
-Same shape as `list_inbox`, reading from `archives.json`.
+Same shape as `list_inbox`, reading from `archives.json`. Same collapse rule as `list_inbox`: an archived predecessor is hidden when the consolidated version is reachable in the same mailbox.
 
 ### `archive_message`
 
@@ -176,16 +211,16 @@ Inverse of `archive_message`. Useful when an agent archives prematurely and need
 
 When the runner builds a cycle prompt for a member, it:
 
-1. Calls `list_inbox(member)` to get inbox summaries
+1. Calls `list_inbox(member)` to get inbox summaries (already collapse-aware — superseded predecessors are hidden when the consolidated version is reachable)
 2. Calls `read_message(id)` for each entry to get the message with parent inlined
 3. Embeds those messages in the prompt under an "Inbox" section
-4. Passes the MCP tools through so the agent can call `send_message`, `archive_message`, etc. during the cycle
+4. Passes the MCP tools through so the agent can call `send_message`, `supersede_message`, `archive_message`, etc. during the cycle
 
-The agent is expected to process each inbox message and then `archive_message` it if fully handled. Messages left in the inbox carry forward to the next cycle — this is the intended way to defer work ("I'll handle this later, keep it in my inbox").
+The agent is expected to process each inbox message and then `archive_message` it if fully handled. Messages left in the inbox carry forward to the next cycle — this is the intended way to defer work ("I'll handle this later, keep it in my inbox"). Before composing a new message to a recipient set the agent has already messaged this cycle, the agent calls `list_sent({ to: [...] })` and prefers `supersede_message` over stacking another message on the same topic.
 
 ## Work Detection
 
-A member has messaging work when `inbox.json.items.length > 0`. The `work-detection` module reads the json directly — no master-store lookups needed — which keeps "does this member have work?" O(1) per member.
+A member has messaging work when their inbox listing (after the supersede collapse) is non-empty. The collapse step requires reading each candidate's frontmatter, but inboxes are bounded and the cost is paid once per scheduling pass per member — not in a hot loop.
 
 ## Sender Semantics
 
