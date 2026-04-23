@@ -16,6 +16,8 @@
 #   GIT_AUTHOR_NAME          Commit author name (default: teamos-runner)
 #   GIT_AUTHOR_EMAIL         Commit author email (default: runner@teamos.local)
 #   TEAMOS_TUNNEL_NAME       If set, runs `code tunnel --name <value>` in background
+#   TEAMOS_UI_PORT           If set, starts the teamos/ui Vite dev server on this
+#                            port (bound to 0.0.0.0 so Fly's wireguard can reach it)
 #
 # Required secrets (set via `fly secrets set`):
 #   CLAUDE_CODE_OAUTH_TOKEN  Subscription auth for the Claude CLI (read by the
@@ -56,6 +58,22 @@ if [ -n "$TEAMOS_TUNNEL_NAME" ]; then
 	echo "[entrypoint] starting code tunnel: $TEAMOS_TUNNEL_NAME"
 	code tunnel --accept-server-license-terms --name "$TEAMOS_TUNNEL_NAME" \
 		>/workspace/tunnel.log 2>&1 &
+fi
+
+if [ -n "$TEAMOS_UI_PORT" ]; then
+	UI_DIR="$REPO_DIR/teamos/ui"
+	if [ -d "$UI_DIR" ]; then
+		if [ ! -d "$UI_DIR/node_modules" ]; then
+			echo "[entrypoint] installing UI dependencies (first boot — this takes a minute)"
+			(cd "$UI_DIR" && npm ci --no-audit --no-fund 2>&1 || npm install --no-audit --no-fund 2>&1) \
+				| tail -3
+		fi
+		echo "[entrypoint] starting teamos UI on 0.0.0.0:$TEAMOS_UI_PORT"
+		(cd "$UI_DIR" && exec npx vite --host 0.0.0.0 --port "$TEAMOS_UI_PORT") \
+			>/workspace/ui.log 2>&1 &
+	else
+		echo "[entrypoint] warn: TEAMOS_UI_PORT=$TEAMOS_UI_PORT set but $UI_DIR not found"
+	fi
 fi
 
 echo "[entrypoint] starting teamos runner: $*"

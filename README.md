@@ -508,6 +508,7 @@ TeamOS ships a generic container image (`teamos/Dockerfile`) that clones a host 
 | `GIT_AUTHOR_NAME` | no | Commit author (default: `teamos-runner`) |
 | `GIT_AUTHOR_EMAIL` | no | Commit email (default: `runner@teamos.local`) |
 | `TEAMOS_TUNNEL_NAME` | no | If set, runs `code tunnel --name <value>` in the background |
+| `TEAMOS_UI_PORT` | no | If set, starts the `teamos/ui` Vite dev server on this port (bound to `0.0.0.0`). Expose via `fly proxy <port>` or a Fly HTTP service with auth in front. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | recommended | Subscription auth for the Claude CLI (see below). Falls back to `ANTHROPIC_API_KEY` if absent. |
 
 ### Authenticating the Claude CLI
