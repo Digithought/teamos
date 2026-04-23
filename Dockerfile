@@ -24,7 +24,12 @@ RUN npm install -g @anthropic-ai/claude-code
 ENV HOME=/workspace
 WORKDIR /workspace
 
-COPY scripts/entrypoint.sh /usr/local/bin/teamos-entrypoint
+# TEAMOS_PATH is the path to the teamos directory within the build context.
+# Default `.` works when teamos is itself the context root (standalone deploy).
+# When deploying from a host project whose build context is the parent repo,
+# set `--build-arg TEAMOS_PATH=teamos` so the COPY resolves correctly.
+ARG TEAMOS_PATH=.
+COPY ${TEAMOS_PATH}/scripts/entrypoint.sh /usr/local/bin/teamos-entrypoint
 RUN chmod +x /usr/local/bin/teamos-entrypoint
 
 ENTRYPOINT ["teamos-entrypoint"]
