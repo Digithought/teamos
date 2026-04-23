@@ -31,6 +31,13 @@
  *   --help               Show this help
  */
 
+// Force synchronous stdout/stderr writes when output is a pipe (containers,
+// CI). Without this, Node block-buffers and the startup banner / pass output
+// can stall until enough output accumulates to fill the buffer (~16KB), which
+// makes the runner look hung in `fly logs` while it's actually idling.
+process.stdout._handle?.setBlocking?.(true);
+process.stderr._handle?.setBlocking?.(true);
+
 import { join, dirname } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
