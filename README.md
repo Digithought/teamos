@@ -485,21 +485,90 @@ Values prefixed with `$` are resolved from environment variables. Secrets should
 
 ## Cloud Deployment
 
-TeamOS can run as a container on Fly.io (or any container host) with S3 storage.
+TeamOS ships a generic container image (`teamos/Dockerfile`) that clones a host project from a git URL on first boot, then runs the loop with `git` sync. Nothing in the image is host-specific — every project-specific value is supplied via environment variables, so the same image deploys for any team.
+
+### What the container does on boot
+
+`teamos/scripts/entrypoint.sh` runs before the runner:
+
+1. Configures git identity and (optionally) credentials from `GITHUB_TOKEN`
+2. Clones `TEAMOS_REPO_URL@TEAMOS_REPO_BRANCH` into `/workspace/repo` (or pulls if already present)
+3. Optionally backgrounds `code tunnel` for VSCode remote development
+4. Execs `node teamos/scripts/run.mjs "$@"` with whatever args the platform passes
+
+`HOME` is set to `/workspace` so git credentials and `code tunnel` auth persist on the volume across restarts.
+
+### Required environment
+
+| Variable | Required | Description |
+|---|---|---|
+| `TEAMOS_REPO_URL` | yes | HTTPS URL of the host project (e.g. `https://github.com/<owner>/<repo>.git`) |
+| `TEAMOS_REPO_BRANCH` | no | Branch to track (default: `main`) |
+| `TEAMOS_REPO_DIR` | no | Where to clone (default: `/workspace/repo`) |
+| `GITHUB_TOKEN` | for private repos / push | PAT with `repo` scope; used as `x-access-token:<token>` for HTTPS auth |
+| `GIT_AUTHOR_NAME` | no | Commit author (default: `teamos-runner`) |
+| `GIT_AUTHOR_EMAIL` | no | Commit email (default: `runner@teamos.local`) |
+| `TEAMOS_TUNNEL_NAME` | no | If set, runs `code tunnel --name <value>` in the background |
+| `TEAMOS_UI_PORT` | no | If set, starts the `teamos/ui` Vite dev server on this port (bound to `0.0.0.0`). Expose via `fly proxy <port>` or a Fly HTTP service with auth in front. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | recommended | Subscription auth for the Claude CLI (see below). Falls back to `ANTHROPIC_API_KEY` if absent. |
+
+### Authenticating the Claude CLI
+
+The default `claude` agent adapter spawns the Claude Code CLI as a subprocess for each member cycle. Two ways to authenticate:
+
+- **Subscription** (Pro/Max/Team/Enterprise) — run `claude setup-token` once on a machine where you're signed in to Claude.ai. It mints a one-year OAuth token that you set as `CLAUDE_CODE_OAUTH_TOKEN`. Cycles bill against your subscription rather than API rates. Note: `--bare` mode does not honor this token; teamos's adapter does not use `--bare`.
+- **API key** — set `ANTHROPIC_API_KEY` instead. Bills per-token at API rates.
+
+Token expires after one year — set a reminder to re-run `claude setup-token` and update the secret.
 
 ### Quick deploy to Fly.io
 
 ```bash
-# Create app and volume
-fly apps create teamos-runner
-fly volumes create team_workspace --size 1
+# 1. From your host project root, copy the template fly.toml.
+cp teamos/fly.toml ./fly.toml
+# Edit fly.toml: set `app = "<your-unique-name>"` and set TEAMOS_REPO_URL.
 
-# Set secrets
-fly secrets set ANTHROPIC_API_KEY=sk-... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+# 2. Create app + volume.
+fly apps create <your-unique-name>
+fly volumes create teamos_workspace --size 2
 
-# Deploy
+# 3. Set secrets.
+fly secrets set \
+  CLAUDE_CODE_OAUTH_TOKEN="<token from `claude setup-token`>" \
+  GITHUB_TOKEN="<github PAT>"
+
+# 4. Deploy.
 fly deploy
 ```
+
+The runner starts in loop mode with `--sync git --push` by default. Logs from each member cycle land in `/workspace/repo/team/.logs/` on the volume.
+
+### VSCode remote development
+
+To attach VSCode (or vscode.dev in a browser) to the running pod:
+
+1. Set `TEAMOS_TUNNEL_NAME = "<unique-name>"` in `[env]` and redeploy.
+2. One-time auth: `fly ssh console`, then inside the machine:
+   ```sh
+   pkill -f 'code tunnel' || true   # stop the failing background tunnel
+   code tunnel user login           # device-code flow, opens a github.com URL
+   ```
+   Auth is written to `/workspace/.vscode-cli/` and survives restarts. Restart the machine (`fly machine restart`) and the entrypoint will start the tunnel cleanly.
+3. Connect from VSCode: install the "Remote - Tunnels" extension, sign in with the same GitHub account, pick `<unique-name>` from the tunnel list.
+
+The tunnel is outbound-only — no Fly ports need to be exposed.
+
+### Alternative: S3 sync instead of git
+
+For setups where you'd rather sync the workspace to object storage than commit it back to git, swap the runner args:
+
+```toml
+# fly.toml — override the default CMD
+[processes]
+  app = "teamos-entrypoint --sync s3 --messaging file"
+```
+
+Then add S3 settings to the host project's `teamos.config.json` and provide `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` as secrets. Tigris (Fly's S3-compatible storage) and MinIO are both supported — see the **Adapters** section.
 
 ### Local dev with MinIO
 
@@ -511,24 +580,7 @@ minio server ./minio-data --console-address ":9001"
 node teamos/scripts/run.mjs --sync s3 --messaging file
 ```
 
-With `teamos.config.json` for MinIO:
-```json
-{
-  "sync": {
-    "adapter": "s3",
-    "s3": {
-      "endpoint": "http://localhost:9000",
-      "bucket": "teamos-workspace",
-      "region": "us-east-1",
-      "accessKeyId": "minioadmin",
-      "secretAccessKey": "minioadmin",
-      "forcePathStyle": true
-    }
-  }
-}
-```
-
-Or just use the default git sync with file messaging — zero additional dependencies:
+Or just use the default git sync — zero additional dependencies:
 
 ```bash
 node teamos/scripts/run.mjs
