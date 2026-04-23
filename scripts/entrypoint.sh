@@ -88,8 +88,12 @@ if [ -n "$TEAMOS_UI_PORT" ]; then
 			fi
 		fi
 		if [ -n "$TEAMOS_UI_PORT" ]; then
-			echo "[entrypoint] starting teamos UI on 0.0.0.0:$TEAMOS_UI_PORT"
-			(cd "$UI_DIR" && exec node_modules/.bin/vite --host 0.0.0.0 --port "$TEAMOS_UI_PORT") \
+			# Bind to :: (all interfaces, dual-stack IPv4+IPv6) so Fly's
+			# wireguard mesh — which is IPv6-only — can reach the dev server
+			# via `fly proxy`. Vite's default `0.0.0.0` is IPv4 only and
+			# silently rejects v6 connections.
+			echo "[entrypoint] starting teamos UI on [::]:$TEAMOS_UI_PORT"
+			(cd "$UI_DIR" && exec node_modules/.bin/vite --host :: --port "$TEAMOS_UI_PORT") \
 				>/workspace/ui.log 2>&1 &
 		fi
 	else
