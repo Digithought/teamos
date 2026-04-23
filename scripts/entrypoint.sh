@@ -63,16 +63,28 @@ fi
 if [ -n "$TEAMOS_UI_PORT" ]; then
 	UI_DIR="$REPO_DIR/teamos/ui"
 	if [ -d "$UI_DIR" ]; then
-		if [ ! -d "$UI_DIR/node_modules" ]; then
-			echo "[entrypoint] installing UI dependencies (first boot — this takes a minute)"
-			(cd "$UI_DIR" && npm ci --no-audit --no-fund 2>&1 || npm install --no-audit --no-fund 2>&1) \
-				| tail -3
+		# Use the presence of the vite binary as the "install complete" marker —
+		# a bare node_modules dir can result from an interrupted install (OOM,
+		# earlier crash) and would otherwise be trusted on subsequent boots.
+		if [ ! -x "$UI_DIR/node_modules/.bin/vite" ]; then
+			echo "[entrypoint] installing UI dependencies"
+			rm -rf "$UI_DIR/node_modules"
+			if ! (cd "$UI_DIR" && npm ci --no-audit --no-fund); then
+				echo "[entrypoint] npm ci failed; trying npm install"
+				rm -rf "$UI_DIR/node_modules"
+				if ! (cd "$UI_DIR" && npm install --no-audit --no-fund); then
+					echo "[entrypoint] WARN: UI dependency install failed; skipping UI"
+					TEAMOS_UI_PORT=""
+				fi
+			fi
 		fi
-		echo "[entrypoint] starting teamos UI on 0.0.0.0:$TEAMOS_UI_PORT"
-		(cd "$UI_DIR" && exec npx vite --host 0.0.0.0 --port "$TEAMOS_UI_PORT") \
-			>/workspace/ui.log 2>&1 &
+		if [ -n "$TEAMOS_UI_PORT" ]; then
+			echo "[entrypoint] starting teamos UI on 0.0.0.0:$TEAMOS_UI_PORT"
+			(cd "$UI_DIR" && exec node_modules/.bin/vite --host 0.0.0.0 --port "$TEAMOS_UI_PORT") \
+				>/workspace/ui.log 2>&1 &
+		fi
 	else
-		echo "[entrypoint] warn: TEAMOS_UI_PORT=$TEAMOS_UI_PORT set but $UI_DIR not found"
+		echo "[entrypoint] warn: TEAMOS_UI_PORT set but $UI_DIR not found"
 	fi
 fi
 
