@@ -18,6 +18,11 @@
 #   TEAMOS_TUNNEL_NAME       If set, runs `code tunnel --name <value>` in background
 #   TEAMOS_UI_PORT           If set, starts the teamos/ui Vite dev server on this
 #                            port (bound to 0.0.0.0 so Fly's wireguard can reach it)
+#   TEAMOS_PEER_REPOS        Comma-separated list of sibling repos to clone next to
+#                            the main repo (so docs that reference ../foo resolve).
+#                            Each entry can be a full git URL or "owner/repo"
+#                            (treated as https://github.com/owner/repo.git). Cloned
+#                            shallow (--depth 1). Failures are warnings, not fatal.
 #
 # Required secrets (set via `fly secrets set`):
 #   CLAUDE_CODE_OAUTH_TOKEN  Subscription auth for the Claude CLI (read by the
@@ -62,6 +67,41 @@ else
 fi
 
 cd "$REPO_DIR"
+
+# Clone/update sibling reference repos so docs and agent notes that point at
+# `../foo` resolve. Failures (auth missing, repo gone) are warnings — they
+# shouldn't block the runner from starting.
+if [ -n "$TEAMOS_PEER_REPOS" ]; then
+	PEER_BASE="$(dirname "$REPO_DIR")"
+	# shellcheck disable=SC2086 # word-splitting on commas is intentional
+	OLD_IFS="$IFS"; IFS=','
+	for peer in $TEAMOS_PEER_REPOS; do
+		IFS="$OLD_IFS"
+		# trim surrounding whitespace
+		peer="${peer# }"; peer="${peer% }"
+		[ -z "$peer" ] && continue
+		case "$peer" in
+			*://*)         peer_url="$peer" ;;
+			*/*)           peer_url="https://github.com/${peer%.git}.git" ;;
+			*)             echo "[entrypoint] warn: skipping invalid peer '$peer'"; continue ;;
+		esac
+		peer_name="${peer_url##*/}"
+		peer_name="${peer_name%.git}"
+		peer_dir="$PEER_BASE/$peer_name"
+		if [ ! -d "$peer_dir/.git" ]; then
+			echo "[entrypoint] cloning peer: $peer_url -> $peer_dir"
+			git clone --depth 1 "$peer_url" "$peer_dir" 2>&1 \
+				|| echo "[entrypoint] warn: clone failed for $peer_url"
+		else
+			# Don't auto-update existing peers — agents may have edited them.
+			# Pull manually inside the pod (or `rm -rf` to force a fresh clone
+			# on next boot) when you need a refresh.
+			echo "[entrypoint] peer present: $peer_dir (not auto-updated)"
+		fi
+		OLD_IFS="$IFS"; IFS=','
+	done
+	IFS="$OLD_IFS"
+fi
 
 if [ -n "$TEAMOS_TUNNEL_NAME" ]; then
 	echo "[entrypoint] starting code tunnel: $TEAMOS_TUNNEL_NAME"

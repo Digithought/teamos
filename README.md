@@ -510,6 +510,7 @@ TeamOS ships a generic container image (`teamos/Dockerfile`) that clones a host 
 | `GIT_AUTHOR_EMAIL` | no | Commit email (default: `runner@teamos.local`) |
 | `TEAMOS_TUNNEL_NAME` | no | If set, runs `code tunnel --name <value>` in the background |
 | `TEAMOS_UI_PORT` | no | If set, starts the `teamos/ui` Vite dev server on this port (bound to `0.0.0.0`). Expose via `fly proxy <port>` or a Fly HTTP service with auth in front. |
+| `TEAMOS_PEER_REPOS` | no | Comma-separated list of sibling repos to shallow-clone into `dirname($TEAMOS_REPO_DIR)` so docs and agent notes that point at `../foo` resolve. Each entry may be a full git URL or a `owner/repo` shortcut (treated as `https://github.com/owner/repo.git`). Failures are warnings — they don't block the runner. Existing peers are not auto-updated; pull manually or `rm -rf` to force a fresh clone. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | recommended | Subscription auth for the Claude CLI (see below). Falls back to `ANTHROPIC_API_KEY` if absent. |
 
 ### Authenticating the Claude CLI
