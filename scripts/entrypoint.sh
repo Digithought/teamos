@@ -69,10 +69,10 @@ if [ -n "$TEAMOS_UI_PORT" ]; then
 		if [ ! -x "$UI_DIR/node_modules/.bin/vite" ]; then
 			echo "[entrypoint] installing UI dependencies"
 			rm -rf "$UI_DIR/node_modules"
-			if ! (cd "$UI_DIR" && npm ci --no-audit --no-fund); then
+			if ! (cd "$UI_DIR" && npm ci --no-audit --no-fund --include=dev); then
 				echo "[entrypoint] npm ci failed; trying npm install"
 				rm -rf "$UI_DIR/node_modules"
-				if ! (cd "$UI_DIR" && npm install --no-audit --no-fund); then
+				if ! (cd "$UI_DIR" && npm install --no-audit --no-fund --include=dev); then
 					echo "[entrypoint] WARN: UI dependency install failed; skipping UI"
 					TEAMOS_UI_PORT=""
 				fi
