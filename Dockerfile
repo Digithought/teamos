@@ -20,6 +20,11 @@ RUN curl -fsSL "https://update.code.visualstudio.com/latest/cli-linux-x64/stable
 # Claude Code CLI — invoked per member cycle.
 RUN npm install -g @anthropic-ai/claude-code
 
+# Use the `node` user (uid 1000) that ships with the base image. The Claude
+# CLI refuses `--dangerously-skip-permissions` under EUID=0 even inside a
+# container, so the entrypoint chowns /workspace to this user on boot and
+# re-execs itself via `runuser` to drop privileges.
+
 # HOME on the volume so git credentials and vscode-cli auth survive restarts.
 ENV HOME=/workspace
 WORKDIR /workspace

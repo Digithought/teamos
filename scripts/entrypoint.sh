@@ -25,6 +25,15 @@
 
 set -e
 
+# Claude CLI refuses `--dangerously-skip-permissions` while EUID=0 even inside
+# a container, so we run everything as the non-root `node` user (uid 1000,
+# shipped with the node base image). Initial setup needs root to chown the
+# freshly-mounted volume — drop privileges by re-execing through runuser.
+if [ "$(id -u)" = "0" ]; then
+	chown -R node:node /workspace
+	exec runuser -u node -- env HOME=/workspace "$0" "$@"
+fi
+
 : "${TEAMOS_REPO_URL:?TEAMOS_REPO_URL is required}"
 REPO_DIR="${TEAMOS_REPO_DIR:-/workspace/repo}"
 BRANCH="${TEAMOS_REPO_BRANCH:-main}"
