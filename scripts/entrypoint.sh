@@ -98,4 +98,11 @@ if [ -n "$TEAMOS_UI_PORT" ]; then
 fi
 
 echo "[entrypoint] starting teamos runner: $*"
-exec node teamos/scripts/run.mjs "$@"
+# Line-buffer stdout/stderr so the runner's progress shows up in `fly logs`
+# in real time. Without this, Node block-buffers when stdout is a pipe and
+# the banner / pass output can stall in-process for many minutes.
+if command -v stdbuf >/dev/null 2>&1; then
+	exec stdbuf -oL -eL node teamos/scripts/run.mjs "$@"
+else
+	exec node teamos/scripts/run.mjs "$@"
+fi
