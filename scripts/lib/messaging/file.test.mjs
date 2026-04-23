@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileMessagingAdapter } from './file.mjs';
@@ -13,6 +13,14 @@ async function withAdapter(fn) {
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+}
+
+async function withRosterAdapter(names, fn) {
+	await withAdapter(async (adapter, dir) => {
+		const members = names.map(name => ({ name }));
+		await writeFile(join(dir, 'members.json'), JSON.stringify({ members }), 'utf-8');
+		await fn(adapter, dir);
+	});
 }
 
 test('sendMessage writes master store + recipient inboxes + sender sent', async () => {
@@ -238,5 +246,63 @@ test('predecessor frontmatter rewrite preserves all original fields', async () =
 		assert.deepEqual(reread.cc, ['carol']);
 		assert.equal(reread.body, 'original body');
 		assert.ok(reread.supersededBy);
+	});
+});
+
+// ─── Roster validation ──────────────────────────────────────────────────────
+
+test('sendMessage rejects from with wrong case vs roster', async () => {
+	await withRosterAdapter(['alice', 'bob'], async (adapter) => {
+		await assert.rejects(
+			() => adapter.sendMessage({ from: 'Alice', to: ['bob'], subject: 's', body: 'b' }),
+			/does not match roster case.*declares "alice"/,
+		);
+	});
+});
+
+test('sendMessage rejects recipient with wrong case vs roster', async () => {
+	await withRosterAdapter(['alice', 'bob'], async (adapter) => {
+		await assert.rejects(
+			() => adapter.sendMessage({ from: 'alice', to: ['Bob'], subject: 's', body: 'b' }),
+			/does not match roster case.*declares "bob"/,
+		);
+		await assert.rejects(
+			() => adapter.sendMessage({ from: 'alice', to: ['bob'], cc: ['Bob'], subject: 's', body: 'b' }),
+			/does not match roster case/,
+		);
+	});
+});
+
+test('sendMessage rejects unknown member', async () => {
+	await withRosterAdapter(['alice', 'bob'], async (adapter) => {
+		await assert.rejects(
+			() => adapter.sendMessage({ from: 'mallory', to: ['bob'], subject: 's', body: 'b' }),
+			/not in members\.json/,
+		);
+	});
+});
+
+test('sendMessage accepts exact roster casing (capitalized roster)', async () => {
+	await withRosterAdapter(['Alice', 'Bob'], async (adapter) => {
+		const { id } = await adapter.sendMessage({
+			from: 'Alice', to: ['Bob'], subject: 's', body: 'b',
+		});
+		assert.ok(id);
+		const sent = await adapter.listSent('Alice');
+		assert.equal(sent.length, 1);
+	});
+});
+
+test('supersedeMessage also enforces roster casing', async () => {
+	await withRosterAdapter(['alice', 'bob'], async (adapter) => {
+		const { id } = await adapter.sendMessage({
+			from: 'alice', to: ['bob'], subject: 's', body: 'b',
+		});
+		await assert.rejects(
+			() => adapter.supersedeMessage({
+				from: 'Alice', supersedes: [id], to: ['bob'], body: 'x',
+			}),
+			/does not match roster case/,
+		);
 	});
 });

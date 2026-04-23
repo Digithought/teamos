@@ -103,6 +103,51 @@ export class FileMessagingAdapter {
 		return join(this.teamDir, 'members', member, `${kind}.json`);
 	}
 
+	// ─── Roster validation ─────────────────────────────────────────────────────
+	//
+	// Message-party names (from, to, cc) must match members.json exactly. On
+	// case-insensitive filesystems (macOS/Windows) a misspelled case writes to
+	// the same directory; on case-sensitive filesystems (Linux) it creates a
+	// phantom sibling directory — and the two diverge the moment you sync a
+	// repo between the two. Validating here catches drift at the source.
+
+	async _loadRosterNames() {
+		const path = join(this.teamDir, 'members.json');
+		try {
+			const raw = await readFile(path, 'utf-8');
+			const data = JSON.parse(raw);
+			if (!Array.isArray(data.members)) return null;
+			return data.members
+				.map(m => m?.name)
+				.filter(n => typeof n === 'string' && n.length > 0);
+		} catch {
+			return null;
+		}
+	}
+
+	_assertInRoster(role, name, roster) {
+		if (roster.includes(name)) return;
+		const lower = name.toLowerCase();
+		const caseMatch = roster.find(n => n.toLowerCase() === lower);
+		if (caseMatch) {
+			throw new Error(
+				`${role}: "${name}" does not match roster case — members.json declares "${caseMatch}". ` +
+				`Use the canonical name to avoid phantom directories on case-sensitive filesystems.`
+			);
+		}
+		throw new Error(
+			`${role}: "${name}" is not in members.json (known: ${roster.join(', ')}).`
+		);
+	}
+
+	async _validateParties(op, from, to, cc) {
+		const roster = await this._loadRosterNames();
+		if (!roster) return; // No roster file → skip (e.g. test harness)
+		this._assertInRoster(`${op}.from`, from, roster);
+		for (const r of to) this._assertInRoster(`${op}.to`, r, roster);
+		for (const r of (cc ?? [])) this._assertInRoster(`${op}.cc`, r, roster);
+	}
+
 	// ─── Mailbox helpers ───────────────────────────────────────────────────────
 
 	async _readMailbox(member, kind) {
@@ -150,6 +195,8 @@ export class FileMessagingAdapter {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
+
+		await this._validateParties('sendMessage', from, to, cc);
 
 		let derivedSubject = subject;
 		if ((!derivedSubject || !derivedSubject.trim()) && replyTo) {
@@ -206,6 +253,8 @@ export class FileMessagingAdapter {
 		}
 		if (!Array.isArray(to) || to.length === 0) throw new Error('supersedeMessage: to is required');
 		if (body == null) throw new Error('supersedeMessage: body is required');
+
+		await this._validateParties('supersedeMessage', from, to, cc);
 
 		// Load and validate every predecessor up front — no partial commits.
 		const predecessors = [];
