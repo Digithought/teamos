@@ -1,14 +1,40 @@
-app = "teamos-runner"
+# Generic teamos Fly.io template.
+#
+# Copy this to your host project root, set `app` to a globally-unique name,
+# fill in TEAMOS_REPO_URL, then `fly deploy`. See teamos/README.md
+# § Cloud Deployment for the full walk-through.
+#
+# Required secrets (set via `fly secrets set`):
+#   CLAUDE_CODE_OAUTH_TOKEN   one-year token from `claude setup-token`
+#   GITHUB_TOKEN              PAT with repo + push access (HTTPS clone/push)
+
+# app = "your-app-name-here"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "teamos/Dockerfile"
+  context    = "teamos"
 
 [mounts]
-  source = "team_workspace"
+  source      = "teamos_workspace"
   destination = "/workspace"
 
 [env]
   NODE_ENV = "production"
-  TEAMOS_TEAM_DIR = "/workspace/team"
 
-# Secrets set via: fly secrets set ANTHROPIC_API_KEY=... DISCORD_BOT_TOKEN=... etc.
+  # Required — host project to clone into the volume on first boot.
+  # TEAMOS_REPO_URL    = "https://github.com/<owner>/<repo>.git"
+
+  # Optional overrides (defaults shown).
+  # TEAMOS_REPO_BRANCH = "main"
+  # TEAMOS_REPO_DIR    = "/workspace/repo"
+  # GIT_AUTHOR_NAME    = "teamos-runner"
+  # GIT_AUTHOR_EMAIL   = "runner@teamos.local"
+
+  # Optional — enable VSCode remote development via `code tunnel`.
+  # First boot: `fly ssh console`, then `code tunnel user login` once.
+  # TEAMOS_TUNNEL_NAME = "<unique-tunnel-name>"
+
+[[vm]]
+  memory   = "512mb"
+  cpu_kind = "shared"
+  cpus     = 1
