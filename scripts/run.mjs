@@ -20,6 +20,7 @@
  *   --once               Single pass (no loop)
  *   --loop               Enable continuous scheduling loop (default in hosted mode)
  *   --interval <min>     Minutes between passes (default: 120, implies --loop)
+ *   --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)
  *   --push               Push to remote after each commit (git sync)
  *   --no-commit          Skip automatic sync after each cycle
  *   --no-clerk           Skip clerk agent after each pass
@@ -63,6 +64,7 @@ const __dirname = dirname(__filename);
 const TEAMOS_ROOT = join(__dirname, '..');
 
 const DEFAULT_INTERVAL_MS = 2 * 60 * 60 * 1000;  // 2 hours between passes
+const DEFAULT_REMOTE_PULL_MS = 5 * 60 * 1000;    // 5 min between idle remote pulls
 
 function getVersion() {
 	try {
@@ -97,6 +99,7 @@ function printHelp() {
 		'  --once               Single pass, then exit',
 		'  --loop               Enable continuous scheduling loop     (default)',
 		'  --interval <min>     Minutes between passes                (default: 120)',
+		'  --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)',
 		'  --push               Push to remote after each commit',
 		'  --no-commit          Skip automatic sync after each cycle',
 		'  --no-clerk           Skip clerk agent after each pass',
@@ -125,6 +128,7 @@ function parseArgs(argv) {
 		loop: true,          // loop is now the default
 		once: false,
 		intervalMs: DEFAULT_INTERVAL_MS,
+		remotePullMs: DEFAULT_REMOTE_PULL_MS,
 		push: false,
 		noCommit: false,
 		noClerk: false,
@@ -175,6 +179,15 @@ function parseArgs(argv) {
 				opts.loop = true;
 				opts.once = false;
 				break;
+			case '--remote-pull-interval': {
+				const mins = parseInt(argv[++i], 10);
+				if (isNaN(mins) || mins < 0) {
+					console.error('Invalid --remote-pull-interval: expected non-negative minutes (0 disables).');
+					process.exit(1);
+				}
+				opts.remotePullMs = mins * 60 * 1000;
+				break;
+			}
 			case '--push':
 				opts.push = true;
 				break;
@@ -470,6 +483,7 @@ async function main() {
 					remaining, teamDir, members,
 					schedulerState.lastServedAt, opts.cadences,
 					(m, p, t) => getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter),
+					syncAdapter ? { syncAdapter, workDir: repoRoot, intervalMs: opts.remotePullMs } : null,
 				);
 				if (reason === 'stop') {
 					console.log('\n[runner] Stop file detected — exiting loop.');

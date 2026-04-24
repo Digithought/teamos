@@ -53,11 +53,23 @@ export async function saveSchedulerState(logsDir, state) {
 /**
  * Wait for the specified duration, polling for stop files or new work.
  * @param {Function} getMembersWithWork - async function(members, priority, teamDir) => member[]
+ * @param {Object} [remote] - optional periodic remote-pull during idle
+ * @param {Object} remote.syncAdapter - adapter with pull(workDir)
+ * @param {string} remote.workDir - repo root passed to syncAdapter.pull
+ * @param {number} remote.intervalMs - min ms between remote pulls (0 disables)
  */
-export async function idleWait(ms, teamDir, members, lastServedAt, cadences, getMembersWithWork) {
+export async function idleWait(ms, teamDir, members, lastServedAt, cadences, getMembersWithWork, remote = null) {
 	const end = Date.now() + ms;
+	let lastRemotePullAt = Date.now();
 	while (Date.now() < end) {
 		if (await checkStop(teamDir)) return 'stop';
+
+		if (remote?.syncAdapter?.pull && remote.intervalMs > 0
+			&& (Date.now() - lastRemotePullAt) >= remote.intervalMs) {
+			try { await remote.syncAdapter.pull(remote.workDir); } catch {}
+			lastRemotePullAt = Date.now();
+		}
+
 		for (const priority of ['pressing', 'today']) {
 			const cadence = cadences[priority] ?? 0;
 			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
