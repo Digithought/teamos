@@ -13,6 +13,8 @@
 	let loading = $state(true);
 	let stopPending = $state(false);
 	let stoppingCycle = $state(false);
+	let paused = $state(false);
+	let pauseBusy = $state(false);
 
 	let showNewMember = $state(false);
 	let savingMember = $state(false);
@@ -40,7 +42,7 @@
 			api.projects(),
 			api.tickets(),
 			api.sibling().catch(() => null),
-			api.cycleStatus().catch(() => ({ stopPending: false })),
+			api.cycleStatus().catch(() => ({ stopPending: false, paused: false })),
 		]);
 		members = m;
 		memos = memosData.items ?? [];
@@ -48,6 +50,7 @@
 		tickets = t;
 		sibling = s;
 		stopPending = cs.stopPending;
+		paused = cs.paused;
 		loading = false;
 	}
 
@@ -58,6 +61,21 @@
 		await api.cycleStop();
 		stopPending = true;
 		stoppingCycle = false;
+	}
+
+	async function togglePause() {
+		pauseBusy = true;
+		try {
+			if (paused) {
+				await api.cycleResume();
+				paused = false;
+			} else {
+				await api.cyclePause();
+				paused = true;
+			}
+		} finally {
+			pauseBusy = false;
+		}
 	}
 
 	async function archiveMemo(index: number) {
@@ -147,6 +165,15 @@
 				{#if !showNewMember}
 					<button class="new-memo-btn" onclick={openNewMember}>New Member</button>
 				{/if}
+				<button
+					class="pause-btn"
+					class:active={paused}
+					onclick={togglePause}
+					disabled={pauseBusy || stopPending}
+					title={paused ? 'Remove team/.pause — runner resumes at next checkpoint' : 'Create team/.pause — runner holds at next checkpoint without exiting'}
+				>
+					{pauseBusy ? (paused ? 'Resuming...' : 'Pausing...') : paused ? 'Resume' : 'Pause'}
+				</button>
 				{#if stopPending}
 					<span class="stop-status">Stop pending...</span>
 				{:else}
@@ -345,6 +372,29 @@
 		color: var(--on-primary);
 	}
 	.stop-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.pause-btn {
+		padding: 0.375rem 0.75rem;
+		border: 1px solid var(--warning);
+		border-radius: var(--radius);
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--warning);
+		background: transparent;
+		transition: all var(--transition);
+	}
+	.pause-btn:hover:not(:disabled) {
+		background: var(--warning);
+		color: var(--on-primary);
+	}
+	.pause-btn.active {
+		background: var(--warning);
+		color: var(--on-primary);
+	}
+	.pause-btn.active:hover:not(:disabled) {
+		background: transparent;
+		color: var(--warning);
+	}
+	.pause-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.stop-status {
 		font-size: 0.8rem;
 		font-weight: 600;

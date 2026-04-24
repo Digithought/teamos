@@ -136,7 +136,9 @@ export const api = {
 	tickets: () => get<TicketCounts | null>('/api/tickets'),
 	sibling: () => get<SiblingInfo | null>('/api/sibling'),
 	cycleStop: () => post<{ ok: boolean }>('/api/cycle/stop', {}),
-	cycleStatus: () => get<{ stopPending: boolean }>('/api/cycle/status'),
+	cyclePause: () => post<{ ok: boolean }>('/api/cycle/pause', {}),
+	cycleResume: () => post<{ ok: boolean }>('/api/cycle/resume', {}),
+	cycleStatus: () => get<{ stopPending: boolean; paused: boolean }>('/api/cycle/status'),
 	messagingInfo: () => get<MessagingInfo>('/api/messaging/info'),
 	me: () => get<MeInfo>('/api/me'),
 };

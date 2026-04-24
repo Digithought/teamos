@@ -486,6 +486,20 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return dirExists(join(teamDir, '.stop'));
 	}
 
+	async function pauseCycle(): Promise<{ ok: boolean }> {
+		await writeFile(join(teamDir, '.pause'), '', 'utf-8');
+		return { ok: true };
+	}
+
+	async function resumeCycle(): Promise<{ ok: boolean }> {
+		await unlink(join(teamDir, '.pause')).catch(() => {});
+		return { ok: true };
+	}
+
+	async function isPaused(): Promise<boolean> {
+		return dirExists(join(teamDir, '.pause'));
+	}
+
 	return {
 		name: 'teamos-api',
 		configureServer(server) {
@@ -600,8 +614,19 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return json(res, await stopCycle());
 					}
 
+					if (path === '/api/cycle/pause' && method === 'POST') {
+						return json(res, await pauseCycle());
+					}
+
+					if (path === '/api/cycle/resume' && method === 'POST') {
+						return json(res, await resumeCycle());
+					}
+
 					if (path === '/api/cycle/status' && method === 'GET') {
-						return json(res, { stopPending: await isStopPending() });
+						return json(res, {
+							stopPending: await isStopPending(),
+							paused: await isPaused(),
+						});
 					}
 
 					// ─── Messages (id-scoped master store) ───────────────────
