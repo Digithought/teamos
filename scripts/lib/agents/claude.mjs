@@ -69,7 +69,7 @@ export function createClaudeAdapter(instructionFile) {
 			'--verbose',
 			'--no-session-persistence',
 			'--output-format', 'stream-json',
-			'--effort', 'high',
+			'--effort', 'xhigh',
 			'--append-system-prompt-file', instructionFile,
 			'Execute the member cycle as described in the appended system prompt.',
 		],

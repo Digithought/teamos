@@ -134,6 +134,14 @@ export function buildToolsPromptSection(role) {
 		'- **remove_event** — Delete an event entirely (cancels all future occurrences of a recurring event).',
 		'',
 		'**Do not advance recurrence yourself.** When a recurring event fires, the runner automatically advances its `time` to the next occurrence after this cycle completes. Do not call `update_event` just to bump the `time`. One-time events that fire are removed automatically — no `complete_event` needed. Treat event ids as opaque strings and never edit `team/members/<you>/schedule.json` directly.',
+		'',
+		`**Commit Triggers** — see \`teamos/docs/triggers.md\`. Subscribe yourself to host-repo commits matching filters (path globs, author, message regex) so reviews wake you at the priority you pick. Matching commits appear in the cycle prompt under "Commit Triggers Fired".`,
+		'- **list_triggers** — Fetch every commit-trigger subscription you have.',
+		'- **add_trigger** — Subscribe to commits (`priority`, optional `paths`, `author`, `authorNot`, `messageMatches`, `reason`). Returns `{ id }`.',
+		'- **update_trigger** — Partial update of a trigger by id.',
+		'- **remove_trigger** — Unsubscribe by removing a trigger.',
+		'',
+		'Commits authored by you are skipped by default. The runner advances your cursor after a successful cycle — you never see the same commit twice.',
 	);
 
 	return lines;

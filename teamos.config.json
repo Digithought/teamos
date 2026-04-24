@@ -2,6 +2,7 @@
 	"messaging": { "adapter": "file" },
 	"tasks": { "adapter": "file" },
 	"schedule": { "adapter": "file" },
+	"triggers": { "adapter": "file" },
 	"sync": { "adapter": "git" },
 	"agent": "claude",
 	"auth": {

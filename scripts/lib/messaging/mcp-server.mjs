@@ -15,12 +15,15 @@
  *   TEAMOS_MESSAGING_ADAPTER — messaging adapter name (default: file)
  *   TEAMOS_TASKS_ADAPTER     — tasks adapter name     (default: file)
  *   TEAMOS_SCHEDULE_ADAPTER  — schedule adapter name  (default: file)
+ *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
  */
 
 import { createInterface } from 'node:readline';
+import { join } from 'node:path';
 import { FileMessagingAdapter } from './file.mjs';
 import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileScheduleAdapter } from '../schedule/file.mjs';
+import { FileTriggersAdapter } from '../triggers/file.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
 
@@ -35,6 +38,11 @@ if (!teamDir || !memberName) {
 const messagingAdapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
 const tasksAdapterName = process.env.TEAMOS_TASKS_ADAPTER || 'file';
 const scheduleAdapterName = process.env.TEAMOS_SCHEDULE_ADAPTER || 'file';
+const triggersAdapterName = process.env.TEAMOS_TRIGGERS_ADAPTER || 'file';
+
+// The triggers adapter runs `git` in the repo root. The team dir is always
+// team/ under the repo, so repoRoot is its parent.
+const repoRoot = join(teamDir, '..');
 
 function makeMessagingAdapter(name) {
 	switch (name) {
@@ -63,9 +71,19 @@ function makeScheduleAdapter(name) {
 	}
 }
 
+function makeTriggersAdapter(name) {
+	switch (name) {
+		case 'file': return new FileTriggersAdapter(teamDir, repoRoot);
+		default:
+			process.stderr.write(`[mcp-server] Unknown triggers adapter: ${name}\n`);
+			process.exit(1);
+	}
+}
+
 const adapter = makeMessagingAdapter(messagingAdapterName);
 const tasks = makeTasksAdapter(tasksAdapterName);
 const schedule = makeScheduleAdapter(scheduleAdapterName);
+const triggers = makeTriggersAdapter(triggersAdapterName);
 
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -275,6 +293,55 @@ const TOOLS = [
 			required: ['id'],
 		},
 	},
+	{
+		name: 'list_triggers',
+		description: 'List every commit trigger on your subscription list. Each trigger causes new git commits matching its filters to wake you at the declared priority for review. The cycle prompt already lists any commits that fired — call this to audit your subscriptions.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'add_trigger',
+		description: 'Subscribe yourself to new commits in the host repo that match these filters. Use this for code reviews, security sweeps, or watching areas of the codebase you own. Every field other than priority is a filter — a commit must satisfy ALL provided filters to match. Commits authored by you are skipped by default (override by setting explicit `author` or explicit empty `authorNot`).',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'], description: 'Priority at which a matching commit wakes you' },
+				reason: { type: 'string', description: 'Short note on why you created this trigger (appears when you list_triggers).' },
+				paths: { type: 'array', items: { type: 'string' }, description: 'Glob patterns (`**`, `*`, `?`); match if the commit touches any file matching any glob. Omit to match any path.' },
+				author: { type: 'string', description: 'Only match commits whose author name or email equals this.' },
+				authorNot: { type: 'string', description: 'Skip commits by this author name or email. Defaults to yourself; set explicitly to override.' },
+				messageMatches: { type: 'string', description: 'JS regex tested against the commit subject (first line of the message).' },
+			},
+			required: ['priority'],
+		},
+	},
+	{
+		name: 'update_trigger',
+		description: 'Partial update of a trigger by id. Only supplied fields change. Pass null for an optional field to clear it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The trigger id' },
+				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'] },
+				reason: { type: ['string', 'null'] },
+				paths: { type: ['array', 'null'], items: { type: 'string' } },
+				author: { type: ['string', 'null'] },
+				authorNot: { type: ['string', 'null'] },
+				messageMatches: { type: ['string', 'null'] },
+			},
+			required: ['id'],
+		},
+	},
+	{
+		name: 'remove_trigger',
+		description: 'Unsubscribe by removing a trigger entirely.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The trigger id to remove' },
+			},
+			required: ['id'],
+		},
+	},
 ];
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────────
@@ -381,6 +448,27 @@ async function handleToolCall(name, args) {
 		case 'remove_event': {
 			const { id } = args;
 			await schedule.removeEvent(memberName, id);
+			return textResult(`Removed ${id}`);
+		}
+
+		case 'list_triggers':
+			return textResult(await triggers.listTriggers(memberName));
+
+		case 'add_trigger': {
+			const { priority, reason, paths, author, authorNot, messageMatches } = args;
+			const { id } = await triggers.addTrigger(memberName, { priority, reason, paths, author, authorNot, messageMatches });
+			return textResult({ id });
+		}
+
+		case 'update_trigger': {
+			const { id, ...patch } = args;
+			await triggers.updateTrigger(memberName, id, patch);
+			return textResult(`Updated ${id}`);
+		}
+
+		case 'remove_trigger': {
+			const { id } = args;
+			await triggers.removeTrigger(memberName, id);
 			return textResult(`Removed ${id}`);
 		}
 

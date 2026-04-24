@@ -54,6 +54,7 @@ async function writeMcpConfig(cwd, mcpContext) {
 					TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapterName || 'file',
 					TEAMOS_TASKS_ADAPTER: mcpContext.tasksAdapterName || 'file',
 					TEAMOS_SCHEDULE_ADAPTER: mcpContext.scheduleAdapterName || 'file',
+					TEAMOS_TRIGGERS_ADAPTER: mcpContext.triggersAdapterName || 'file',
 				},
 			},
 		},

@@ -24,7 +24,7 @@ export async function loadMembers(teamDir) {
  *   todos are checked through the adapter contract (`hasActionableTodos`).
  *   Otherwise the file falls back to reading todo.json directly.
  */
-export async function memberHasWork(memberName, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter) {
+export async function memberHasWork(memberName, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter) {
 	const memberDir = join(teamDir, 'members', memberName);
 
 	// Check inbox.json for pending messages
@@ -60,13 +60,19 @@ export async function memberHasWork(memberName, priority, teamDir, messagingAdap
 		if (await scheduleAdapter.hasDueEvents(memberName, new Date())) return true;
 	}
 
+	// Check commit triggers — new commits matching a member's subscriptions at
+	// this priority or higher count as work.
+	if (triggersAdapter) {
+		if (await triggersAdapter.hasPendingMatches(memberName, priority)) return true;
+	}
+
 	return false;
 }
 
-export async function getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter) {
+export async function getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter) {
 	const results = [];
 	for (const member of members) {
-		if (await memberHasWork(member.name, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter)) {
+		if (await memberHasWork(member.name, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter)) {
 			results.push(member);
 		}
 	}

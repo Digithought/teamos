@@ -295,6 +295,7 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 			messagingAdapterName: opts.messaging,
 			tasksAdapterName: opts.tasks,
 			scheduleAdapterName: opts.schedule,
+			triggersAdapterName: opts.triggers,
 		});
 
 		if (clerkExit !== 0) {
@@ -331,6 +332,7 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 			messagingAdapterName: opts.messaging,
 			tasksAdapterName: opts.tasks,
 			scheduleAdapterName: opts.schedule,
+			triggersAdapterName: opts.triggers,
 		});
 
 		if (analysisExit !== 0) {

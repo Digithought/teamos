@@ -54,6 +54,7 @@ import { runCycle, runPass } from './lib/cycle.mjs';
 import { createMessagingAdapter } from './lib/messaging/index.mjs';
 import { createTasksAdapter } from './lib/tasks/index.mjs';
 import { createScheduleAdapter } from './lib/schedule/index.mjs';
+import { createTriggersAdapter } from './lib/triggers/index.mjs';
 import { createSyncAdapter } from './lib/sync/index.mjs';
 import { loadConfig, resolveEnvVars, loadDotEnv } from './lib/config.mjs';
 
@@ -92,6 +93,7 @@ function printHelp() {
 		'  --messaging <name>   file                                 (default: file)',
 		'  --tasks <name>       file                                 (default: file)',
 		'  --schedule <name>    file                                 (default: file)',
+		'  --triggers <name>    file                                 (default: file)',
 		'  --sync <name>        git | s3                             (default: git)',
 		'  --priority <level>   Highest priority to include           (default: pressing)',
 		'  --member <name>      Only run cycles for a specific member',
@@ -121,6 +123,7 @@ function parseArgs(argv) {
 		messaging: null,     // resolved from config if not set
 		tasks: null,         // resolved from config if not set
 		schedule: null,      // resolved from config if not set
+		triggers: null,      // resolved from config if not set
 		sync: null,          // resolved from config if not set
 		priority: 'pressing',
 		member: null,
@@ -153,6 +156,9 @@ function parseArgs(argv) {
 				break;
 			case '--schedule':
 				opts.schedule = argv[++i];
+				break;
+			case '--triggers':
+				opts.triggers = argv[++i];
 				break;
 			case '--sync':
 				opts.sync = argv[++i];
@@ -292,6 +298,7 @@ async function main() {
 	if (!opts.messaging) opts.messaging = config.messaging?.adapter || 'file';
 	if (!opts.tasks) opts.tasks = config.tasks?.adapter || 'file';
 	if (!opts.schedule) opts.schedule = config.schedule?.adapter || 'file';
+	if (!opts.triggers) opts.triggers = config.triggers?.adapter || 'file';
 	if (!opts.sync) opts.sync = config.sync?.adapter || 'git';
 
 	// ── Create adapters ──────────────────────────────────────────────────────
@@ -302,6 +309,7 @@ async function main() {
 	const messagingAdapter = await createMessagingAdapter(opts.messaging, config, teamDir);
 	const tasksAdapter = await createTasksAdapter(opts.tasks, config, teamDir);
 	const scheduleAdapter = await createScheduleAdapter(opts.schedule, config, teamDir);
+	const triggersAdapter = await createTriggersAdapter(opts.triggers, config, teamDir, repoRoot);
 
 	// ── Load members ─────────────────────────────────────────────────────────
 	const allMembers = await loadMembers(teamDir);
@@ -351,6 +359,7 @@ async function main() {
 			messagingAdapterName: opts.messaging,
 			tasksAdapterName: opts.tasks,
 			scheduleAdapterName: opts.schedule,
+			triggersAdapterName: opts.triggers,
 		});
 
 		if (clerkExit !== 0) {
@@ -371,7 +380,7 @@ async function main() {
 	if (opts.dryRun) {
 		console.log(`\nteamos (${version})`);
 		console.log(`Active AI members: ${members.map(m => m.name).join(', ')}\n`);
-		console.log(`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Sync: ${opts.sync}`);
+		console.log(`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`);
 
 		const weightStr = Object.entries(opts.weights).map(([p, w]) => `${p}:${w}`).join(', ');
 		const cadenceStr = Object.entries(opts.cadences)
@@ -389,7 +398,7 @@ async function main() {
 		console.log(`  Vruntimes: ${Object.entries(state.vruntime).map(([p, v]) => `${p}:${v.toFixed(3)}`).join(', ')}\n`);
 
 		for (const priority of PRIORITY_ORDER) {
-			const withWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter);
+			const withWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter);
 			if (withWork.length > 0) {
 				console.log(`  [${priority}]`);
 				for (const m of withWork) {
@@ -421,7 +430,7 @@ async function main() {
 		'═'.repeat(72),
 		`  teamos (${version})${opts.loop ? ' [loop mode]' : ' [single pass]'}`,
 		`  ${members.length} active AI member(s): ${members.map(m => m.name).join(', ')}`,
-		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Sync: ${opts.sync}`,
+		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`,
 		`  Weights: ${weightStr}`,
 		`  Cadences: ${cadenceStr}`,
 		budgetStr ? `  Budgets: ${budgetStr}` : null,
@@ -459,7 +468,7 @@ async function main() {
 
 			const result = await runPass({
 				opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-				useTimeout: false, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter,
+				useTimeout: false, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter,
 			});
 
 			// Post-pass maintenance
@@ -486,7 +495,7 @@ async function main() {
 				const reason = await idleWait(
 					remaining, teamDir, members,
 					schedulerState.lastServedAt, opts.cadences,
-					(m, p, t) => getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter),
+					(m, p, t) => getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter),
 					syncAdapter ? { syncAdapter, workDir: repoRoot, intervalMs: opts.remotePullMs } : null,
 				);
 				if (reason === 'stop') {
@@ -506,7 +515,7 @@ async function main() {
 		// Single pass mode (--once)
 		const result = await runPass({
 			opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-			useTimeout: true, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter,
+			useTimeout: true, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter,
 		});
 
 		await runMaintenance({
