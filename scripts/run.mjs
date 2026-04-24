@@ -44,7 +44,7 @@ import { writeFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { pathExists, ensureLogsDir, buildLogPath, checkStop } from './lib/util.mjs';
+import { pathExists, ensureLogsDir, buildLogPath, checkStop, waitWhilePaused } from './lib/util.mjs';
 import { PRIORITY_ORDER, DEFAULT_PRIORITY_WEIGHTS, DEFAULT_CADENCE_MS } from './lib/scheduler.mjs';
 import { loadSchedulerState, saveSchedulerState, idleWait } from './lib/state.mjs';
 import { runAgent } from './lib/agents/index.mjs';
@@ -443,6 +443,10 @@ async function main() {
 
 		while (true) {
 			if (await checkStop(teamDir)) {
+				console.log('\n[runner] Stop file detected — exiting loop.');
+				break;
+			}
+			if (await waitWhilePaused(teamDir) === 'stop') {
 				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
 			}

@@ -280,6 +280,17 @@ touch team/.stop
 
 The runner checks for this file before each cycle, between each member, and during idle waits. When found, it commits any completed work, removes the stop file, and exits. In loop mode, this exits the outer loop as well.
 
+### Pausing the Runner
+
+Create `team/.pause` to halt the runner without exiting — useful when you need to do manual git work on a deployed pod (where `.stop` would let the container exit and the platform shut the machine down).
+
+```bash
+touch team/.pause      # runner parks at next checkpoint, process stays alive
+rm team/.pause         # resume
+```
+
+Pause is checked at the same three points as stop (before each cycle, between members, during idle waits). Unlike `.stop`, the runner does not delete the file — you remove it yourself to resume. If both files exist, `.stop` wins.
+
 ### Daily Check-in
 
 The runner automatically ensures every active AI member has a recurring **Daily Check-in** schedule event (09:00 UTC daily). This prevents members from going dormant when they have no explicit tasks, messages, or events — giving them at least one cycle per day to be proactive.

@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop, buildToolsPromptSection } from './util.mjs';
+import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop, waitWhilePaused, buildToolsPromptSection } from './util.mjs';
 import { PRIORITY_ORDER, pickNextPriority, normalizeVruntimes, rotateAfter } from './scheduler.mjs';
 import { runAgent } from './agents/index.mjs';
 import { getMembersWithWork } from './work-detection.mjs';
@@ -199,6 +199,7 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 	for (const member of membersWithWork) {
 		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) break;
 		if (await checkStop(teamDir)) { stopped = true; break; }
+		if (await waitWhilePaused(teamDir) === 'stop') { stopped = true; break; }
 
 		// Exponential backoff after consecutive failures (e.g. network outage)
 		if (failureState.consecutive > 0) {
@@ -309,6 +310,9 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 		}
 
 		if (await checkStop(teamDir)) {
+			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
+		}
+		if (await waitWhilePaused(teamDir) === 'stop') {
 			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
 		}
 

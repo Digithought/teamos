@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { constants } from 'node:fs';
 
 export const STOP_FILE = '.stop';
+export const PAUSE_FILE = '.pause';
+const PAUSE_POLL_MS = 30 * 1000;
 
 export async function pathExists(filePath) {
 	try { await access(filePath, constants.R_OK); return true; } catch { return false; }
@@ -19,6 +21,29 @@ export async function checkStop(teamDir) {
 		return true;
 	}
 	return false;
+}
+
+export async function checkPause(teamDir) {
+	return pathExists(join(teamDir, PAUSE_FILE));
+}
+
+/**
+ * Block until `team/.pause` is removed. Returns 'stop' if `.stop` appears
+ * while paused (callers should bail), otherwise 'ok'. Logs once on entering
+ * pause and once on resume to avoid spamming the log every 30s.
+ */
+export async function waitWhilePaused(teamDir) {
+	let loggedPause = false;
+	while (await checkPause(teamDir)) {
+		if (await checkStop(teamDir)) return 'stop';
+		if (!loggedPause) {
+			console.log('[runner] Paused (team/.pause detected) — holding until removed.');
+			loggedPause = true;
+		}
+		await new Promise(r => setTimeout(r, PAUSE_POLL_MS));
+	}
+	if (loggedPause) console.log('[runner] Resumed (team/.pause cleared).');
+	return 'ok';
 }
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];

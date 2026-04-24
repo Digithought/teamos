@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PRIORITY_ORDER } from './scheduler.mjs';
-import { checkStop } from './util.mjs';
+import { checkStop, checkPause } from './util.mjs';
 
 const IDLE_POLL_MS = 30 * 1000;
 
@@ -64,16 +64,23 @@ export async function idleWait(ms, teamDir, members, lastServedAt, cadences, get
 	while (Date.now() < end) {
 		if (await checkStop(teamDir)) return 'stop';
 
-		if (remote?.syncAdapter?.pull && remote.intervalMs > 0
+		// When paused, skip remote pull + work detection — just tick the idle
+		// clock. The main loop will see .pause at the top of the next pass and
+		// park there anyway.
+		const paused = await checkPause(teamDir);
+
+		if (!paused && remote?.syncAdapter?.pull && remote.intervalMs > 0
 			&& (Date.now() - lastRemotePullAt) >= remote.intervalMs) {
 			try { await remote.syncAdapter.pull(remote.workDir); } catch {}
 			lastRemotePullAt = Date.now();
 		}
 
-		for (const priority of ['pressing', 'today']) {
-			const cadence = cadences[priority] ?? 0;
-			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
-			if ((await getMembersWithWork(members, priority, teamDir)).length > 0) return 'work';
+		if (!paused) {
+			for (const priority of ['pressing', 'today']) {
+				const cadence = cadences[priority] ?? 0;
+				if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+				if ((await getMembersWithWork(members, priority, teamDir)).length > 0) return 'work';
+			}
 		}
 		const remaining = end - Date.now();
 		const delay = Math.min(IDLE_POLL_MS, remaining);
