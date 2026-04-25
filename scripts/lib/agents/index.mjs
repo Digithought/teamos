@@ -38,7 +38,9 @@ async function writeMcpConfig(cwd, mcpContext) {
 	let existing = {};
 	try {
 		existing = JSON.parse(await readFile(mcpConfigPath, 'utf-8'));
-	} catch { /* no existing file */ }
+	} catch {
+		/* no existing file */
+	}
 
 	const config = {
 		...existing,
@@ -82,7 +84,9 @@ async function cleanupMcpConfig(mcpState) {
 		} else {
 			await unlink(mcpState.path);
 		}
-	} catch { /* best effort */ }
+	} catch {
+		/* best effort */
+	}
 }
 
 /**
@@ -156,7 +160,10 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 			}
 
 			function processLine(line) {
-				if (!formatStream) { writeOut(line + '\n'); return; }
+				if (!formatStream) {
+					writeOut(line + '\n');
+					return;
+				}
 				const result = formatStream(line);
 				if (result.text) writeOut(result.text);
 				if (result.done) {

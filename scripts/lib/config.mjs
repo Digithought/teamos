@@ -8,10 +8,7 @@ import { pathExists } from './util.mjs';
  * Returns the parsed config, or defaults if no config file exists.
  */
 export async function loadConfig(repoRoot) {
-	const candidates = [
-		join(repoRoot, 'teamos.config.json'),
-		join(repoRoot, 'team', 'teamos.config.json'),
-	];
+	const candidates = [join(repoRoot, 'teamos.config.json'), join(repoRoot, 'team', 'teamos.config.json')];
 
 	for (const configPath of candidates) {
 		if (await pathExists(configPath)) {
@@ -50,7 +47,10 @@ export function loadDotEnv(dir) {
 				const eqIdx = trimmed.indexOf('=');
 				if (eqIdx <= 0) continue;
 				const key = trimmed.slice(0, eqIdx).trim();
-				const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+				const value = trimmed
+					.slice(eqIdx + 1)
+					.trim()
+					.replace(/^["']|["']$/g, '');
 				if (!(key in process.env)) {
 					process.env[key] = value;
 					loaded++;

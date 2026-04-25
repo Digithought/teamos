@@ -17,7 +17,8 @@ export function formatCursorJsonLine(line) {
 			if (tc.readToolCall) return { text: `\n[READ] ${tc.readToolCall.args?.path ?? ''}\n` };
 			if (tc.editToolCall) return { text: `\n[EDIT] ${tc.editToolCall.args?.path ?? ''}\n` };
 			if (tc.writeToolCall) return { text: `\n[WRITE] ${tc.writeToolCall.args?.path ?? ''}\n` };
-			if (tc.grepToolCall) return { text: `\n[GREP] ${tc.grepToolCall.args?.pattern ?? ''} in ${tc.grepToolCall.args?.path ?? ''}\n` };
+			if (tc.grepToolCall)
+				return { text: `\n[GREP] ${tc.grepToolCall.args?.pattern ?? ''} in ${tc.grepToolCall.args?.path ?? ''}\n` };
 			if (tc.lsToolCall) return { text: `\n[LS] ${tc.lsToolCall.args?.path ?? ''}\n` };
 			if (tc.deleteToolCall) return { text: `\n[DELETE] ${tc.deleteToolCall.args?.path ?? ''}\n` };
 			return { text: `\n[TOOL] ${Object.keys(tc)[0] ?? '?'}\n` };
@@ -25,9 +26,20 @@ export function formatCursorJsonLine(line) {
 		if (obj.type === 'tool_call' && obj.subtype === 'completed') {
 			const tc = obj.tool_call ?? {};
 			const ok = (r) => r?.success != null;
-			if (tc.shellToolCall) return { text: ok(tc.shellToolCall.result) ? `  > exit ${tc.shellToolCall.result.success?.exitCode ?? 0}\n` : `  > failed\n` };
-			if (tc.readToolCall) return { text: ok(tc.readToolCall.result) ? `  > read ${tc.readToolCall.result.success?.totalLines ?? 0} lines\n` : `  > failed\n` };
-			if (tc.editToolCall || tc.writeToolCall || tc.deleteToolCall) return { text: ok(Object.values(tc)[0]?.result) ? `  > done\n` : `  > failed\n` };
+			if (tc.shellToolCall)
+				return {
+					text: ok(tc.shellToolCall.result)
+						? `  > exit ${tc.shellToolCall.result.success?.exitCode ?? 0}\n`
+						: `  > failed\n`,
+				};
+			if (tc.readToolCall)
+				return {
+					text: ok(tc.readToolCall.result)
+						? `  > read ${tc.readToolCall.result.success?.totalLines ?? 0} lines\n`
+						: `  > failed\n`,
+				};
+			if (tc.editToolCall || tc.writeToolCall || tc.deleteToolCall)
+				return { text: ok(Object.values(tc)[0]?.result) ? `  > done\n` : `  > failed\n` };
 			return { text: `  > done\n` };
 		}
 	} catch {

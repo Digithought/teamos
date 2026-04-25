@@ -155,7 +155,7 @@ export class FileScheduleAdapter {
 	async listEvents(member, now = new Date()) {
 		const events = await this._loadNormalized(member);
 		events.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-		return events.map(e => ({ ...e, isDue: new Date(e.time) <= now }));
+		return events.map((e) => ({ ...e, isDue: new Date(e.time) <= now }));
 	}
 
 	async addEvent(member, input) {
@@ -165,11 +165,11 @@ export class FileScheduleAdapter {
 		if (!isValidIsoTime(input.time)) {
 			throw new Error('add_event: time must be an ISO-8601 timestamp');
 		}
-		const recurrence = input.recurrence === undefined
-			? undefined
-			: normalizeRecurrence(input.recurrence);
+		const recurrence = input.recurrence === undefined ? undefined : normalizeRecurrence(input.recurrence);
 		if (input.recurrence && !recurrence) {
-			throw new Error('add_event: recurrence must have a valid frequency (daily|weekly|monthly) and positive integer interval');
+			throw new Error(
+				'add_event: recurrence must have a valid frequency (daily|weekly|monthly) and positive integer interval',
+			);
 		}
 
 		const events = await this._loadNormalized(member);
@@ -196,7 +196,7 @@ export class FileScheduleAdapter {
 			throw new Error('update_event: patch is required');
 		}
 		const events = await this._loadNormalized(member);
-		const idx = events.findIndex(e => e.id === id);
+		const idx = events.findIndex((e) => e.id === id);
 		if (idx === -1) throw new Error(`update_event: ${id} is not in ${member}'s schedule`);
 
 		const next = { ...events[idx] };
@@ -223,7 +223,9 @@ export class FileScheduleAdapter {
 			} else {
 				const rec = normalizeRecurrence(patch.recurrence);
 				if (!rec) {
-					throw new Error('update_event: recurrence must have a valid frequency and positive integer interval, or null to clear');
+					throw new Error(
+						'update_event: recurrence must have a valid frequency and positive integer interval, or null to clear',
+					);
 				}
 				next.recurrence = rec;
 			}
@@ -240,7 +242,7 @@ export class FileScheduleAdapter {
 	async removeEvent(member, id) {
 		if (!id) throw new Error('remove_event: id is required');
 		const events = await this._loadNormalized(member);
-		const idx = events.findIndex(e => e.id === id);
+		const idx = events.findIndex((e) => e.id === id);
 		if (idx === -1) throw new Error(`remove_event: ${id} is not in ${member}'s schedule`);
 		events.splice(idx, 1);
 		await this._writeEvents(member, events);
@@ -248,7 +250,7 @@ export class FileScheduleAdapter {
 
 	async hasDueEvents(member, now = new Date()) {
 		const events = await this._loadNormalized(member);
-		return events.some(e => new Date(e.time) <= now);
+		return events.some((e) => new Date(e.time) <= now);
 	}
 
 	/**
@@ -294,6 +296,6 @@ export class FileScheduleAdapter {
 	 */
 	async hasEventWithTitle(member, title) {
 		const events = await this._loadNormalized(member);
-		return events.some(e => e.title === title);
+		return events.some((e) => e.title === title);
 	}
 }

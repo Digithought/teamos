@@ -31,23 +31,46 @@ const TEAMOS_SECTION_MARKER = '<!-- teamos -->';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-function log(msg) { console.log(`  ${msg}`); }
-function warn(msg) { console.warn(`  ! ${msg}`); }
+function log(msg) {
+	console.log(`  ${msg}`);
+}
+function warn(msg) {
+	console.warn(`  ! ${msg}`);
+}
 
 async function exists(path) {
-	try { await access(path, constants.F_OK); return true; } catch { return false; }
+	try {
+		await access(path, constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function isSymlink(path) {
-	try { const s = await lstat(path); return s.isSymbolicLink(); } catch { return false; }
+	try {
+		const s = await lstat(path);
+		return s.isSymbolicLink();
+	} catch {
+		return false;
+	}
 }
 
 async function isFile(path) {
-	try { const s = await lstat(path); return s.isFile(); } catch { return false; }
+	try {
+		const s = await lstat(path);
+		return s.isFile();
+	} catch {
+		return false;
+	}
 }
 
 async function readTextOrEmpty(path) {
-	try { return await readFile(path, 'utf-8'); } catch { return ''; }
+	try {
+		return await readFile(path, 'utf-8');
+	} catch {
+		return '';
+	}
 }
 
 // ─── Detach steps ──────────────────────────────────────────────────────────────
@@ -58,7 +81,7 @@ async function removeTeamRuleFiles(projectRoot) {
 	for (const name of AGENT_RULE_NAMES) {
 		const filePath = join(teamDir, name);
 
-		if (!await exists(filePath)) continue;
+		if (!(await exists(filePath))) continue;
 
 		if (await isSymlink(filePath)) {
 			const target = await readlink(filePath);
@@ -127,12 +150,15 @@ async function handleSymlinkMode(projectRoot) {
 	const content = await readTextOrEmpty(gitignorePath);
 	if (!content) return;
 
-	const teamosEntries = new Set(['teamos', ...AGENT_RULE_NAMES.map(n => `team/${n}`)]);
+	const teamosEntries = new Set(['teamos', ...AGENT_RULE_NAMES.map((n) => `team/${n}`)]);
 	const lines = content.split('\n');
-	const filtered = lines.filter(line => !teamosEntries.has(line.trim()));
+	const filtered = lines.filter((line) => !teamosEntries.has(line.trim()));
 
 	if (filtered.length !== lines.length) {
-		const result = filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+		const result = filtered
+			.join('\n')
+			.replace(/\n{3,}/g, '\n\n')
+			.trim();
 		if (result.length === 0) {
 			await unlink(gitignorePath);
 			log('Removed .gitignore (was teamos-only content)');
@@ -177,15 +203,17 @@ function parseArgs(argv) {
 		if (argv[i] === '--project' && argv[i + 1]) {
 			opts.projectRoot = resolve(argv[++i]);
 		} else if (argv[i] === '--help') {
-			console.log([
-				'TeamOS detach — remove teamos artifacts from a project',
-				'',
-				'Usage:',
-				'  node teamos/scripts/detach.mjs',
-				'  node teamos/scripts/detach.mjs --project /path/to/project',
-				'',
-				'Removes teamos-created files. Never deletes team/ workspace data.',
-			].join('\n'));
+			console.log(
+				[
+					'TeamOS detach — remove teamos artifacts from a project',
+					'',
+					'Usage:',
+					'  node teamos/scripts/detach.mjs',
+					'  node teamos/scripts/detach.mjs --project /path/to/project',
+					'',
+					'Removes teamos-created files. Never deletes team/ workspace data.',
+				].join('\n'),
+			);
 			process.exit(0);
 		}
 	}

@@ -1,119 +1,127 @@
 <script lang="ts">
-	import { api } from '../lib/api.js';
-	import { router } from '../lib/router.svelte.js';
-	import { identity } from '../lib/identity.svelte.js';
-	import type { MemberSummary, Project, Message } from '../lib/types.js';
+import { api } from '../lib/api.js';
+import { router } from '../lib/router.svelte.js';
+import { identity } from '../lib/identity.svelte.js';
+import type { MemberSummary, Project, Message } from '../lib/types.js';
 
-	let members: MemberSummary[] = $state([]);
-	let projects: Project[] = $state([]);
-	let loading = $state(true);
-	let sending = $state(false);
-	let sent = $state(false);
+let members: MemberSummary[] = $state([]);
+let projects: Project[] = $state([]);
+let loading = $state(true);
+let sending = $state(false);
+let sent = $state(false);
 
-	let to: Set<string> = $state(new Set());
-	let cc: Set<string> = $state(new Set());
-	let from = $state(identity.name ?? '');
-	let subject = $state('');
-	let projectCode = $state('');
-	let body = $state('');
+let to: Set<string> = $state(new Set());
+let cc: Set<string> = $state(new Set());
+let from = $state(identity.name ?? '');
+let subject = $state('');
+let projectCode = $state('');
+let body = $state('');
 
-	let replyMessage: Message | null = $state(null);
-	let inboxOwner: string | null = $state(null);
-	let isReplyAll = $state(false);
+let replyMessage: Message | null = $state(null);
+let inboxOwner: string | null = $state(null);
+let isReplyAll = $state(false);
 
-	const isReply = $derived(!!replyMessage);
-	const backPath = $derived.by(() => {
-		if (!inboxOwner) return '/';
-		const msg = replyMessage;
-		return msg ? `/member/${inboxOwner}?msg=${encodeURIComponent(msg.id)}` : `/member/${inboxOwner}`;
-	});
+const isReply = $derived(!!replyMessage);
+const backPath = $derived.by(() => {
+	if (!inboxOwner) return '/';
+	const msg = replyMessage;
+	return msg ? `/member/${inboxOwner}?msg=${encodeURIComponent(msg.id)}` : `/member/${inboxOwner}`;
+});
 
-	$effect(() => {
-		if (identity.name && !from) from = identity.name;
-	});
+$effect(() => {
+	if (identity.name && !from) from = identity.name;
+});
 
-	async function load() {
-		const [m, p] = await Promise.all([api.members(), api.projects()]);
-		members = m;
-		projects = p.projects ?? [];
+async function load() {
+	const [m, p] = await Promise.all([api.members(), api.projects()]);
+	members = m;
+	projects = p.projects ?? [];
 
-		const re = router.query.re;
-		const inbox = router.query.inbox;
-		const replyAll = router.query.all === '1';
-		isReplyAll = replyAll;
-		if (re) {
-			inboxOwner = inbox ?? null;
-			try {
-				replyMessage = await api.message(re);
-				if (replyMessage.projectCode) projectCode = replyMessage.projectCode;
-				const self = inboxOwner;
-				const toSet = new Set<string>([replyMessage.from]);
-				const ccSet = new Set<string>();
-				if (replyAll) {
-					for (const r of replyMessage.to ?? []) if (r !== self) toSet.add(r);
-					for (const r of replyMessage.cc ?? []) if (r !== self) ccSet.add(r);
-				}
-				if (self) toSet.delete(self);
-				to = toSet;
-				cc = ccSet;
-				// Subject auto-derives server-side, but show a preview to the user
-				if (!subject) {
-					const stripped = (replyMessage.subject ?? '').replace(/^(re:\s*)+/i, '').trim();
-					subject = stripped ? `Re: ${stripped}` : '';
-				}
-			} catch { /* original may have been deleted */ }
+	const re = router.query.re;
+	const inbox = router.query.inbox;
+	const replyAll = router.query.all === '1';
+	isReplyAll = replyAll;
+	if (re) {
+		inboxOwner = inbox ?? null;
+		try {
+			replyMessage = await api.message(re);
+			if (replyMessage.projectCode) projectCode = replyMessage.projectCode;
+			const self = inboxOwner;
+			const toSet = new Set<string>([replyMessage.from]);
+			const ccSet = new Set<string>();
+			if (replyAll) {
+				for (const r of replyMessage.to ?? []) if (r !== self) toSet.add(r);
+				for (const r of replyMessage.cc ?? []) if (r !== self) ccSet.add(r);
+			}
+			if (self) toSet.delete(self);
+			to = toSet;
+			cc = ccSet;
+			// Subject auto-derives server-side, but show a preview to the user
+			if (!subject) {
+				const stripped = (replyMessage.subject ?? '').replace(/^(re:\s*)+/i, '').trim();
+				subject = stripped ? `Re: ${stripped}` : '';
+			}
+		} catch {
+			/* original may have been deleted */
 		}
-
-		loading = false;
 	}
 
-	$effect(() => { load(); });
+	loading = false;
+}
 
-	function toggle(set: Set<string>, name: string): Set<string> {
-		const next = new Set(set);
-		if (next.has(name)) next.delete(name);
-		else next.add(name);
-		return next;
+$effect(() => {
+	load();
+});
+
+function toggle(set: Set<string>, name: string): Set<string> {
+	const next = new Set(set);
+	if (next.has(name)) next.delete(name);
+	else next.add(name);
+	return next;
+}
+
+function toggleTo(name: string) {
+	to = toggle(to, name);
+}
+function toggleCc(name: string) {
+	cc = toggle(cc, name);
+}
+
+function selectAllAI() {
+	to = new Set(members.filter((m) => m.type === 'ai').map((m) => m.name));
+}
+
+async function send() {
+	if (to.size === 0 || !body.trim() || !from.trim()) return;
+	sending = true;
+	await api.sendMessage({
+		from,
+		to: [...to],
+		cc: cc.size > 0 ? [...cc] : undefined,
+		subject: subject || undefined,
+		body: body.trim(),
+		replyTo: replyMessage?.id,
+		projectCode: projectCode || undefined,
+	});
+	sending = false;
+	if (isReply) {
+		router.navigate(backPath);
+		return;
 	}
+	sent = true;
+}
 
-	function toggleTo(name: string) { to = toggle(to, name); }
-	function toggleCc(name: string) { cc = toggle(cc, name); }
-
-	function selectAllAI() {
-		to = new Set(members.filter(m => m.type === 'ai').map(m => m.name));
-	}
-
-	async function send() {
-		if (to.size === 0 || !body.trim() || !from.trim()) return;
-		sending = true;
-		await api.sendMessage({
-			from,
-			to: [...to],
-			cc: cc.size > 0 ? [...cc] : undefined,
-			subject: subject || undefined,
-			body: body.trim(),
-			replyTo: replyMessage?.id,
-			projectCode: projectCode || undefined,
-		});
-		sending = false;
-		if (isReply) {
-			router.navigate(backPath);
-			return;
-		}
-		sent = true;
-	}
-
-	function reset() {
-		to = new Set();
-		cc = new Set();
-		subject = '';
-		projectCode = '';
-		body = '';
-		sent = false;
-		replyMessage = null;
-		inboxOwner = null;
-		isReplyAll = false;
-	}
+function reset() {
+	to = new Set();
+	cc = new Set();
+	subject = '';
+	projectCode = '';
+	body = '';
+	sent = false;
+	replyMessage = null;
+	inboxOwner = null;
+	isReplyAll = false;
+}
 </script>
 
 <div class="compose">

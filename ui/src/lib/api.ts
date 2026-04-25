@@ -1,4 +1,14 @@
-import type { MemberSummary, MemberDetail, MessageSummary, Message, Memo, Project, TicketCounts, SiblingInfo, MessagingInfo } from './types.js';
+import type {
+	MemberSummary,
+	MemberDetail,
+	MessageSummary,
+	Message,
+	Memo,
+	Project,
+	TicketCounts,
+	SiblingInfo,
+	MessagingInfo,
+} from './types.js';
 
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -93,12 +103,14 @@ export const api = {
 	sent: (name: string) => get<MessageSummary[]>(`/api/members/${encodeURIComponent(name)}/sent`),
 	archives: (name: string) => get<MessageSummary[]>(`/api/members/${encodeURIComponent(name)}/archives`),
 	message: (id: string) => get<Message>(`/api/messages/${encodeURIComponent(id)}`),
-	sendMessage: (msg: SendMessageArgs) =>
-		post<{ id: string; sentAt: string }>('/api/messages', msg),
+	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),
 	archiveMessage: (member: string, id: string) =>
 		post<{ ok: boolean }>(`/api/members/${encodeURIComponent(member)}/inbox/${encodeURIComponent(id)}/archive`, {}),
 	unarchiveMessage: (member: string, id: string) =>
-		post<{ ok: boolean }>(`/api/members/${encodeURIComponent(member)}/archives/${encodeURIComponent(id)}/unarchive`, {}),
+		post<{ ok: boolean }>(
+			`/api/members/${encodeURIComponent(member)}/archives/${encodeURIComponent(id)}/unarchive`,
+			{},
+		),
 	deleteMessage: (member: string, id: string) =>
 		del(`/api/members/${encodeURIComponent(member)}/inbox/${encodeURIComponent(id)}`),
 	deleteArchive: (member: string, id: string) =>
@@ -106,25 +118,41 @@ export const api = {
 	todos: (name: string) => get<{ items: unknown[] }>(`/api/members/${encodeURIComponent(name)}/todos`),
 	updateTodos: (name: string, data: { items: unknown[] }) =>
 		put(`/api/members/${encodeURIComponent(name)}/todos`, data),
-	updateState: (name: string, state: string) =>
-		put(`/api/members/${encodeURIComponent(name)}/state`, { state }),
+	updateState: (name: string, state: string) => put(`/api/members/${encodeURIComponent(name)}/state`, { state }),
 	schedule: (name: string) => get<{ events: unknown[] }>(`/api/members/${encodeURIComponent(name)}/schedule`),
 	addEvent: (
 		name: string,
-		input: { title: string; time: string; description?: string; recurrence?: { frequency: string; interval: number; endDate?: string }; projectCode?: string },
+		input: {
+			title: string;
+			time: string;
+			description?: string;
+			recurrence?: { frequency: string; interval: number; endDate?: string };
+			projectCode?: string;
+		},
 	) => post<{ id: string }>(`/api/members/${encodeURIComponent(name)}/schedule`, input),
 	updateEvent: (
 		name: string,
 		id: string,
-		patchBody: { title?: string; description?: string; time?: string; recurrence?: { frequency: string; interval: number; endDate?: string } | null; projectCode?: string },
+		patchBody: {
+			title?: string;
+			description?: string;
+			time?: string;
+			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
+			projectCode?: string;
+		},
 	) => patch(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`, patchBody),
 	removeEvent: (name: string, id: string) =>
 		del(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`),
 	memos: () => get<{ items: Memo[] }>('/api/memos'),
-	createMemo: (memo: { title: string; content: string; importance: string; authorName: string; projectCodes?: string[]; expiresAt?: string }) =>
-		post<Memo>('/api/memos', memo),
-	archiveMemo: (index: number) =>
-		post<{ archivedAs: string }>(`/api/memos/${index}/archive`, {}),
+	createMemo: (memo: {
+		title: string;
+		content: string;
+		importance: string;
+		authorName: string;
+		projectCodes?: string[];
+		expiresAt?: string;
+	}) => post<Memo>('/api/memos', memo),
+	archiveMemo: (index: number) => post<{ archivedAs: string }>(`/api/memos/${index}/archive`, {}),
 	projects: () => get<{ projects: Project[] }>('/api/projects'),
 	createProject: (input: { code: string; name: string; description?: string; status?: string }) =>
 		post<Project>('/api/projects', input),

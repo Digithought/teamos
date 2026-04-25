@@ -7,7 +7,9 @@ class Router {
 		});
 	}
 
-	get path() { return this.hash.split('?')[0]; }
+	get path() {
+		return this.hash.split('?')[0];
+	}
 
 	get query(): Record<string, string> {
 		const qs = this.hash.split('?')[1];

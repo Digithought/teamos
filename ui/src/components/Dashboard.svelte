@@ -1,158 +1,163 @@
 <script lang="ts">
-	import { api } from '../lib/api.js';
-	import { identity } from '../lib/identity.svelte.js';
-	import type { MemberSummary, Memo, Project, TicketCounts, SiblingInfo } from '../lib/types.js';
-	import MemberCard from './MemberCard.svelte';
-	import TicketPipeline from './TicketPipeline.svelte';
+import { api } from '../lib/api.js';
+import { identity } from '../lib/identity.svelte.js';
+import type { MemberSummary, Memo, Project, TicketCounts, SiblingInfo } from '../lib/types.js';
+import MemberCard from './MemberCard.svelte';
+import TicketPipeline from './TicketPipeline.svelte';
 
-	let members: MemberSummary[] = $state([]);
-	let memos: Memo[] = $state([]);
-	let projects: Project[] = $state([]);
-	let tickets: TicketCounts | null = $state(null);
-	let sibling: SiblingInfo | null = $state(null);
-	let loading = $state(true);
-	let stopPending = $state(false);
-	let stoppingCycle = $state(false);
-	let paused = $state(false);
-	let pauseBusy = $state(false);
+let members: MemberSummary[] = $state([]);
+let memos: Memo[] = $state([]);
+let projects: Project[] = $state([]);
+let tickets: TicketCounts | null = $state(null);
+let sibling: SiblingInfo | null = $state(null);
+let loading = $state(true);
+let stopPending = $state(false);
+let stoppingCycle = $state(false);
+let paused = $state(false);
+let pauseBusy = $state(false);
 
-	let showNewMember = $state(false);
-	let savingMember = $state(false);
-	let memberError = $state('');
-	let newMemberName = $state('');
-	let newMemberTitle = $state('');
-	let newMemberType: 'ai' | 'human' = $state('ai');
-	let newMemberRoles = $state('');
-	let newMemberDescription = $state('');
+let showNewMember = $state(false);
+let savingMember = $state(false);
+let memberError = $state('');
+let newMemberName = $state('');
+let newMemberTitle = $state('');
+let newMemberType: 'ai' | 'human' = $state('ai');
+let newMemberRoles = $state('');
+let newMemberDescription = $state('');
 
-	let showNewMemo = $state(false);
-	let savingMemo = $state(false);
-	let memoTitle = $state('');
-	let memoContent = $state('');
-	let memoImportance = $state('medium');
-	let memoAuthor = $state('');
-	let memoProjectCodes: string[] = $state([]);
-	let memoExpiresAt = $state('');
+let showNewMemo = $state(false);
+let savingMemo = $state(false);
+let memoTitle = $state('');
+let memoContent = $state('');
+let memoImportance = $state('medium');
+let memoAuthor = $state('');
+let memoProjectCodes: string[] = $state([]);
+let memoExpiresAt = $state('');
 
-	async function load() {
-		loading = true;
-		const [m, memosData, p, t, s, cs] = await Promise.all([
-			api.members(),
-			api.memos(),
-			api.projects(),
-			api.tickets(),
-			api.sibling().catch(() => null),
-			api.cycleStatus().catch(() => ({ stopPending: false, paused: false })),
-		]);
-		members = m;
-		memos = memosData.items ?? [];
-		projects = p.projects ?? [];
-		tickets = t;
-		sibling = s;
-		stopPending = cs.stopPending;
-		paused = cs.paused;
-		loading = false;
-	}
+async function load() {
+	loading = true;
+	const [m, memosData, p, t, s, cs] = await Promise.all([
+		api.members(),
+		api.memos(),
+		api.projects(),
+		api.tickets(),
+		api.sibling().catch(() => null),
+		api.cycleStatus().catch(() => ({ stopPending: false, paused: false })),
+	]);
+	members = m;
+	memos = memosData.items ?? [];
+	projects = p.projects ?? [];
+	tickets = t;
+	sibling = s;
+	stopPending = cs.stopPending;
+	paused = cs.paused;
+	loading = false;
+}
 
-	$effect(() => { load(); });
+$effect(() => {
+	load();
+});
 
-	async function cycleStop() {
-		stoppingCycle = true;
-		await api.cycleStop();
-		stopPending = true;
-		stoppingCycle = false;
-	}
+async function cycleStop() {
+	stoppingCycle = true;
+	await api.cycleStop();
+	stopPending = true;
+	stoppingCycle = false;
+}
 
-	async function togglePause() {
-		pauseBusy = true;
-		try {
-			if (paused) {
-				await api.cycleResume();
-				paused = false;
-			} else {
-				await api.cyclePause();
-				paused = true;
-			}
-		} finally {
-			pauseBusy = false;
-		}
-	}
-
-	async function archiveMemo(index: number) {
-		await api.archiveMemo(index);
-		memos = memos.filter((_, i) => i !== index);
-	}
-
-	function openNewMember() {
-		newMemberName = '';
-		newMemberTitle = '';
-		newMemberType = 'ai';
-		newMemberRoles = '';
-		newMemberDescription = '';
-		memberError = '';
-		showNewMember = true;
-	}
-
-	async function saveMember() {
-		if (!newMemberName.trim()) return;
-		savingMember = true;
-		memberError = '';
-		try {
-			const roles = newMemberRoles.split(',').map(r => r.trim()).filter(Boolean);
-			await api.createMember({
-				name: newMemberName.trim(),
-				title: newMemberTitle.trim(),
-				type: newMemberType,
-				roles,
-				description: newMemberDescription.trim() || undefined,
-				active: true,
-			});
-			showNewMember = false;
-			await load();
-		} catch (err) {
-			memberError = err instanceof Error ? err.message : 'Failed to create member';
-		} finally {
-			savingMember = false;
-		}
-	}
-
-	function openNewMemo() {
-		memoTitle = '';
-		memoContent = '';
-		memoImportance = 'medium';
-		memoAuthor = identity.name ?? '';
-		memoProjectCodes = [];
-		const oneWeek = new Date();
-		oneWeek.setDate(oneWeek.getDate() + 7);
-		memoExpiresAt = oneWeek.toISOString().slice(0, 10);
-		showNewMemo = true;
-	}
-
-	function toggleProjectCode(code: string) {
-		if (memoProjectCodes.includes(code)) {
-			memoProjectCodes = memoProjectCodes.filter(c => c !== code);
+async function togglePause() {
+	pauseBusy = true;
+	try {
+		if (paused) {
+			await api.cycleResume();
+			paused = false;
 		} else {
-			memoProjectCodes = [...memoProjectCodes, code];
+			await api.cyclePause();
+			paused = true;
 		}
+	} finally {
+		pauseBusy = false;
 	}
+}
 
-	async function saveMemo() {
-		if (!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim()) return;
-		savingMemo = true;
-		const created = await api.createMemo({
-			title: memoTitle.trim(),
-			content: memoContent.trim(),
-			importance: memoImportance,
-			authorName: memoAuthor.trim(),
-			projectCodes: memoProjectCodes.length ? memoProjectCodes : undefined,
-			expiresAt: memoExpiresAt || undefined,
+async function archiveMemo(index: number) {
+	await api.archiveMemo(index);
+	memos = memos.filter((_, i) => i !== index);
+}
+
+function openNewMember() {
+	newMemberName = '';
+	newMemberTitle = '';
+	newMemberType = 'ai';
+	newMemberRoles = '';
+	newMemberDescription = '';
+	memberError = '';
+	showNewMember = true;
+}
+
+async function saveMember() {
+	if (!newMemberName.trim()) return;
+	savingMember = true;
+	memberError = '';
+	try {
+		const roles = newMemberRoles
+			.split(',')
+			.map((r) => r.trim())
+			.filter(Boolean);
+		await api.createMember({
+			name: newMemberName.trim(),
+			title: newMemberTitle.trim(),
+			type: newMemberType,
+			roles,
+			description: newMemberDescription.trim() || undefined,
+			active: true,
 		});
-		memos = [...memos, created];
-		showNewMemo = false;
-		savingMemo = false;
+		showNewMember = false;
+		await load();
+	} catch (err) {
+		memberError = err instanceof Error ? err.message : 'Failed to create member';
+	} finally {
+		savingMember = false;
 	}
+}
 
-	const hasTickets = $derived(tickets && Object.values(tickets).some((v): v is number => typeof v === 'number' && v > 0));
+function openNewMemo() {
+	memoTitle = '';
+	memoContent = '';
+	memoImportance = 'medium';
+	memoAuthor = identity.name ?? '';
+	memoProjectCodes = [];
+	const oneWeek = new Date();
+	oneWeek.setDate(oneWeek.getDate() + 7);
+	memoExpiresAt = oneWeek.toISOString().slice(0, 10);
+	showNewMemo = true;
+}
+
+function toggleProjectCode(code: string) {
+	if (memoProjectCodes.includes(code)) {
+		memoProjectCodes = memoProjectCodes.filter((c) => c !== code);
+	} else {
+		memoProjectCodes = [...memoProjectCodes, code];
+	}
+}
+
+async function saveMemo() {
+	if (!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim()) return;
+	savingMemo = true;
+	const created = await api.createMemo({
+		title: memoTitle.trim(),
+		content: memoContent.trim(),
+		importance: memoImportance,
+		authorName: memoAuthor.trim(),
+		projectCodes: memoProjectCodes.length ? memoProjectCodes : undefined,
+		expiresAt: memoExpiresAt || undefined,
+	});
+	memos = [...memos, created];
+	showNewMemo = false;
+	savingMemo = false;
+}
+
+const hasTickets = $derived(tickets && Object.values(tickets).some((v): v is number => typeof v === 'number' && v > 0));
 </script>
 
 {#if loading}

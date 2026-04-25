@@ -71,7 +71,7 @@ export class FileTasksAdapter {
 	async _loadNormalized(member) {
 		const raw = await this._readItems(member);
 		let mutated = false;
-		const items = raw.map(item => {
+		const items = raw.map((item) => {
 			if (typeof item.id === 'string' && item.id) return item;
 			mutated = true;
 			return { id: makeTodoId(), ...item };
@@ -94,7 +94,7 @@ export class FileTasksAdapter {
 			if (ba !== bb) return ba - bb;
 			return a.idx - b.idx;
 		});
-		return indexed.map(e => e.item);
+		return indexed.map((e) => e.item);
 	}
 
 	async addTodo(member, input) {
@@ -122,7 +122,7 @@ export class FileTasksAdapter {
 	async updateTodo(member, id, patch) {
 		if (!id) throw new Error('update_todo: id is required');
 		const items = await this._loadNormalized(member);
-		const idx = items.findIndex(i => i.id === id);
+		const idx = items.findIndex((i) => i.id === id);
 		if (idx === -1) throw new Error(`update_todo: ${id} is not in ${member}'s todo list`);
 
 		const current = items[idx];
@@ -165,7 +165,7 @@ export class FileTasksAdapter {
 	async completeTodo(member, id) {
 		if (!id) throw new Error('complete_todo: id is required');
 		const items = await this._loadNormalized(member);
-		const idx = items.findIndex(i => i.id === id);
+		const idx = items.findIndex((i) => i.id === id);
 		if (idx === -1) throw new Error(`complete_todo: ${id} is not in ${member}'s todo list`);
 		items.splice(idx, 1);
 		await this._writeItems(member, items);
@@ -175,9 +175,6 @@ export class FileTasksAdapter {
 		const items = await this._readItems(member);
 		const ceiling = PRIORITY_ORDER.indexOf(priority);
 		if (ceiling < 0) return false;
-		return items.some(i =>
-			i.status !== 'blocked' &&
-			PRIORITY_ORDER.indexOf(i.priority) <= ceiling
-		);
+		return items.some((i) => i.status !== 'blocked' && PRIORITY_ORDER.indexOf(i.priority) <= ceiling);
 	}
 }

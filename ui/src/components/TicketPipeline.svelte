@@ -1,18 +1,18 @@
 <script lang="ts">
-	import type { TicketCounts } from '../lib/types.js';
+import type { TicketCounts } from '../lib/types.js';
 
-	let { tickets, siblingUrl = null }: { tickets: TicketCounts; siblingUrl?: string | null } = $props();
+let { tickets, siblingUrl = null }: { tickets: TicketCounts; siblingUrl?: string | null } = $props();
 
-	const stages = [
-		{ key: 'fix', label: 'Fix', color: 'var(--danger)' },
-		{ key: 'plan', label: 'Plan', color: 'var(--warning)' },
-		{ key: 'implement', label: 'Implement', color: 'var(--primary)' },
-		{ key: 'review', label: 'Review', color: 'var(--ai)' },
-		{ key: 'blocked', label: 'Blocked', color: 'var(--danger)' },
-		{ key: 'complete', label: 'Complete', color: 'var(--success)' },
-	];
+const stages = [
+	{ key: 'fix', label: 'Fix', color: 'var(--danger)' },
+	{ key: 'plan', label: 'Plan', color: 'var(--warning)' },
+	{ key: 'implement', label: 'Implement', color: 'var(--primary)' },
+	{ key: 'review', label: 'Review', color: 'var(--ai)' },
+	{ key: 'blocked', label: 'Blocked', color: 'var(--danger)' },
+	{ key: 'complete', label: 'Complete', color: 'var(--success)' },
+];
 
-	const total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
+const total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
 </script>
 
 <div class="pipeline">

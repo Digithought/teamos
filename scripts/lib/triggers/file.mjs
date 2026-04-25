@@ -86,7 +86,7 @@ function matchesAuthor(trigger, author, email) {
 
 function matchesPaths(compiled, files) {
 	if (!compiled) return true;
-	return files.some(f => compiled.some(re => re.test(f)));
+	return files.some((f) => compiled.some((re) => re.test(f)));
 }
 
 function matchesSubject(trigger, subject) {
@@ -106,7 +106,7 @@ function normalizeTrigger(entry) {
 	if (!out.priority) return null;
 	if (typeof entry.reason === 'string' && entry.reason) out.reason = entry.reason;
 	if (Array.isArray(entry.paths)) {
-		const paths = entry.paths.filter(p => typeof p === 'string' && p);
+		const paths = entry.paths.filter((p) => typeof p === 'string' && p);
 		if (paths.length) out.paths = paths;
 	}
 	if (typeof entry.author === 'string' && entry.author) out.author = entry.author;
@@ -156,7 +156,10 @@ export class FileTriggersAdapter {
 		const items = [];
 		for (const entry of raw.items) {
 			const n = normalizeTrigger(entry);
-			if (!n) { mutated = true; continue; }
+			if (!n) {
+				mutated = true;
+				continue;
+			}
 			if (n !== entry) mutated = true;
 			items.push(n);
 		}
@@ -191,7 +194,7 @@ export class FileTriggersAdapter {
 		if (!id) throw new Error('update_trigger: id is required');
 		if (!patch || typeof patch !== 'object') throw new Error('update_trigger: patch required');
 		const state = await this._loadNormalized(member);
-		const idx = state.items.findIndex(t => t.id === id);
+		const idx = state.items.findIndex((t) => t.id === id);
 		if (idx === -1) throw new Error(`update_trigger: ${id} is not in ${member}'s triggers`);
 
 		const current = state.items[idx];
@@ -210,7 +213,7 @@ export class FileTriggersAdapter {
 			if (patch.paths === null || (Array.isArray(patch.paths) && patch.paths.length === 0)) {
 				delete next.paths;
 			} else if (Array.isArray(patch.paths)) {
-				next.paths = patch.paths.filter(p => typeof p === 'string' && p);
+				next.paths = patch.paths.filter((p) => typeof p === 'string' && p);
 				if (!next.paths.length) delete next.paths;
 			} else {
 				throw new Error('update_trigger: paths must be an array of glob strings');
@@ -230,8 +233,11 @@ export class FileTriggersAdapter {
 			} else {
 				// Validate that the regex compiles so bad patterns are caught at
 				// mutation time, not later during a scan.
-				try { new RegExp(String(patch.messageMatches)); }
-				catch (e) { throw new Error(`update_trigger: messageMatches invalid regex: ${e.message}`); }
+				try {
+					new RegExp(String(patch.messageMatches));
+				} catch (e) {
+					throw new Error(`update_trigger: messageMatches invalid regex: ${e.message}`);
+				}
 				next.messageMatches = String(patch.messageMatches);
 			}
 		}
@@ -243,7 +249,7 @@ export class FileTriggersAdapter {
 	async removeTrigger(member, id) {
 		if (!id) throw new Error('remove_trigger: id is required');
 		const state = await this._loadNormalized(member);
-		const idx = state.items.findIndex(t => t.id === id);
+		const idx = state.items.findIndex((t) => t.id === id);
 		if (idx === -1) throw new Error(`remove_trigger: ${id} is not in ${member}'s triggers`);
 		state.items.splice(idx, 1);
 		await this._writeRaw(member, state);
@@ -312,8 +318,8 @@ export class FileTriggersAdapter {
 				// Default: skip commits authored by the member themselves. Triggers
 				// override by setting `author` or explicitly matching themselves.
 				const effectiveAuthorNot = trigger.authorNot ?? (trigger.author ? null : member);
-				if (effectiveAuthorNot &&
-					(commit.author === effectiveAuthorNot || commit.email === effectiveAuthorNot)) continue;
+				if (effectiveAuthorNot && (commit.author === effectiveAuthorNot || commit.email === effectiveAuthorNot))
+					continue;
 				if (!matchesAuthor(trigger, commit.author, commit.email)) continue;
 				if (!matchesPaths(compiled, commit.files)) continue;
 				if (!matchesSubject(trigger, commit.subject)) continue;
@@ -343,7 +349,7 @@ export class FileTriggersAdapter {
 		const ceiling = PRIORITY_ORDER.indexOf(priority);
 		if (ceiling < 0) return false;
 		const matches = await this.pendingMatches(member);
-		return matches.some(m => PRIORITY_ORDER.indexOf(m.priority) <= ceiling);
+		return matches.some((m) => PRIORITY_ORDER.indexOf(m.priority) <= ceiling);
 	}
 
 	async acknowledgeHead(member, head) {
@@ -386,7 +392,10 @@ export class FileTriggersAdapter {
  */
 export function parseGitLog(stdout) {
 	if (!stdout) return [];
-	const chunks = stdout.split(RECORD_SEP).map(s => s.replace(/^\n/, '')).filter(s => s.trim());
+	const chunks = stdout
+		.split(RECORD_SEP)
+		.map((s) => s.replace(/^\n/, ''))
+		.filter((s) => s.trim());
 	const commits = [];
 	for (const chunk of chunks) {
 		const lines = chunk.split('\n');
@@ -396,7 +405,10 @@ export function parseGitLog(stdout) {
 		const subject = lines[3] ?? '';
 		if (!hash) continue;
 		// Lines 4+ are files, with blank lines to discard.
-		const files = lines.slice(4).map(l => l.trim()).filter(Boolean);
+		const files = lines
+			.slice(4)
+			.map((l) => l.trim())
+			.filter(Boolean);
 		commits.push({ hash, author, email, subject, files });
 	}
 	return commits;

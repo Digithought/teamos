@@ -27,7 +27,7 @@ export async function runHousekeeping(teamDir, members) {
 		const raw = await readFile(memosPath, 'utf-8');
 		const memos = JSON.parse(raw);
 		const now = new Date();
-		const expired = (memos.items ?? []).filter(m => m.expiresAt && new Date(m.expiresAt) < now);
+		const expired = (memos.items ?? []).filter((m) => m.expiresAt && new Date(m.expiresAt) < now);
 		if (expired.length > 0) {
 			const archiveDir = join(teamDir, 'archives');
 			await mkdir(archiveDir, { recursive: true });
@@ -35,7 +35,7 @@ export async function runHousekeeping(teamDir, members) {
 				const archivePath = join(archiveDir, `memo-${slugify(memo.title)}.json`);
 				await writeFile(archivePath, JSON.stringify(memo, null, '\t') + '\n', 'utf-8');
 			}
-			memos.items = memos.items.filter(m => !expired.includes(m));
+			memos.items = memos.items.filter((m) => !expired.includes(m));
 			await writeFile(memosPath, JSON.stringify(memos, null, '\t') + '\n', 'utf-8');
 			fixed.push(`Archived ${expired.length} expired memo(s)`);
 		}
@@ -54,13 +54,15 @@ export async function runHousekeeping(teamDir, members) {
 		try {
 			const raw = await readFile(schedulePath, 'utf-8');
 			const schedule = JSON.parse(raw);
-			const stale = (schedule.events ?? []).filter(e => !e.recurrence && new Date(e.time) < weekAgo);
+			const stale = (schedule.events ?? []).filter((e) => !e.recurrence && new Date(e.time) < weekAgo);
 			if (stale.length > 0) {
-				schedule.events = schedule.events.filter(e => !stale.includes(e));
+				schedule.events = schedule.events.filter((e) => !stale.includes(e));
 				await writeFile(schedulePath, JSON.stringify(schedule, null, '\t') + '\n', 'utf-8');
 				fixed.push(`Pruned ${stale.length} stale event(s) from ${member.name}'s schedule`);
 			}
-		} catch { /* missing file is fine */ }
+		} catch {
+			/* missing file is fine */
+		}
 	}
 
 	// 3. Archive completed/cancelled projects
@@ -68,7 +70,7 @@ export async function runHousekeeping(teamDir, members) {
 	try {
 		const raw = await readFile(projectsPath, 'utf-8');
 		const manifest = JSON.parse(raw);
-		const done = (manifest.projects ?? []).filter(p => p.status === 'completed' || p.status === 'cancelled');
+		const done = (manifest.projects ?? []).filter((p) => p.status === 'completed' || p.status === 'cancelled');
 		if (done.length > 0) {
 			const archiveDir = join(teamDir, 'archives');
 			await mkdir(archiveDir, { recursive: true });
@@ -76,7 +78,7 @@ export async function runHousekeeping(teamDir, members) {
 				const archivePath = join(archiveDir, `project-${slugify(proj.code)}.json`);
 				await writeFile(archivePath, JSON.stringify(proj, null, '\t') + '\n', 'utf-8');
 			}
-			manifest.projects = manifest.projects.filter(p => !done.includes(p));
+			manifest.projects = manifest.projects.filter((p) => !done.includes(p));
 			await writeFile(projectsPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
 			fixed.push(`Archived ${done.length} completed/cancelled project(s)`);
 		}
@@ -105,7 +107,11 @@ export async function runHousekeeping(teamDir, members) {
 export async function scanRecentLogs(logsDir, days = 7) {
 	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
 	let files;
-	try { files = await readdir(logsDir); } catch { return []; }
+	try {
+		files = await readdir(logsDir);
+	} catch {
+		return [];
+	}
 
 	const entries = [];
 	for (const file of files) {
@@ -124,7 +130,9 @@ export async function scanRecentLogs(logsDir, days = 7) {
 		const rateLimited = content.includes('"status":"rejected"');
 
 		entries.push({
-			file, member, priority,
+			file,
+			member,
+			priority,
 			timestamp: ts.toISOString(),
 			cost: costMatch ? parseFloat(costMatch[1]) : 0,
 			durationSec: durMatch ? parseFloat(durMatch[1]) : 0,
@@ -151,8 +159,10 @@ export function buildLogSummary(entries) {
 		m.byPriority[e.priority].cost += e.cost;
 	}
 
-	const lines = ['| Member | Runs | Cost | Rate-limited | By priority |',
-		'|--------|------|------|-------------|-------------|'];
+	const lines = [
+		'| Member | Runs | Cost | Rate-limited | By priority |',
+		'|--------|------|------|-------------|-------------|',
+	];
 	for (const [name, m] of Object.entries(byMember).sort((a, b) => b[1].totalCost - a[1].totalCost)) {
 		const priStr = Object.entries(m.byPriority)
 			.map(([p, d]) => `${p}:${d.runs}/$${d.cost.toFixed(2)}`)
@@ -171,12 +181,12 @@ export async function buildEfficiencyPrompt(teamDir, logsDir) {
 	const summaryTable = buildLogSummary(entries);
 
 	const interesting = entries
-		.filter(e => !e.rateLimited && e.member !== 'clerk')
+		.filter((e) => !e.rateLimited && e.member !== 'clerk')
 		.sort((a, b) => b.cost - a.cost)
 		.slice(0, 30);
-	const logList = interesting.map(e =>
-		`  ${e.file}  ($${e.cost.toFixed(2)}, ${e.durationSec.toFixed(0)}s, ${e.sizeKB}KB)`
-	).join('\n');
+	const logList = interesting
+		.map((e) => `  ${e.file}  ($${e.cost.toFixed(2)}, ${e.durationSec.toFixed(0)}s, ${e.sizeKB}KB)`)
+		.join('\n');
 
 	return [
 		'# TeamOS Weekly Efficiency Analysis',
@@ -228,14 +238,7 @@ export async function buildClerkPrompt(teamDir, error) {
 	];
 
 	if (error) {
-		parts.push(
-			'',
-			'## Error Context',
-			'',
-			'The following error occurred during the last cycle:',
-			'',
-			error,
-		);
+		parts.push('', '## Error Context', '', 'The following error occurred during the last cycle:', '', error);
 	}
 
 	parts.push(
@@ -253,7 +256,17 @@ export async function buildClerkPrompt(teamDir, error) {
  * Post-pass maintenance: automated housekeeping, conditional clerk, weekly efficiency analysis.
  * @param {Function} commitAndPush - async function(message) that commits and optionally pushes
  */
-export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, passErrors, syncAdapter }) {
+export async function runMaintenance({
+	opts,
+	teamDir,
+	logsDir,
+	version,
+	repoRoot,
+	members,
+	schedulerState,
+	passErrors,
+	syncAdapter,
+}) {
 	const now = Date.now();
 
 	// 1. Automated housekeeping (lightweight JS — no agent)
@@ -278,15 +291,18 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 		console.log('\n[runner] Running daily clerk...');
 		const clerkLog = buildLogPath(logsDir, 'clerk', 'maintenance');
 
-		await writeFile(clerkLog, [
-			`Clerk run (maintenance)`,
-			`Agent: ${opts.agent}`,
-			`TeamOS: ${version}`,
-			`Started: ${new Date().toISOString()}`,
-			errorContext.length > 0 ? `Issues: ${errorContext.join('; ')}` : 'No issues.',
-			'═'.repeat(72),
-			'',
-		].join('\n'));
+		await writeFile(
+			clerkLog,
+			[
+				`Clerk run (maintenance)`,
+				`Agent: ${opts.agent}`,
+				`TeamOS: ${version}`,
+				`Started: ${new Date().toISOString()}`,
+				errorContext.length > 0 ? `Issues: ${errorContext.join('; ')}` : 'No issues.',
+				'═'.repeat(72),
+				'',
+			].join('\n'),
+		);
 
 		const clerkPrompt = await buildClerkPrompt(teamDir, errorContext.length > 0 ? errorContext.join('\n') : null);
 		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog, {
@@ -316,14 +332,17 @@ export async function runMaintenance({ opts, teamDir, logsDir, version, repoRoot
 		console.log('\n[runner] Running weekly efficiency analysis...');
 		const analysisLog = buildLogPath(logsDir, 'clerk', 'efficiency');
 
-		await writeFile(analysisLog, [
-			`Clerk run (weekly efficiency analysis)`,
-			`Agent: ${opts.agent}`,
-			`TeamOS: ${version}`,
-			`Started: ${new Date().toISOString()}`,
-			'═'.repeat(72),
-			'',
-		].join('\n'));
+		await writeFile(
+			analysisLog,
+			[
+				`Clerk run (weekly efficiency analysis)`,
+				`Agent: ${opts.agent}`,
+				`TeamOS: ${version}`,
+				`Started: ${new Date().toISOString()}`,
+				'═'.repeat(72),
+				'',
+			].join('\n'),
+		);
 
 		const prompt = await buildEfficiencyPrompt(teamDir, logsDir);
 		const analysisExit = await runAgent(opts.agent, prompt, repoRoot, analysisLog, {
