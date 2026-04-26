@@ -5,9 +5,10 @@ import { execSync } from 'node:child_process';
  * with `origin/<branch>`.
  *
  * Sync semantics:
- *   - pull(): fetch origin, fast-forward if possible, otherwise rebase local
- *     commits (with autostash) onto origin. Rebase conflicts abort cleanly
- *     and leave local state untouched so the next push surfaces the problem.
+ *   - pull(): fetch origin; fast-forward if local is behind, no-op if local is
+ *     ahead, otherwise rebase local commits (with autostash) onto origin.
+ *     Rebase conflicts abort cleanly and leave local state untouched so the
+ *     next push surfaces the problem.
  *   - push(): stage + commit any changes. If pushing fails non-FF, pull once
  *     and retry. A second failure is logged and left for humans to resolve.
  *
@@ -40,6 +41,9 @@ export class GitSyncAdapter {
 			}
 			return;
 		}
+
+		// Local is ahead of remote with no divergence — nothing to pull.
+		if (this._isAncestor(workDir, remote, local)) return;
 
 		try {
 			execSync(`git rebase --autostash origin/${branch}`, { cwd: workDir, stdio: 'pipe' });
