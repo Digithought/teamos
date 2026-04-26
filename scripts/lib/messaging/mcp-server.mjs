@@ -46,7 +46,8 @@ const repoRoot = join(teamDir, '..');
 
 function makeMessagingAdapter(name) {
 	switch (name) {
-		case 'file': return new FileMessagingAdapter(teamDir);
+		case 'file':
+			return new FileMessagingAdapter(teamDir);
 		default:
 			process.stderr.write(`[mcp-server] Unknown messaging adapter: ${name}\n`);
 			process.exit(1);
@@ -55,7 +56,8 @@ function makeMessagingAdapter(name) {
 
 function makeTasksAdapter(name) {
 	switch (name) {
-		case 'file': return new FileTasksAdapter(teamDir);
+		case 'file':
+			return new FileTasksAdapter(teamDir);
 		default:
 			process.stderr.write(`[mcp-server] Unknown tasks adapter: ${name}\n`);
 			process.exit(1);
@@ -64,7 +66,8 @@ function makeTasksAdapter(name) {
 
 function makeScheduleAdapter(name) {
 	switch (name) {
-		case 'file': return new FileScheduleAdapter(teamDir);
+		case 'file':
+			return new FileScheduleAdapter(teamDir);
 		default:
 			process.stderr.write(`[mcp-server] Unknown schedule adapter: ${name}\n`);
 			process.exit(1);
@@ -73,7 +76,8 @@ function makeScheduleAdapter(name) {
 
 function makeTriggersAdapter(name) {
 	switch (name) {
-		case 'file': return new FileTriggersAdapter(teamDir, repoRoot);
+		case 'file':
+			return new FileTriggersAdapter(teamDir, repoRoot);
 		default:
 			process.stderr.write(`[mcp-server] Unknown triggers adapter: ${name}\n`);
 			process.exit(1);
@@ -90,14 +94,19 @@ const triggers = makeTriggersAdapter(triggersAdapterName);
 const TOOLS = [
 	{
 		name: 'send_message',
-		description: 'Send a message to one or more team members. Behaves like email: targets multiple parties, carries a subject, can reference a preceding message via replyTo. Cost scales with length × recipients — keep messages tight, especially on broad threads. Before composing to a recipient set you have already messaged this cycle, call list_sent({ to: [...] }) and prefer supersede_message to consolidate over stacking another message on the same topic.',
+		description:
+			'Send a message to one or more team members. Behaves like email: targets multiple parties, carries a subject, can reference a preceding message via replyTo. Cost scales with length × recipients — keep messages tight, especially on broad threads. Before composing to a recipient set you have already messaged this cycle, call list_sent({ to: [...] }) and prefer supersede_message to consolidate over stacking another message on the same topic.',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				to: { type: 'array', items: { type: 'string' }, description: 'Primary recipient member names' },
-				subject: { type: 'string', description: 'Thread subject (required on new threads; auto-derived as "Re: <parent>" for replies if omitted)' },
+				subject: {
+					type: 'string',
+					description:
+						'Thread subject (required on new threads; auto-derived as "Re: <parent>" for replies if omitted)',
+				},
 				body: { type: 'string', description: 'Message body (markdown)' },
-				cc: { type: 'array', items: { type: 'string' }, description: 'Optional cc\'d member names' },
+				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names" },
 				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
 			},
@@ -106,16 +115,34 @@ const TOOLS = [
 	},
 	{
 		name: 'supersede_message',
-		description: 'Send a new message that consolidates / replaces one or more earlier messages YOU sent. The consolidated message is delivered normally; each predecessor is marked supersededBy and silently removed from any recipient inbox where it had not yet been read. Recipients who already archived the predecessor keep it (audit trail preserved) and see the new message arrive separately. Use this when you have more to say to the same audience on the same topic — it is strictly better than sending an additional message. The new recipient set (to + cc) must cover every recipient any predecessor reached; to address a smaller audience send a regular message instead.',
+		description:
+			'Send a new message that consolidates / replaces one or more earlier messages YOU sent. The consolidated message is delivered normally; each predecessor is marked supersededBy and silently removed from any recipient inbox where it had not yet been read. Recipients who already archived the predecessor keep it (audit trail preserved) and see the new message arrive separately. Use this when you have more to say to the same audience on the same topic — it is strictly better than sending an additional message. The new recipient set (to + cc) must cover every recipient any predecessor reached; to address a smaller audience send a regular message instead.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				supersedes: { type: 'array', items: { type: 'string' }, description: 'Ids of one or more prior messages you sent that this message replaces. All predecessors must be from you and not already superseded.' },
-				to: { type: 'array', items: { type: 'string' }, description: 'Primary recipient member names. Must cover every recipient any predecessor reached.' },
-				body: { type: 'string', description: 'Message body (markdown). Treat this as the standalone replacement — no need to repeat predecessor wording verbatim.' },
+				supersedes: {
+					type: 'array',
+					items: { type: 'string' },
+					description:
+						'Ids of one or more prior messages you sent that this message replaces. All predecessors must be from you and not already superseded.',
+				},
+				to: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'Primary recipient member names. Must cover every recipient any predecessor reached.',
+				},
+				body: {
+					type: 'string',
+					description:
+						'Message body (markdown). Treat this as the standalone replacement — no need to repeat predecessor wording verbatim.',
+				},
 				subject: { type: 'string', description: 'Thread subject. If omitted, derived from the latest predecessor.' },
-				cc: { type: 'array', items: { type: 'string' }, description: 'Optional cc\'d member names.' },
-				replyTo: { type: 'string', description: 'Optional id of the message this thread replies to (carries through to the new message; usually omit).' },
+				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names." },
+				replyTo: {
+					type: 'string',
+					description:
+						'Optional id of the message this thread replies to (carries through to the new message; usually omit).',
+				},
 				projectCode: { type: 'string', description: 'Optional project tag.' },
 			},
 			required: ['supersedes', 'to', 'body'],
@@ -123,7 +150,8 @@ const TOOLS = [
 	},
 	{
 		name: 'read_message',
-		description: 'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo.',
+		description:
+			'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -139,11 +167,17 @@ const TOOLS = [
 	},
 	{
 		name: 'list_sent',
-		description: 'List summaries for every message you have sent (newest first). Pass `to: [<member>, ...]` to filter to messages whose to+cc intersects that member set — use this before composing to recipients you have already messaged this cycle, so you can spot threads that should be consolidated via supersede_message instead of stacked.',
+		description:
+			'List summaries for every message you have sent (newest first). Pass `to: [<member>, ...]` to filter to messages whose to+cc intersects that member set — use this before composing to recipients you have already messaged this cycle, so you can spot threads that should be consolidated via supersede_message instead of stacked.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				to: { type: 'array', items: { type: 'string' }, description: 'Optional recipient filter — only return sent messages whose to+cc includes at least one of these members.' },
+				to: {
+					type: 'array',
+					items: { type: 'string' },
+					description:
+						'Optional recipient filter — only return sent messages whose to+cc includes at least one of these members.',
+				},
 			},
 		},
 	},
@@ -154,7 +188,8 @@ const TOOLS = [
 	},
 	{
 		name: 'archive_message',
-		description: 'Move a message from your inbox to your archives. Call this after you have fully handled a message. No-op if already archived; errors if the id is not in your inbox.',
+		description:
+			'Move a message from your inbox to your archives. Call this after you have fully handled a message. No-op if already archived; errors if the id is not in your inbox.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -176,17 +211,23 @@ const TOOLS = [
 	},
 	{
 		name: 'list_todos',
-		description: 'List every open todo on your list, priority order (pressing → later). Blocked items appear after actionable ones within each priority. The cycle prompt already includes your todos — call this when you want a fresh view after several mutations.',
+		description:
+			'List every open todo on your list, priority order (pressing → later). Blocked items appear after actionable ones within each priority. The cycle prompt already includes your todos — call this when you want a fresh view after several mutations.',
 		inputSchema: { type: 'object', properties: {} },
 	},
 	{
 		name: 'add_todo',
-		description: 'Add a new todo to your list. Returns the allocated id. Pick the priority that matches how the runner should cycle you for this item: pressing / today / thisWeek / later. Mislabelling wastes your cycles.',
+		description:
+			'Add a new todo to your list. Returns the allocated id. Pick the priority that matches how the runner should cycle you for this item: pressing / today / thisWeek / later. Mislabelling wastes your cycles.',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				title: { type: 'string', description: 'One-line summary' },
-				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'], description: 'Scheduling priority' },
+				priority: {
+					type: 'string',
+					enum: ['pressing', 'today', 'thisWeek', 'later'],
+					description: 'Scheduling priority',
+				},
 				description: { type: 'string', description: 'Longer body — rationale, acceptance criteria, links' },
 				notes: { type: 'string', description: 'Free-form context, blockers, or progress' },
 				projectCode: { type: 'string', description: 'Optional project tag' },
@@ -197,7 +238,8 @@ const TOOLS = [
 	},
 	{
 		name: 'update_todo',
-		description: 'Partial update of a todo. Only supplied fields change. Use this to demote a priority, record progress in notes, or block/unblock an item. Pass status: "blocked" to mark blocked, status: null to clear it.',
+		description:
+			'Partial update of a todo. Only supplied fields change. Use this to demote a priority, record progress in notes, or block/unblock an item. Pass status: "blocked" to mark blocked, status: null to clear it.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -214,7 +256,8 @@ const TOOLS = [
 	},
 	{
 		name: 'complete_todo',
-		description: 'Remove a todo from your list — there is no "done" state. History belongs in state.md or commit messages. Errors if the id is not on your list.',
+		description:
+			'Remove a todo from your list — there is no "done" state. History belongs in state.md or commit messages. Errors if the id is not on your list.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -225,12 +268,14 @@ const TOOLS = [
 	},
 	{
 		name: 'list_events',
-		description: 'List every event on your schedule (sorted by time ascending). Each entry includes an `isDue` flag so you can see at a glance what is firing this cycle. The cycle prompt already includes your due and upcoming events — call this when you want a fresh view after several mutations.',
+		description:
+			'List every event on your schedule (sorted by time ascending). Each entry includes an `isDue` flag so you can see at a glance what is firing this cycle. The cycle prompt already includes your due and upcoming events — call this when you want a fresh view after several mutations.',
 		inputSchema: { type: 'object', properties: {} },
 	},
 	{
 		name: 'add_event',
-		description: 'Add a new event to your schedule. For recurring events, `time` is the first occurrence — the runner handles advancement automatically; never bump `time` yourself. Returns the allocated id.',
+		description:
+			'Add a new event to your schedule. For recurring events, `time` is the first occurrence — the runner handles advancement automatically; never bump `time` yourself. Returns the allocated id.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -254,7 +299,8 @@ const TOOLS = [
 	},
 	{
 		name: 'update_event',
-		description: 'Partial update of an event. Only supplied fields change. Setting `recurrence` to null converts a recurring event into a one-time event at its current `time`. Passing a new `time` resets the next occurrence; for recurring events the adapter continues to advance from the new anchor.',
+		description:
+			'Partial update of an event. Only supplied fields change. Setting `recurrence` to null converts a recurring event into a one-time event at its current `time`. Passing a new `time` resets the next occurrence; for recurring events the adapter continues to advance from the new anchor.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -284,7 +330,8 @@ const TOOLS = [
 	},
 	{
 		name: 'remove_event',
-		description: 'Delete an event entirely, including cancelling all future occurrences of a recurring event. Use this only for cancellations or truly unneeded events — for one-time events that have fired, the runner removes them automatically.',
+		description:
+			'Delete an event entirely, including cancelling all future occurrences of a recurring event. Use this only for cancellations or truly unneeded events — for one-time events that have fired, the runner removes them automatically.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -295,28 +342,49 @@ const TOOLS = [
 	},
 	{
 		name: 'list_triggers',
-		description: 'List every commit trigger on your subscription list. Each trigger causes new git commits matching its filters to wake you at the declared priority for review. The cycle prompt already lists any commits that fired — call this to audit your subscriptions.',
+		description:
+			'List every commit trigger on your subscription list. Each trigger causes new git commits matching its filters to wake you at the declared priority for review. The cycle prompt already lists any commits that fired — call this to audit your subscriptions.',
 		inputSchema: { type: 'object', properties: {} },
 	},
 	{
 		name: 'add_trigger',
-		description: 'Subscribe yourself to new commits in the host repo that match these filters. Use this for code reviews, security sweeps, or watching areas of the codebase you own. Every field other than priority is a filter — a commit must satisfy ALL provided filters to match. Commits authored by you are skipped by default (override by setting explicit `author` or explicit empty `authorNot`).',
+		description:
+			'Subscribe yourself to new commits in the host repo that match these filters. Use this for code reviews, security sweeps, or watching areas of the codebase you own. Every field other than priority is a filter — a commit must satisfy ALL provided filters to match. Commits authored by you are skipped by default (override by setting explicit `author` or explicit empty `authorNot`).',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				priority: { type: 'string', enum: ['pressing', 'today', 'thisWeek', 'later'], description: 'Priority at which a matching commit wakes you' },
-				reason: { type: 'string', description: 'Short note on why you created this trigger (appears when you list_triggers).' },
-				paths: { type: 'array', items: { type: 'string' }, description: 'Glob patterns (`**`, `*`, `?`); match if the commit touches any file matching any glob. Omit to match any path.' },
+				priority: {
+					type: 'string',
+					enum: ['pressing', 'today', 'thisWeek', 'later'],
+					description: 'Priority at which a matching commit wakes you',
+				},
+				reason: {
+					type: 'string',
+					description: 'Short note on why you created this trigger (appears when you list_triggers).',
+				},
+				paths: {
+					type: 'array',
+					items: { type: 'string' },
+					description:
+						'Glob patterns (`**`, `*`, `?`); match if the commit touches any file matching any glob. Omit to match any path.',
+				},
 				author: { type: 'string', description: 'Only match commits whose author name or email equals this.' },
-				authorNot: { type: 'string', description: 'Skip commits by this author name or email. Defaults to yourself; set explicitly to override.' },
-				messageMatches: { type: 'string', description: 'JS regex tested against the commit subject (first line of the message).' },
+				authorNot: {
+					type: 'string',
+					description: 'Skip commits by this author name or email. Defaults to yourself; set explicitly to override.',
+				},
+				messageMatches: {
+					type: 'string',
+					description: 'JS regex tested against the commit subject (first line of the message).',
+				},
 			},
 			required: ['priority'],
 		},
 	},
 	{
 		name: 'update_trigger',
-		description: 'Partial update of a trigger by id. Only supplied fields change. Pass null for an optional field to clear it.',
+		description:
+			'Partial update of a trigger by id. Only supplied fields change. Pass null for an optional field to clear it.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -456,7 +524,14 @@ async function handleToolCall(name, args) {
 
 		case 'add_trigger': {
 			const { priority, reason, paths, author, authorNot, messageMatches } = args;
-			const { id } = await triggers.addTrigger(memberName, { priority, reason, paths, author, authorNot, messageMatches });
+			const { id } = await triggers.addTrigger(memberName, {
+				priority,
+				reason,
+				paths,
+				author,
+				authorNot,
+				messageMatches,
+			});
 			return textResult({ id });
 		}
 

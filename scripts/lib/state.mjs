@@ -14,12 +14,12 @@ export async function loadSchedulerState(logsDir) {
 		const vruntime = {};
 		for (const p of PRIORITY_ORDER) {
 			const ts = state.lastServedAt?.[p];
-			lastServedAt[p] = (typeof ts === 'number' && ts > 0 && ts <= now) ? ts : now;
+			lastServedAt[p] = typeof ts === 'number' && ts > 0 && ts <= now ? ts : now;
 			const v = state.vruntime?.[p];
-			vruntime[p] = (typeof v === 'number' && isFinite(v)) ? v : 0;
+			vruntime[p] = typeof v === 'number' && isFinite(v) ? v : 0;
 		}
 		const lastServedMember = state.lastServedMember ?? {};
-		const validTs = (v) => typeof v === 'number' && v > 0 && v <= now ? v : 0;
+		const validTs = (v) => (typeof v === 'number' && v > 0 && v <= now ? v : 0);
 		const lastClerkAt = validTs(state.lastClerkAt);
 		const lastEfficiencyAt = validTs(state.lastEfficiencyAt);
 		console.log('[runner] Restored scheduler state from previous run.');
@@ -44,10 +44,9 @@ export async function saveSchedulerState(logsDir, state) {
 		lastEfficiencyAt: state.lastEfficiencyAt,
 		updatedAt: new Date().toISOString(),
 	};
-	await writeFile(
-		join(logsDir, 'scheduler-state.json'),
-		JSON.stringify(out, null, '\t') + '\n', 'utf-8',
-	).catch(() => {});
+	await writeFile(join(logsDir, 'scheduler-state.json'), JSON.stringify(out, null, '\t') + '\n', 'utf-8').catch(
+		() => {},
+	);
 }
 
 /**
@@ -69,22 +68,28 @@ export async function idleWait(ms, teamDir, members, lastServedAt, cadences, get
 		// park there anyway.
 		const paused = await checkPause(teamDir);
 
-		if (!paused && remote?.syncAdapter?.pull && remote.intervalMs > 0
-			&& (Date.now() - lastRemotePullAt) >= remote.intervalMs) {
-			try { await remote.syncAdapter.pull(remote.workDir); } catch {}
+		if (
+			!paused &&
+			remote?.syncAdapter?.pull &&
+			remote.intervalMs > 0 &&
+			Date.now() - lastRemotePullAt >= remote.intervalMs
+		) {
+			try {
+				await remote.syncAdapter.pull(remote.workDir);
+			} catch {}
 			lastRemotePullAt = Date.now();
 		}
 
 		if (!paused) {
 			for (const priority of ['pressing', 'today']) {
 				const cadence = cadences[priority] ?? 0;
-				if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
+				if (cadence && Date.now() - (lastServedAt[priority] ?? 0) < cadence) continue;
 				if ((await getMembersWithWork(members, priority, teamDir)).length > 0) return 'work';
 			}
 		}
 		const remaining = end - Date.now();
 		const delay = Math.min(IDLE_POLL_MS, remaining);
-		if (delay > 0) await new Promise(r => setTimeout(r, delay));
+		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 	}
 	return 'interval';
 }

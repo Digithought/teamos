@@ -1,138 +1,141 @@
 <script lang="ts">
-	import { api } from '../lib/api.js';
-	import type { Project } from '../lib/types.js';
+import { api } from '../lib/api.js';
+import type { Project } from '../lib/types.js';
 
-	let orgContent = $state('');
-	let orgDraft = $state('');
-	let orgLoading = $state(true);
-	let orgSaving = $state(false);
-	let orgError = $state('');
-	let orgDirty = $derived(orgDraft !== orgContent);
+let orgContent = $state('');
+let orgDraft = $state('');
+let orgLoading = $state(true);
+let orgSaving = $state(false);
+let orgError = $state('');
+let orgDirty = $derived(orgDraft !== orgContent);
 
-	let projects: Project[] = $state([]);
-	let projectsLoading = $state(true);
+let projects: Project[] = $state([]);
+let projectsLoading = $state(true);
 
-	let showNew = $state(false);
-	let newCode = $state('');
-	let newName = $state('');
-	let newDescription = $state('');
-	let newStatus = $state('active');
-	let savingNew = $state(false);
-	let newError = $state('');
+let showNew = $state(false);
+let newCode = $state('');
+let newName = $state('');
+let newDescription = $state('');
+let newStatus = $state('active');
+let savingNew = $state(false);
+let newError = $state('');
 
-	let editingCode: string | null = $state(null);
-	let editName = $state('');
-	let editDescription = $state('');
-	let editStatus = $state('active');
-	let savingEdit = $state(false);
-	let editError = $state('');
+let editingCode: string | null = $state(null);
+let editName = $state('');
+let editDescription = $state('');
+let editStatus = $state('active');
+let savingEdit = $state(false);
+let editError = $state('');
 
-	async function loadOrg() {
-		orgLoading = true;
-		try {
-			const { content } = await api.org();
-			orgContent = content;
-			orgDraft = content;
-		} catch (err) {
-			orgError = err instanceof Error ? err.message : 'Failed to load org';
-		} finally {
-			orgLoading = false;
-		}
+async function loadOrg() {
+	orgLoading = true;
+	try {
+		const { content } = await api.org();
+		orgContent = content;
+		orgDraft = content;
+	} catch (err) {
+		orgError = err instanceof Error ? err.message : 'Failed to load org';
+	} finally {
+		orgLoading = false;
 	}
+}
 
-	async function loadProjects() {
-		projectsLoading = true;
-		const { projects: p } = await api.projects();
-		projects = p ?? [];
-		projectsLoading = false;
+async function loadProjects() {
+	projectsLoading = true;
+	const { projects: p } = await api.projects();
+	projects = p ?? [];
+	projectsLoading = false;
+}
+
+async function saveOrg() {
+	orgSaving = true;
+	orgError = '';
+	try {
+		await api.updateOrg(orgDraft);
+		orgContent = orgDraft;
+	} catch (err) {
+		orgError = err instanceof Error ? err.message : 'Failed to save';
+	} finally {
+		orgSaving = false;
 	}
+}
 
-	async function saveOrg() {
-		orgSaving = true;
-		orgError = '';
-		try {
-			await api.updateOrg(orgDraft);
-			orgContent = orgDraft;
-		} catch (err) {
-			orgError = err instanceof Error ? err.message : 'Failed to save';
-		} finally {
-			orgSaving = false;
-		}
-	}
+function resetOrg() {
+	orgDraft = orgContent;
+	orgError = '';
+}
 
-	function resetOrg() {
-		orgDraft = orgContent;
-		orgError = '';
-	}
+function openNew() {
+	newCode = '';
+	newName = '';
+	newDescription = '';
+	newStatus = 'active';
+	newError = '';
+	showNew = true;
+}
 
-	function openNew() {
-		newCode = '';
-		newName = '';
-		newDescription = '';
-		newStatus = 'active';
-		newError = '';
-		showNew = true;
-	}
-
-	async function saveNew() {
-		if (!newCode.trim() || !newName.trim()) return;
-		savingNew = true;
-		newError = '';
-		try {
-			await api.createProject({
-				code: newCode.trim(),
-				name: newName.trim(),
-				description: newDescription.trim() || undefined,
-				status: newStatus.trim() || undefined,
-			});
-			showNew = false;
-			await loadProjects();
-		} catch (err) {
-			newError = err instanceof Error ? err.message : 'Failed to create project';
-		} finally {
-			savingNew = false;
-		}
-	}
-
-	function startEdit(project: Project) {
-		editingCode = project.code;
-		editName = project.name;
-		editDescription = project.description ?? '';
-		editStatus = project.status ?? 'active';
-		editError = '';
-	}
-
-	function cancelEdit() {
-		editingCode = null;
-		editError = '';
-	}
-
-	async function saveEdit() {
-		if (!editingCode) return;
-		savingEdit = true;
-		editError = '';
-		try {
-			await api.updateProject(editingCode, {
-				name: editName.trim(),
-				description: editDescription.trim(),
-				status: editStatus.trim(),
-			});
-			editingCode = null;
-			await loadProjects();
-		} catch (err) {
-			editError = err instanceof Error ? err.message : 'Failed to update project';
-		} finally {
-			savingEdit = false;
-		}
-	}
-
-	async function removeProject(code: string) {
-		if (!confirm(`Delete project "${code}"?`)) return;
-		await api.deleteProject(code);
+async function saveNew() {
+	if (!newCode.trim() || !newName.trim()) return;
+	savingNew = true;
+	newError = '';
+	try {
+		await api.createProject({
+			code: newCode.trim(),
+			name: newName.trim(),
+			description: newDescription.trim() || undefined,
+			status: newStatus.trim() || undefined,
+		});
+		showNew = false;
 		await loadProjects();
+	} catch (err) {
+		newError = err instanceof Error ? err.message : 'Failed to create project';
+	} finally {
+		savingNew = false;
 	}
+}
 
-	$effect(() => { loadOrg(); loadProjects(); });
+function startEdit(project: Project) {
+	editingCode = project.code;
+	editName = project.name;
+	editDescription = project.description ?? '';
+	editStatus = project.status ?? 'active';
+	editError = '';
+}
+
+function cancelEdit() {
+	editingCode = null;
+	editError = '';
+}
+
+async function saveEdit() {
+	if (!editingCode) return;
+	savingEdit = true;
+	editError = '';
+	try {
+		await api.updateProject(editingCode, {
+			name: editName.trim(),
+			description: editDescription.trim(),
+			status: editStatus.trim(),
+		});
+		editingCode = null;
+		await loadProjects();
+	} catch (err) {
+		editError = err instanceof Error ? err.message : 'Failed to update project';
+	} finally {
+		savingEdit = false;
+	}
+}
+
+async function removeProject(code: string) {
+	if (!confirm(`Delete project "${code}"?`)) return;
+	await api.deleteProject(code);
+	await loadProjects();
+}
+
+$effect(() => {
+	loadOrg();
+	loadProjects();
+});
 </script>
 
 <section class="section">

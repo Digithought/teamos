@@ -16,9 +16,8 @@ export function formatClaudeJsonLine(line) {
 				if (block.type === 'text' && block.text) {
 					parts.push(`\n[ASSISTANT]\n${block.text}\n`);
 				} else if (block.type === 'tool_use') {
-					const inputStr = typeof block.input === 'object'
-						? JSON.stringify(block.input).slice(0, 200)
-						: String(block.input ?? '');
+					const inputStr =
+						typeof block.input === 'object' ? JSON.stringify(block.input).slice(0, 200) : String(block.input ?? '');
 					parts.push(`\n[TOOL:${block.name}] ${inputStr}\n`);
 				}
 			}
@@ -30,7 +29,7 @@ export function formatClaudeJsonLine(line) {
 			for (const block of content) {
 				if (block.type === 'tool_result') {
 					const text = Array.isArray(block.content)
-						? block.content.map(c => c.text ?? '').join('')
+						? block.content.map((c) => c.text ?? '').join('')
 						: String(block.content ?? '');
 					parts.push(`  > ${text.slice(0, 200)}\n`);
 				} else if (block.type === 'text' && block.text) {
@@ -68,9 +67,12 @@ export function createClaudeAdapter(instructionFile) {
 			'--dangerously-skip-permissions',
 			'--verbose',
 			'--no-session-persistence',
-			'--output-format', 'stream-json',
-			'--effort', 'xhigh',
-			'--append-system-prompt-file', instructionFile,
+			'--output-format',
+			'stream-json',
+			'--effort',
+			'xhigh',
+			'--append-system-prompt-file',
+			instructionFile,
 			'Execute the member cycle as described in the appended system prompt.',
 		],
 		formatStream: formatClaudeJsonLine,

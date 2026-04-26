@@ -1,7 +1,14 @@
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readTextOrEmpty, formatTimestamp, buildLogPath, checkStop, waitWhilePaused, buildToolsPromptSection } from './util.mjs';
+import {
+	readTextOrEmpty,
+	formatTimestamp,
+	buildLogPath,
+	checkStop,
+	waitWhilePaused,
+	buildToolsPromptSection,
+} from './util.mjs';
 import { PRIORITY_ORDER, pickNextPriority, normalizeVruntimes, rotateAfter } from './scheduler.mjs';
 import { runAgent } from './agents/index.mjs';
 import { getMembersWithWork } from './work-detection.mjs';
@@ -10,9 +17,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TEAMOS_ROOT = join(__dirname, '..', '..');
 
-const MAX_RUN_MS = 60 * 60 * 1000;      // 1 hour hard stop (single-run mode only)
-const BACKOFF_INITIAL_MS = 30 * 1000;    // 30 seconds after first failure
-const BACKOFF_MAX_MS = 30 * 60 * 1000;   // cap at 30 minutes
+const MAX_RUN_MS = 60 * 60 * 1000; // 1 hour hard stop (single-run mode only)
+const BACKOFF_INITIAL_MS = 30 * 1000; // 30 seconds after first failure
+const BACKOFF_MAX_MS = 30 * 60 * 1000; // cap at 30 minutes
 
 // ─── Prompt building ───────────────────────────────────────────────────────────
 
@@ -66,7 +73,9 @@ async function buildInboxSection(member, messagingAdapter) {
 
 function formatTodoForPrompt(item) {
 	const parts = [];
-	parts.push(`- [${item.priority}]${item.status === 'blocked' ? ' [BLOCKED]' : ''} ${item.title}  \`(id: ${item.id})\``);
+	parts.push(
+		`- [${item.priority}]${item.status === 'blocked' ? ' [BLOCKED]' : ''} ${item.title}  \`(id: ${item.id})\``,
+	);
 	if (item.description) parts.push(`    ${item.description.replace(/\n/g, '\n    ')}`);
 	if (item.projectCode) parts.push(`    project: ${item.projectCode}`);
 	if (item.notes) parts.push(`    notes: ${item.notes.replace(/\n/g, '\n    ')}`);
@@ -99,8 +108,8 @@ async function buildScheduleSections(member, scheduleAdapter) {
 		};
 	}
 	const events = await scheduleAdapter.listEvents(member).catch(() => []);
-	const due = events.filter(e => e.isDue);
-	const upcoming = events.filter(e => !e.isDue);
+	const due = events.filter((e) => e.isDue);
+	const upcoming = events.filter((e) => !e.isDue);
 	return {
 		due: due.length === 0 ? '_No events due this cycle._' : due.map(formatEventForPrompt).join('\n'),
 		upcoming: upcoming.length === 0 ? '_No upcoming events._' : upcoming.map(formatEventForPrompt).join('\n'),
@@ -127,12 +136,30 @@ async function buildCommitTriggersSection(member, triggersAdapter) {
 	return matches.map(formatCommitMatchForPrompt).join('\n');
 }
 
-export async function buildCyclePrompt(member, priority, teamDir, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter) {
+export async function buildCyclePrompt(
+	member,
+	priority,
+	teamDir,
+	messagingAdapter,
+	tasksAdapter,
+	scheduleAdapter,
+	triggersAdapter,
+) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
 
-	const [rules, orgDoc, memosDoc, projectsDoc, membersDoc,
-		profile, state, todosText, scheduleSections, triggersSection] = await Promise.all([
+	const [
+		rules,
+		orgDoc,
+		memosDoc,
+		projectsDoc,
+		membersDoc,
+		profile,
+		state,
+		todosText,
+		scheduleSections,
+		triggersSection,
+	] = await Promise.all([
 		readTextOrEmpty(rulesFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
 		readTextOrEmpty(join(teamDir, 'memos.json')),
@@ -192,9 +219,14 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 	];
 
 	if (triggersSection) {
-		parts.push('', '## Commit Triggers Fired', '',
+		parts.push(
+			'',
+			'## Commit Triggers Fired',
+			'',
 			'New commits in the host repo matched your trigger subscriptions. Review them as part of this cycle.',
-			'', triggersSection);
+			'',
+			triggersSection,
+		);
 	}
 
 	const inboxSection = await buildInboxSection(member.name, messagingAdapter);
@@ -218,44 +250,77 @@ export async function buildCyclePrompt(member, priority, teamDir, messagingAdapt
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
 
-export async function runCycle({ membersWithWork, priority, cycleCount, opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter }) {
+export async function runCycle({
+	membersWithWork,
+	priority,
+	cycleCount,
+	opts,
+	teamDir,
+	logsDir,
+	version,
+	repoRoot,
+	startTime,
+	useTimeout,
+	failureState,
+	syncAdapter,
+	messagingAdapter,
+	tasksAdapter,
+	scheduleAdapter,
+	triggersAdapter,
+}) {
 	let memberRuns = 0;
 	let lastError = null;
 	let stopped = false;
 
 	for (const member of membersWithWork) {
-		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) break;
-		if (await checkStop(teamDir)) { stopped = true; break; }
-		if (await waitWhilePaused(teamDir) === 'stop') { stopped = true; break; }
+		if (useTimeout && Date.now() - startTime >= MAX_RUN_MS) break;
+		if (await checkStop(teamDir)) {
+			stopped = true;
+			break;
+		}
+		if ((await waitWhilePaused(teamDir)) === 'stop') {
+			stopped = true;
+			break;
+		}
 
 		// Exponential backoff after consecutive failures (e.g. network outage)
 		if (failureState.consecutive > 0) {
 			const delay = Math.min(BACKOFF_INITIAL_MS * 2 ** (failureState.consecutive - 1), BACKOFF_MAX_MS);
-			console.log(`[runner] ${failureState.consecutive} consecutive failure(s) — backing off ${Math.round(delay / 1000)}s before next member.`);
-			await new Promise(r => setTimeout(r, delay));
-			if (await checkStop(teamDir)) { stopped = true; break; }
+			console.log(
+				`[runner] ${failureState.consecutive} consecutive failure(s) — backing off ${Math.round(delay / 1000)}s before next member.`,
+			);
+			await new Promise((r) => setTimeout(r, delay));
+			if (await checkStop(teamDir)) {
+				stopped = true;
+				break;
+			}
 		}
 
 		memberRuns++;
 		const currentLog = buildLogPath(logsDir, member.name, priority);
 
-		console.log([
-			`${'─'.repeat(72)}`,
-			`  ${member.name} (${member.title})`,
-			`  Priority: ${priority}  |  Cycle: ${cycleCount}`,
-			`  Log: ${currentLog}`,
-			`${'─'.repeat(72)}`,
-		].join('\n'));
+		console.log(
+			[
+				`${'─'.repeat(72)}`,
+				`  ${member.name} (${member.title})`,
+				`  Priority: ${priority}  |  Cycle: ${cycleCount}`,
+				`  Log: ${currentLog}`,
+				`${'─'.repeat(72)}`,
+			].join('\n'),
+		);
 
-		await writeFile(currentLog, [
-			`Member: ${member.name} (${member.title})`,
-			`Priority: ${priority}`,
-			`Agent: ${opts.agent}`,
-			`TeamOS: ${version}`,
-			`Started: ${new Date().toISOString()}`,
-			'═'.repeat(72),
-			'',
-		].join('\n'));
+		await writeFile(
+			currentLog,
+			[
+				`Member: ${member.name} (${member.title})`,
+				`Priority: ${priority}`,
+				`Agent: ${opts.agent}`,
+				`TeamOS: ${version}`,
+				`Started: ${new Date().toISOString()}`,
+				'═'.repeat(72),
+				'',
+			].join('\n'),
+		);
 
 		// Capture cycleStart before building the prompt so acknowledgeDue uses
 		// the same "now" the agent saw — events that become due mid-cycle wait
@@ -264,15 +329,26 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 		// Snapshot the HEAD the agent sees so commit triggers fired during this
 		// cycle's execution don't get silently acknowledged.
 		const headAtStart = triggersAdapter ? await triggersAdapter.currentHead(member.name).catch(() => null) : null;
-		const prompt = await buildCyclePrompt(member, priority, teamDir, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter);
-		const mcpContext = (messagingAdapter || tasksAdapter || scheduleAdapter || triggersAdapter) ? {
+		const prompt = await buildCyclePrompt(
+			member,
+			priority,
 			teamDir,
-			memberName: member.name,
-			messagingAdapterName: opts.messaging,
-			tasksAdapterName: opts.tasks,
-			scheduleAdapterName: opts.schedule,
-			triggersAdapterName: opts.triggers,
-		} : undefined;
+			messagingAdapter,
+			tasksAdapter,
+			scheduleAdapter,
+			triggersAdapter,
+		);
+		const mcpContext =
+			messagingAdapter || tasksAdapter || scheduleAdapter || triggersAdapter
+				? {
+						teamDir,
+						memberName: member.name,
+						messagingAdapterName: opts.messaging,
+						tasksAdapterName: opts.tasks,
+						scheduleAdapterName: opts.schedule,
+						triggersAdapterName: opts.triggers,
+					}
+				: undefined;
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext);
 
 		if (exitCode !== 0) {
@@ -285,12 +361,12 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 			// Only acknowledge on success — on failure, due events fire again
 			// next cycle (at-least-once semantics).
 			if (scheduleAdapter) {
-				await scheduleAdapter.acknowledgeDue(member.name, cycleStart).catch(err => {
+				await scheduleAdapter.acknowledgeDue(member.name, cycleStart).catch((err) => {
 					console.error(`[runner] acknowledgeDue failed for ${member.name}: ${err.message}`);
 				});
 			}
 			if (triggersAdapter && headAtStart) {
-				await triggersAdapter.acknowledgeHead(member.name, headAtStart).catch(err => {
+				await triggersAdapter.acknowledgeHead(member.name, headAtStart).catch((err) => {
 					console.error(`[runner] triggers.acknowledgeHead failed for ${member.name}: ${err.message}`);
 				});
 			}
@@ -299,13 +375,13 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 		console.log(`\n  Complete: ${member.name}\n`);
 
 		if (membersWithWork.indexOf(member) < membersWithWork.length - 1 && failureState.consecutive === 0) {
-			await new Promise(r => setTimeout(r, 500));
+			await new Promise((r) => setTimeout(r, 500));
 		}
 	}
 
 	// Commit/sync after cycle
 	if (!opts.noCommit && syncAdapter) {
-		const names = membersWithWork.map(m => m.name).join(', ');
+		const names = membersWithWork.map((m) => m.name).join(', ');
 		const label = `cycle ${cycleCount} (${priority}): ${names}`;
 		await syncAdapter.push(repoRoot, label);
 	}
@@ -315,7 +391,21 @@ export async function runCycle({ membersWithWork, priority, cycleCount, opts, te
 
 // ─── Pass execution ────────────────────────────────────────────────────────────
 
-export async function runPass({ opts, teamDir, logsDir, version, repoRoot, members, schedulerState, useTimeout, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter }) {
+export async function runPass({
+	opts,
+	teamDir,
+	logsDir,
+	version,
+	repoRoot,
+	members,
+	schedulerState,
+	useTimeout,
+	syncAdapter,
+	messagingAdapter,
+	tasksAdapter,
+	scheduleAdapter,
+	triggersAdapter,
+}) {
 	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
 	const weights = opts.weights;
 	const startTime = Date.now();
@@ -341,14 +431,14 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 	}
 
 	while (cycleCount < opts.maxCycles) {
-		if (useTimeout && (Date.now() - startTime) >= MAX_RUN_MS) {
+		if (useTimeout && Date.now() - startTime >= MAX_RUN_MS) {
 			return { cycleCount, totalMemberRuns, stopped: false, timedOut: true, passErrors };
 		}
 
 		if (await checkStop(teamDir)) {
 			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
 		}
-		if (await waitWhilePaused(teamDir) === 'stop') {
+		if ((await waitWhilePaused(teamDir)) === 'stop') {
 			return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };
 		}
 
@@ -357,8 +447,16 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 		for (const priority of eligiblePriorities) {
 			if (isBudgetExhausted(priority)) continue;
 			const cadence = opts.cadences[priority];
-			if (cadence && (Date.now() - (lastServedAt[priority] ?? 0)) < cadence) continue;
-			const membersWithWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter);
+			if (cadence && Date.now() - (lastServedAt[priority] ?? 0) < cadence) continue;
+			const membersWithWork = await getMembersWithWork(
+				members,
+				priority,
+				teamDir,
+				messagingAdapter,
+				scheduleAdapter,
+				tasksAdapter,
+				triggersAdapter,
+			);
 			if (membersWithWork.length > 0) {
 				candidates.push({ priority, members: membersWithWork });
 			}
@@ -371,7 +469,7 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 
 		// Pick priority with lowest vruntime
 		const pickedPriority = pickNextPriority(vruntime, candidates);
-		const picked = candidates.find(c => c.priority === pickedPriority);
+		const picked = candidates.find((c) => c.priority === pickedPriority);
 
 		// Rotate members for round-robin fairness, then trim to budget
 		let membersToRun = picked.members;
@@ -386,13 +484,28 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 
 		cycleCount++;
 		const vrt = (vruntime[pickedPriority] ?? 0).toFixed(3);
-		console.log(`\n[runner] Cycle ${cycleCount}, priority: ${pickedPriority} (vrt=${vrt}), ` +
-			`members: ${membersToRun.map(m => m.name).join(', ')}`);
+		console.log(
+			`\n[runner] Cycle ${cycleCount}, priority: ${pickedPriority} (vrt=${vrt}), ` +
+				`members: ${membersToRun.map((m) => m.name).join(', ')}`,
+		);
 
 		const result = await runCycle({
-			membersWithWork: membersToRun, priority: pickedPriority, cycleCount,
-			opts, teamDir, logsDir, version, repoRoot, startTime, useTimeout, failureState,
-			syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter,
+			membersWithWork: membersToRun,
+			priority: pickedPriority,
+			cycleCount,
+			opts,
+			teamDir,
+			logsDir,
+			version,
+			repoRoot,
+			startTime,
+			useTimeout,
+			failureState,
+			syncAdapter,
+			messagingAdapter,
+			tasksAdapter,
+			scheduleAdapter,
+			triggersAdapter,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);
@@ -403,7 +516,7 @@ export async function runPass({ opts, teamDir, logsDir, version, repoRoot, membe
 		lastServedAt[pickedPriority] = Date.now();
 
 		// Advance vruntime for the served priority and normalize
-		vruntime[pickedPriority] = (vruntime[pickedPriority] ?? 0) + (1 / (weights[pickedPriority] ?? 1));
+		vruntime[pickedPriority] = (vruntime[pickedPriority] ?? 0) + 1 / (weights[pickedPriority] ?? 1);
 		normalizeVruntimes(vruntime);
 
 		if (result.stopped) return { cycleCount, totalMemberRuns, stopped: true, timedOut: false, passErrors };

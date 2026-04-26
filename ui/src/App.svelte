@@ -1,22 +1,25 @@
 <script lang="ts">
-	import { router } from './lib/router.svelte.js';
-	import { api } from './lib/api.js';
-	import type { SiblingInfo } from './lib/types.js';
-	import Dashboard from './components/Dashboard.svelte';
-	import MemberDetail from './components/MemberDetail.svelte';
-	import ComposeMessage from './components/ComposeMessage.svelte';
-	import IdentityPicker from './components/IdentityPicker.svelte';
-	import OrgEditor from './components/OrgEditor.svelte';
+import { router } from './lib/router.svelte.js';
+import { api } from './lib/api.js';
+import type { SiblingInfo } from './lib/types.js';
+import Dashboard from './components/Dashboard.svelte';
+import MemberDetail from './components/MemberDetail.svelte';
+import ComposeMessage from './components/ComposeMessage.svelte';
+import IdentityPicker from './components/IdentityPicker.svelte';
+import OrgEditor from './components/OrgEditor.svelte';
 
-	let sibling: SiblingInfo | null = $state(null);
+let sibling: SiblingInfo | null = $state(null);
 
-	const memberMatch = $derived(router.match('/member/:name'));
-	const isCompose = $derived(router.path === '/compose');
-	const isOrg = $derived(router.path === '/org');
+const memberMatch = $derived(router.match('/member/:name'));
+const isCompose = $derived(router.path === '/compose');
+const isOrg = $derived(router.path === '/org');
 
-	$effect(() => {
-		api.sibling().then(s => sibling = s).catch(() => {});
-	});
+$effect(() => {
+	api
+		.sibling()
+		.then((s) => (sibling = s))
+		.catch(() => {});
+});
 </script>
 
 <IdentityPicker />

@@ -1,7 +1,5 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(grep -E \"\\\\.\\(json|mjs|js\\)$\")"
-    ]
-  }
+	"permissions": {
+		"allow": ["Bash(grep -E \"\\\\.\\(json|mjs|js\\)$\")"]
+	}
 }

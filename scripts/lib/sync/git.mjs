@@ -50,7 +50,9 @@ export class GitSyncAdapter {
 			console.log(`[sync/git] rebased local commits onto origin/${branch}`);
 		} catch (err) {
 			console.error(`[sync/git] rebase onto origin/${branch} failed: ${this._errText(err)}`);
-			try { execSync('git rebase --abort', { cwd: workDir, stdio: 'pipe' }); } catch {}
+			try {
+				execSync('git rebase --abort', { cwd: workDir, stdio: 'pipe' });
+			} catch {}
 			console.error('[sync/git] left local state unchanged; the next push will fail until resolved manually.');
 		}
 	}

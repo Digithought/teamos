@@ -7,11 +7,20 @@ export const PAUSE_FILE = '.pause';
 const PAUSE_POLL_MS = 30 * 1000;
 
 export async function pathExists(filePath) {
-	try { await access(filePath, constants.R_OK); return true; } catch { return false; }
+	try {
+		await access(filePath, constants.R_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export async function readTextOrEmpty(filePath) {
-	try { return await readFile(filePath, 'utf-8'); } catch { return ''; }
+	try {
+		return await readFile(filePath, 'utf-8');
+	} catch {
+		return '';
+	}
 }
 
 export async function checkStop(teamDir) {
@@ -40,7 +49,7 @@ export async function waitWhilePaused(teamDir) {
 			console.log('[runner] Paused (team/.pause detected) — holding until removed.');
 			loggedPause = true;
 		}
-		await new Promise(r => setTimeout(r, PAUSE_POLL_MS));
+		await new Promise((r) => setTimeout(r, PAUSE_POLL_MS));
 	}
 	if (loggedPause) console.log('[runner] Resumed (team/.pause cleared).');
 	return 'ok';
@@ -66,7 +75,11 @@ export function formatTimestamp() {
 }
 
 export function slugify(text) {
-	return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+	return text
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-|-$/g, '')
+		.slice(0, 60);
 }
 
 export async function ensureLogsDir(teamDir) {
@@ -97,7 +110,7 @@ export function buildToolsPromptSection(role) {
 		'',
 		'**Messaging** — see `teamos/docs/messages.md` for the full protocol:',
 		'- **send_message** — Send a message (`to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Returns `{ id, sentAt }`. Before composing to a recipient set you have already messaged this cycle, call `list_sent({ to: [...] })` — prefer `supersede_message` over stacking another message on the same topic.',
-		'- **supersede_message** — Send a new message that consolidates / replaces one or more earlier messages YOU sent (`supersedes`, `to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Predecessors are silently removed from recipients\' inboxes when still unread; the new `to`+`cc` must cover every recipient any predecessor reached.',
+		"- **supersede_message** — Send a new message that consolidates / replaces one or more earlier messages YOU sent (`supersedes`, `to`, `body`, optional `subject`, `cc`, `replyTo`, `projectCode`). Predecessors are silently removed from recipients' inboxes when still unread; the new `to`+`cc` must cover every recipient any predecessor reached.",
 		'- **read_message** — Read any message by id (parent inlined one hop). `supersedes` and `supersededBy` fields surface consolidation links.',
 		'- **list_inbox** / **list_sent** / **list_archives** — Browse your mailboxes. `list_sent` accepts an optional `to: [<member>, ...]` filter.',
 		'- **archive_message** — Move a message from your inbox to your archives after handling it.',
@@ -105,17 +118,22 @@ export function buildToolsPromptSection(role) {
 	];
 
 	if (role === 'cycle') {
-		lines.push('', 'Archive each inbox message you have fully handled. Messages left in your inbox carry forward to your next cycle.');
+		lines.push(
+			'',
+			'Archive each inbox message you have fully handled. Messages left in your inbox carry forward to your next cycle.',
+		);
 	}
 
 	if (role === 'efficiency') return lines;
 
-	const todoContext = role === 'cycle'
-		? '. Your open todos are already shown above; call `list_todos` for a fresh view after several mutations'
-		: '';
-	const scheduleContext = role === 'cycle'
-		? '. Your due and upcoming events are already shown above; call `list_events` for a fresh view after mutations'
-		: '';
+	const todoContext =
+		role === 'cycle'
+			? '. Your open todos are already shown above; call `list_todos` for a fresh view after several mutations'
+			: '';
+	const scheduleContext =
+		role === 'cycle'
+			? '. Your due and upcoming events are already shown above; call `list_events` for a fresh view after mutations'
+			: '';
 
 	lines.push(
 		'',

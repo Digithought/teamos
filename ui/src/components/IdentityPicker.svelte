@@ -1,24 +1,26 @@
 <script lang="ts">
-	import { identity } from '../lib/identity.svelte.js';
-	import { api } from '../lib/api.js';
-	import type { MemberSummary } from '../lib/types.js';
+import { identity } from '../lib/identity.svelte.js';
+import { api } from '../lib/api.js';
+import type { MemberSummary } from '../lib/types.js';
 
-	let members: MemberSummary[] = $state([]);
-	let open = $state(false);
-	let loaded = $state(false);
+let members: MemberSummary[] = $state([]);
+let open = $state(false);
+let loaded = $state(false);
 
-	async function load() {
-		members = await api.members();
-		loaded = true;
-	}
+async function load() {
+	members = await api.members();
+	loaded = true;
+}
 
-	$effect(() => { load(); });
+$effect(() => {
+	load();
+});
 
-	function pick(name: string) {
-		if (identity.locked) return;
-		identity.set(name);
-		open = false;
-	}
+function pick(name: string) {
+	if (identity.locked) return;
+	identity.set(name);
+	open = false;
+}
 </script>
 
 {#if identity.resolved && identity.locked && identity.unknownEmail}

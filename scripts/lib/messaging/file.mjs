@@ -24,7 +24,10 @@ function parseFrontmatterValue(raw) {
 	if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
 		const inner = trimmed.slice(1, -1).trim();
 		if (!inner) return [];
-		return inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+		return inner
+			.split(',')
+			.map((s) => s.trim().replace(/^["']|["']$/g, ''))
+			.filter(Boolean);
 	}
 	return trimmed;
 }
@@ -63,17 +66,20 @@ function serializeMessage(msg) {
 function normalizeMessage(metadata, body) {
 	const supersedes = Array.isArray(metadata.supersedes)
 		? metadata.supersedes
-		: (metadata.supersedes ? [metadata.supersedes] : []);
+		: metadata.supersedes
+			? [metadata.supersedes]
+			: [];
 	return {
 		id: typeof metadata.id === 'string' ? metadata.id : '',
 		from: typeof metadata.from === 'string' ? metadata.from : 'unknown',
-		to: Array.isArray(metadata.to) ? metadata.to : (metadata.to ? [metadata.to] : []),
-		cc: Array.isArray(metadata.cc) ? metadata.cc : (metadata.cc ? [metadata.cc] : []),
+		to: Array.isArray(metadata.to) ? metadata.to : metadata.to ? [metadata.to] : [],
+		cc: Array.isArray(metadata.cc) ? metadata.cc : metadata.cc ? [metadata.cc] : [],
 		subject: typeof metadata.subject === 'string' ? metadata.subject : '',
 		sentAt: typeof metadata.sentAt === 'string' ? metadata.sentAt : '',
 		replyTo: typeof metadata.replyTo === 'string' && metadata.replyTo ? metadata.replyTo : undefined,
 		supersedes,
-		supersededBy: typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
+		supersededBy:
+			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		body,
 	};
@@ -117,9 +123,7 @@ export class FileMessagingAdapter {
 			const raw = await readFile(path, 'utf-8');
 			const data = JSON.parse(raw);
 			if (!Array.isArray(data.members)) return null;
-			return data.members
-				.map(m => m?.name)
-				.filter(n => typeof n === 'string' && n.length > 0);
+			return data.members.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0);
 		} catch {
 			return null;
 		}
@@ -128,16 +132,14 @@ export class FileMessagingAdapter {
 	_assertInRoster(role, name, roster) {
 		if (roster.includes(name)) return;
 		const lower = name.toLowerCase();
-		const caseMatch = roster.find(n => n.toLowerCase() === lower);
+		const caseMatch = roster.find((n) => n.toLowerCase() === lower);
 		if (caseMatch) {
 			throw new Error(
 				`${role}: "${name}" does not match roster case — members.json declares "${caseMatch}". ` +
-				`Use the canonical name to avoid phantom directories on case-sensitive filesystems.`
+					`Use the canonical name to avoid phantom directories on case-sensitive filesystems.`,
 			);
 		}
-		throw new Error(
-			`${role}: "${name}" is not in members.json (known: ${roster.join(', ')}).`
-		);
+		throw new Error(`${role}: "${name}" is not in members.json (known: ${roster.join(', ')}).`);
 	}
 
 	async _validateParties(op, from, to, cc) {
@@ -145,7 +147,7 @@ export class FileMessagingAdapter {
 		if (!roster) return; // No roster file → skip (e.g. test harness)
 		this._assertInRoster(`${op}.from`, from, roster);
 		for (const r of to) this._assertInRoster(`${op}.to`, r, roster);
-		for (const r of (cc ?? [])) this._assertInRoster(`${op}.cc`, r, roster);
+		for (const r of cc ?? []) this._assertInRoster(`${op}.cc`, r, roster);
 	}
 
 	// ─── Mailbox helpers ───────────────────────────────────────────────────────
@@ -214,7 +216,15 @@ export class FileMessagingAdapter {
 
 		await mkdir(this.messagesDir, { recursive: true });
 		const content = serializeMessage({
-			id, from, to, cc, subject: derivedSubject, sentAt, replyTo, projectCode, body,
+			id,
+			from,
+			to,
+			cc,
+			subject: derivedSubject,
+			sentAt,
+			replyTo,
+			projectCode,
+			body,
 		});
 		await writeFile(this._messagePath(id), content, 'utf-8');
 
@@ -262,7 +272,9 @@ export class FileMessagingAdapter {
 			const prev = await this._readRawMessage(prevId).catch(() => null);
 			if (!prev) throw new Error(`supersedeMessage: predecessor ${prevId} not found`);
 			if (prev.from !== from) {
-				throw new Error(`supersedeMessage: ${prevId} was sent by ${prev.from}, not ${from} — only the original sender can supersede`);
+				throw new Error(
+					`supersedeMessage: ${prevId} was sent by ${prev.from}, not ${from} — only the original sender can supersede`,
+				);
 			}
 			if (prev.supersededBy) {
 				throw new Error(`supersedeMessage: ${prevId} is already superseded by ${prev.supersededBy}`);
@@ -278,11 +290,14 @@ export class FileMessagingAdapter {
 			}
 		}
 		if (droppedRecipients.length) {
-			const sample = droppedRecipients.slice(0, 3).map(d => `${d.recipient} (from ${d.id})`).join(', ');
+			const sample = droppedRecipients
+				.slice(0, 3)
+				.map((d) => `${d.recipient} (from ${d.id})`)
+				.join(', ');
 			throw new Error(
 				`supersedeMessage: new recipients must cover every predecessor recipient. Missing: ${sample}` +
-				(droppedRecipients.length > 3 ? `, and ${droppedRecipients.length - 3} more` : '') +
-				'. To address a smaller audience, send a regular message instead of superseding.',
+					(droppedRecipients.length > 3 ? `, and ${droppedRecipients.length - 3} more` : '') +
+					'. To address a smaller audience, send a regular message instead of superseding.',
 			);
 		}
 
@@ -301,8 +316,16 @@ export class FileMessagingAdapter {
 
 		await mkdir(this.messagesDir, { recursive: true });
 		const content = serializeMessage({
-			id, from, to, cc, subject: derivedSubject, sentAt,
-			replyTo, supersedes: [...supersedes], projectCode, body,
+			id,
+			from,
+			to,
+			cc,
+			subject: derivedSubject,
+			sentAt,
+			replyTo,
+			supersedes: [...supersedes],
+			projectCode,
+			body,
 		});
 		await writeFile(this._messagePath(id), content, 'utf-8');
 
@@ -380,7 +403,7 @@ export class FileMessagingAdapter {
 	 */
 	_collapseSuperseded(entries, visibleIds) {
 		const visible = new Set(visibleIds);
-		return entries.filter(e => !(e.supersededBy && visible.has(e.supersededBy)));
+		return entries.filter((e) => !(e.supersededBy && visible.has(e.supersededBy)));
 	}
 
 	async listInbox(member) {
@@ -406,9 +429,9 @@ export class FileMessagingAdapter {
 		const filter = opts.to;
 		if (Array.isArray(filter) && filter.length > 0) {
 			const want = new Set(filter);
-			return entries.filter(e => {
+			return entries.filter((e) => {
 				const recipients = [...(e.to ?? []), ...(e.cc ?? [])];
-				return recipients.some(r => want.has(r));
+				return recipients.some((r) => want.has(r));
 			});
 		}
 		return entries;

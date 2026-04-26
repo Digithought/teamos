@@ -4,9 +4,9 @@ export const PRIORITY_ORDER = ['pressing', 'today', 'thisWeek', 'later'];
 /** Weights for fair scheduling — higher weight = more cycles. */
 export const DEFAULT_PRIORITY_WEIGHTS = {
 	pressing: 8,
-	today:    4,
+	today: 4,
 	thisWeek: 2,
-	later:    1,
+	later: 1,
 };
 
 /** Max vruntime deficit a priority can accumulate while idle. */
@@ -15,9 +15,9 @@ export const MAX_VRUNTIME_DEFICIT = 3.0;
 /** Minimum time between serving a priority. */
 export const DEFAULT_CADENCE_MS = {
 	pressing: 0,
-	today:    4 * 60 * 60 * 1000,
+	today: 4 * 60 * 60 * 1000,
 	thisWeek: 24 * 60 * 60 * 1000,
-	later:    3 * 24 * 60 * 60 * 1000,
+	later: 3 * 24 * 60 * 60 * 1000,
 };
 
 /**
@@ -60,7 +60,7 @@ export function normalizeVruntimes(vruntime) {
 /** Rotate membersWithWork so the member after lastServed is first (round-robin fairness). */
 export function rotateAfter(membersWithWork, lastServedName) {
 	if (!lastServedName || membersWithWork.length <= 1) return membersWithWork;
-	const idx = membersWithWork.findIndex(m => m.name === lastServedName);
+	const idx = membersWithWork.findIndex((m) => m.name === lastServedName);
 	if (idx < 0) return membersWithWork;
 	return [...membersWithWork.slice(idx + 1), ...membersWithWork.slice(0, idx + 1)];
 }

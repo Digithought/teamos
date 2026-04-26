@@ -17,25 +17,25 @@
  * how the recipient perceives their involvement.
  */
 export interface Message {
-  id: string;            // opaque — never parse or construct
-  from: string;          // sender member name
-  to: string[];          // primary recipients
-  cc?: string[];         // optional cc'd recipients
-  subject: string;       // required on new threads; replies auto-derive `Re: <parent>`
-  sentAt: string;        // ISO-8601
-  replyTo?: string;      // id of the immediately preceding message in the thread
-  /** Ids of prior messages this one consolidates / replaces (set by `supersede_message`). */
-  supersedes?: string[];
-  /** Id of a later message that consolidates / replaces this one (written by the adapter). */
-  supersededBy?: string;
-  projectCode?: string;  // optional project tag
-  body: string;          // markdown
+	id: string; // opaque — never parse or construct
+	from: string; // sender member name
+	to: string[]; // primary recipients
+	cc?: string[]; // optional cc'd recipients
+	subject: string; // required on new threads; replies auto-derive `Re: <parent>`
+	sentAt: string; // ISO-8601
+	replyTo?: string; // id of the immediately preceding message in the thread
+	/** Ids of prior messages this one consolidates / replaces (set by `supersede_message`). */
+	supersedes?: string[];
+	/** Id of a later message that consolidates / replaces this one (written by the adapter). */
+	supersededBy?: string;
+	projectCode?: string; // optional project tag
+	body: string; // markdown
 
-  /**
-   * When `replyTo` is set, `read_message` inlines the immediate parent
-   * one hop deep. To walk further back, call `read_message(parent.replyTo)`.
-   */
-  parent?: Message;
+	/**
+	 * When `replyTo` is set, `read_message` inlines the immediate parent
+	 * one hop deep. To walk further back, call `read_message(parent.replyTo)`.
+	 */
+	parent?: Message;
 }
 
 /**
@@ -49,28 +49,28 @@ export interface Message {
  * version is reachable in the same mailbox; sent listings do not collapse.
  */
 export interface MessageSummary {
-  id: string;
-  from: string;
-  to: string[];
-  cc?: string[];
-  subject: string;
-  sentAt: string;
-  projectCode?: string;
-  hasParent: boolean;
-  supersedes?: string[];
-  supersededBy?: string;
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	projectCode?: string;
+	hasParent: boolean;
+	supersedes?: string[];
+	supersededBy?: string;
 }
 
 /**
  * Arguments to `send_message`. Returns `{ id, sentAt }`.
  */
 export interface SendMessageArgs {
-  to: string[];
-  body: string;
-  subject?: string;      // required on new threads; optional on replies
-  cc?: string[];
-  replyTo?: string;
-  projectCode?: string;
+	to: string[];
+	body: string;
+	subject?: string; // required on new threads; optional on replies
+	cc?: string[];
+	replyTo?: string;
+	projectCode?: string;
 }
 
 /**
@@ -85,11 +85,11 @@ export interface SendMessageArgs {
  *     normally and can re-read.
  */
 export interface SupersedeMessageArgs {
-  supersedes: string[];
-  to: string[];
-  body: string;
-  subject?: string;
-  cc?: string[];
-  replyTo?: string;
-  projectCode?: string;
+	supersedes: string[];
+	to: string[];
+	body: string;
+	subject?: string;
+	cc?: string[];
+	replyTo?: string;
+	projectCode?: string;
 }

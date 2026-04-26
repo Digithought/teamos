@@ -48,7 +48,12 @@ import { pathExists, ensureLogsDir, buildLogPath, checkStop, waitWhilePaused } f
 import { PRIORITY_ORDER, DEFAULT_PRIORITY_WEIGHTS, DEFAULT_CADENCE_MS } from './lib/scheduler.mjs';
 import { loadSchedulerState, saveSchedulerState, idleWait } from './lib/state.mjs';
 import { runAgent } from './lib/agents/index.mjs';
-import { loadMembers, getMembersWithWork, ensureSelfAssessmentEvents, ensureDailyCheckinEvents } from './lib/work-detection.mjs';
+import {
+	loadMembers,
+	getMembersWithWork,
+	ensureSelfAssessmentEvents,
+	ensureDailyCheckinEvents,
+} from './lib/work-detection.mjs';
 import { runMaintenance, buildClerkPrompt } from './lib/maintenance.mjs';
 import { runCycle, runPass } from './lib/cycle.mjs';
 import { createMessagingAdapter } from './lib/messaging/index.mjs';
@@ -64,8 +69,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TEAMOS_ROOT = join(__dirname, '..');
 
-const DEFAULT_INTERVAL_MS = 2 * 60 * 60 * 1000;  // 2 hours between passes
-const DEFAULT_REMOTE_PULL_MS = 5 * 60 * 1000;    // 5 min between idle remote pulls
+const DEFAULT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours between passes
+const DEFAULT_REMOTE_PULL_MS = 5 * 60 * 1000; // 5 min between idle remote pulls
 
 function getVersion() {
 	try {
@@ -111,7 +116,7 @@ function printHelp() {
 		'  --cadence <pri:dur>  Min time between serving a priority (repeatable)',
 		'                         (defaults: pressing:0h, today:4h, thisWeek:1d, later:3d)',
 		'  --budget <pri:n>     Optional max member cycles at a priority per pass (repeatable)',
-		'  --dry-run            List members with work, don\'t invoke agent',
+		"  --dry-run            List members with work, don't invoke agent",
 		'  --help               Show this help',
 	];
 	console.log(lines.join('\n'));
@@ -119,16 +124,16 @@ function printHelp() {
 
 function parseArgs(argv) {
 	const opts = {
-		agent: null,         // resolved from config if not set
-		messaging: null,     // resolved from config if not set
-		tasks: null,         // resolved from config if not set
-		schedule: null,      // resolved from config if not set
-		triggers: null,      // resolved from config if not set
-		sync: null,          // resolved from config if not set
+		agent: null, // resolved from config if not set
+		messaging: null, // resolved from config if not set
+		tasks: null, // resolved from config if not set
+		schedule: null, // resolved from config if not set
+		triggers: null, // resolved from config if not set
+		sync: null, // resolved from config if not set
 		priority: 'pressing',
 		member: null,
 		maxCycles: 10,
-		loop: true,          // loop is now the default
+		loop: true, // loop is now the default
 		once: false,
 		intervalMs: DEFAULT_INTERVAL_MS,
 		remotePullMs: DEFAULT_REMOTE_PULL_MS,
@@ -275,9 +280,7 @@ function parseArgs(argv) {
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 
-	const repoRoot = process.env.TEAMOS_TEAM_DIR
-		? join(process.env.TEAMOS_TEAM_DIR, '..')
-		: process.cwd();
+	const repoRoot = process.env.TEAMOS_TEAM_DIR ? join(process.env.TEAMOS_TEAM_DIR, '..') : process.cwd();
 
 	// Load .env before anything else so $VAR references in config resolve
 	loadDotEnv(repoRoot);
@@ -285,7 +288,7 @@ async function main() {
 	const teamDir = process.env.TEAMOS_TEAM_DIR || join(repoRoot, 'team');
 	const version = getVersion();
 
-	if (!await pathExists(teamDir)) {
+	if (!(await pathExists(teamDir))) {
 		console.error('team/ directory not found. Run `node teamos/scripts/init.mjs` first.');
 		process.exit(1);
 	}
@@ -313,14 +316,14 @@ async function main() {
 
 	// ── Load members ─────────────────────────────────────────────────────────
 	const allMembers = await loadMembers(teamDir);
-	const members = opts.member
-		? allMembers.filter(m => m.name === opts.member)
-		: allMembers;
+	const members = opts.member ? allMembers.filter((m) => m.name === opts.member) : allMembers;
 
 	if (members.length === 0) {
-		console.log(opts.member
-			? `Member "${opts.member}" not found or not active.`
-			: 'No active AI members found in team/members.json.');
+		console.log(
+			opts.member
+				? `Member "${opts.member}" not found or not active.`
+				: 'No active AI members found in team/members.json.',
+		);
 		return;
 	}
 
@@ -343,14 +346,17 @@ async function main() {
 		const logsDir = await ensureLogsDir(teamDir);
 		const clerkLog = buildLogPath(logsDir, 'clerk', 'manual');
 
-		await writeFile(clerkLog, [
-			`Clerk run (manual)`,
-			`Agent: ${opts.agent}`,
-			`TeamOS: ${version}`,
-			`Started: ${new Date().toISOString()}`,
-			'═'.repeat(72),
-			'',
-		].join('\n'));
+		await writeFile(
+			clerkLog,
+			[
+				`Clerk run (manual)`,
+				`Agent: ${opts.agent}`,
+				`TeamOS: ${version}`,
+				`Started: ${new Date().toISOString()}`,
+				'═'.repeat(72),
+				'',
+			].join('\n'),
+		);
 
 		const clerkPrompt = await buildClerkPrompt(teamDir, null);
 		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog, {
@@ -379,10 +385,14 @@ async function main() {
 
 	if (opts.dryRun) {
 		console.log(`\nteamos (${version})`);
-		console.log(`Active AI members: ${members.map(m => m.name).join(', ')}\n`);
-		console.log(`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`);
+		console.log(`Active AI members: ${members.map((m) => m.name).join(', ')}\n`);
+		console.log(
+			`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`,
+		);
 
-		const weightStr = Object.entries(opts.weights).map(([p, w]) => `${p}:${w}`).join(', ');
+		const weightStr = Object.entries(opts.weights)
+			.map(([p, w]) => `${p}:${w}`)
+			.join(', ');
 		const cadenceStr = Object.entries(opts.cadences)
 			.map(([p, ms]) => {
 				if (ms === 0) return `${p}:0`;
@@ -395,10 +405,22 @@ async function main() {
 
 		const logsDir = await ensureLogsDir(teamDir);
 		const state = await loadSchedulerState(logsDir);
-		console.log(`  Vruntimes: ${Object.entries(state.vruntime).map(([p, v]) => `${p}:${v.toFixed(3)}`).join(', ')}\n`);
+		console.log(
+			`  Vruntimes: ${Object.entries(state.vruntime)
+				.map(([p, v]) => `${p}:${v.toFixed(3)}`)
+				.join(', ')}\n`,
+		);
 
 		for (const priority of PRIORITY_ORDER) {
-			const withWork = await getMembersWithWork(members, priority, teamDir, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter);
+			const withWork = await getMembersWithWork(
+				members,
+				priority,
+				teamDir,
+				messagingAdapter,
+				scheduleAdapter,
+				tasksAdapter,
+				triggersAdapter,
+			);
 			if (withWork.length > 0) {
 				console.log(`  [${priority}]`);
 				for (const m of withWork) {
@@ -429,14 +451,16 @@ async function main() {
 	const banner = [
 		'═'.repeat(72),
 		`  teamos (${version})${opts.loop ? ' [loop mode]' : ' [single pass]'}`,
-		`  ${members.length} active AI member(s): ${members.map(m => m.name).join(', ')}`,
+		`  ${members.length} active AI member(s): ${members.map((m) => m.name).join(', ')}`,
 		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`,
 		`  Weights: ${weightStr}`,
 		`  Cadences: ${cadenceStr}`,
 		budgetStr ? `  Budgets: ${budgetStr}` : null,
 		opts.loop ? `  Interval: ${opts.intervalMs / 60000}min` : null,
 		'═'.repeat(72),
-	].filter(Boolean).join('\n');
+	]
+		.filter(Boolean)
+		.join('\n');
 	console.log(banner);
 
 	const logsDir = await ensureLogsDir(teamDir);
@@ -455,7 +479,7 @@ async function main() {
 				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
 			}
-			if (await waitWhilePaused(teamDir) === 'stop') {
+			if ((await waitWhilePaused(teamDir)) === 'stop') {
 				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
 			}
@@ -467,18 +491,38 @@ async function main() {
 			console.log('═'.repeat(72));
 
 			const result = await runPass({
-				opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-				useTimeout: false, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter,
+				opts,
+				teamDir,
+				logsDir,
+				version,
+				repoRoot,
+				members,
+				schedulerState,
+				useTimeout: false,
+				syncAdapter,
+				messagingAdapter,
+				tasksAdapter,
+				scheduleAdapter,
+				triggersAdapter,
 			});
 
 			// Post-pass maintenance
 			if (!result.stopped) {
 				await runMaintenance({
-					opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-					passErrors: result.passErrors, syncAdapter,
+					opts,
+					teamDir,
+					logsDir,
+					version,
+					repoRoot,
+					members,
+					schedulerState,
+					passErrors: result.passErrors,
+					syncAdapter,
 				});
 			}
-			console.log(`\n[runner] Pass ${passNum} complete — ${result.cycleCount} cycle(s), ${result.totalMemberRuns} member run(s).`);
+			console.log(
+				`\n[runner] Pass ${passNum} complete — ${result.cycleCount} cycle(s), ${result.totalMemberRuns} member run(s).`,
+			);
 			await saveSchedulerState(logsDir, schedulerState);
 
 			if (result.stopped) {
@@ -493,8 +537,11 @@ async function main() {
 				const mins = Math.round(remaining / 60000);
 				console.log(`[runner] Idle for ~${mins}min until next interval.`);
 				const reason = await idleWait(
-					remaining, teamDir, members,
-					schedulerState.lastServedAt, opts.cadences,
+					remaining,
+					teamDir,
+					members,
+					schedulerState.lastServedAt,
+					opts.cadences,
 					(m, p, t) => getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter),
 					syncAdapter ? { syncAdapter, workDir: repoRoot, intervalMs: opts.remotePullMs } : null,
 				);
@@ -514,13 +561,31 @@ async function main() {
 	} else {
 		// Single pass mode (--once)
 		const result = await runPass({
-			opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-			useTimeout: true, syncAdapter, messagingAdapter, tasksAdapter, scheduleAdapter, triggersAdapter,
+			opts,
+			teamDir,
+			logsDir,
+			version,
+			repoRoot,
+			members,
+			schedulerState,
+			useTimeout: true,
+			syncAdapter,
+			messagingAdapter,
+			tasksAdapter,
+			scheduleAdapter,
+			triggersAdapter,
 		});
 
 		await runMaintenance({
-			opts, teamDir, logsDir, version, repoRoot, members, schedulerState,
-			passErrors: result.passErrors, syncAdapter,
+			opts,
+			teamDir,
+			logsDir,
+			version,
+			repoRoot,
+			members,
+			schedulerState,
+			passErrors: result.passErrors,
+			syncAdapter,
 		});
 
 		await saveSchedulerState(logsDir, schedulerState);

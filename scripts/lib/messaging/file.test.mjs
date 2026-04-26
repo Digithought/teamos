@@ -17,7 +17,7 @@ async function withAdapter(fn) {
 
 async function withRosterAdapter(names, fn) {
 	await withAdapter(async (adapter, dir) => {
-		const members = names.map(name => ({ name }));
+		const members = names.map((name) => ({ name }));
 		await writeFile(join(dir, 'members.json'), JSON.stringify({ members }), 'utf-8');
 		await fn(adapter, dir);
 	});
@@ -26,7 +26,10 @@ async function withRosterAdapter(names, fn) {
 test('sendMessage writes master store + recipient inboxes + sender sent', async () => {
 	await withAdapter(async (adapter) => {
 		const { id } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'hello', body: 'hi',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'hello',
+			body: 'hi',
 		});
 
 		const inbox = await adapter.listInbox('bob');
@@ -43,10 +46,20 @@ test('sendMessage writes master store + recipient inboxes + sender sent', async 
 test('supersedeMessage removes predecessor from unread inbox and delivers consolidated', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'auth review', body: 'first take',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'auth review',
+			body: 'first take',
 		});
-		const { id: id2, unreadRemoved, alreadyDelivered } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob'], body: 'consolidated take',
+		const {
+			id: id2,
+			unreadRemoved,
+			alreadyDelivered,
+		} = await adapter.supersedeMessage({
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob'],
+			body: 'consolidated take',
 		});
 
 		assert.equal(unreadRemoved, 1, 'predecessor pulled from bob inbox');
@@ -63,7 +76,7 @@ test('supersedeMessage removes predecessor from unread inbox and delivers consol
 		// Sender's sent log keeps both, marked
 		const sent = await adapter.listSent('alice');
 		assert.equal(sent.length, 2);
-		const supersededEntry = sent.find(e => e.id === id1);
+		const supersededEntry = sent.find((e) => e.id === id1);
 		assert.equal(supersededEntry.supersededBy, id2);
 	});
 });
@@ -71,12 +84,22 @@ test('supersedeMessage removes predecessor from unread inbox and delivers consol
 test('supersedeMessage leaves archived predecessor alone but marks supersededBy', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'auth review', body: 'first take',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'auth review',
+			body: 'first take',
 		});
 		await adapter.archiveMessage('bob', id1);
 
-		const { id: id2, unreadRemoved, alreadyDelivered } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob'], body: 'consolidated take',
+		const {
+			id: id2,
+			unreadRemoved,
+			alreadyDelivered,
+		} = await adapter.supersedeMessage({
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob'],
+			body: 'consolidated take',
 		});
 
 		assert.equal(unreadRemoved, 0);
@@ -101,13 +124,23 @@ test('supersedeMessage leaves archived predecessor alone but marks supersededBy'
 test('supersedeMessage handles mixed-state recipients (one unread, one archived)', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob', 'carol'], subject: 'auth review', body: 'first take',
+			from: 'alice',
+			to: ['bob', 'carol'],
+			subject: 'auth review',
+			body: 'first take',
 		});
 		// Carol acted fast.
 		await adapter.archiveMessage('carol', id1);
 
-		const { id: id2, unreadRemoved, alreadyDelivered } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob', 'carol'], body: 'consolidated',
+		const {
+			id: id2,
+			unreadRemoved,
+			alreadyDelivered,
+		} = await adapter.supersedeMessage({
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob', 'carol'],
+			body: 'consolidated',
 		});
 
 		assert.equal(unreadRemoved, 1, 'pulled from bob');
@@ -129,7 +162,10 @@ test('supersedeMessage handles mixed-state recipients (one unread, one archived)
 test('supersedeMessage rejects narrowing the audience', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob', 'carol'], subject: 'broad', body: 'x',
+			from: 'alice',
+			to: ['bob', 'carol'],
+			subject: 'broad',
+			body: 'x',
 		});
 		await assert.rejects(
 			() => adapter.supersedeMessage({ from: 'alice', supersedes: [id1], to: ['bob'], body: 'narrow' }),
@@ -138,10 +174,13 @@ test('supersedeMessage rejects narrowing the audience', async () => {
 	});
 });
 
-test('supersedeMessage rejects superseding someone else\'s message', async () => {
+test("supersedeMessage rejects superseding someone else's message", async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'mine', body: 'x',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'mine',
+			body: 'x',
 		});
 		await assert.rejects(
 			() => adapter.supersedeMessage({ from: 'carol', supersedes: [id1], to: ['bob'], body: 'not mine' }),
@@ -153,10 +192,16 @@ test('supersedeMessage rejects superseding someone else\'s message', async () =>
 test('supersedeMessage rejects double-superseding', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 't', body: 'a',
+			from: 'alice',
+			to: ['bob'],
+			subject: 't',
+			body: 'a',
 		});
 		const { id: id2 } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob'], body: 'b',
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob'],
+			body: 'b',
 		});
 		await assert.rejects(
 			() => adapter.supersedeMessage({ from: 'alice', supersedes: [id1], to: ['bob'], body: 'c' }),
@@ -168,13 +213,22 @@ test('supersedeMessage rejects double-superseding', async () => {
 test('supersedeMessage can consolidate multiple predecessors', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'p1', body: 'one',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'p1',
+			body: 'one',
 		});
 		const { id: id2 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 'p2', body: 'two',
+			from: 'alice',
+			to: ['bob'],
+			subject: 'p2',
+			body: 'two',
 		});
 		const { id: id3, unreadRemoved } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1, id2], to: ['bob'], body: 'merged',
+			from: 'alice',
+			supersedes: [id1, id2],
+			to: ['bob'],
+			body: 'merged',
 		});
 		assert.equal(unreadRemoved, 2);
 
@@ -196,7 +250,7 @@ test('listSent filters by recipient intersection (to + cc)', async () => {
 
 		const toBob = await adapter.listSent('alice', { to: ['bob'] });
 		assert.equal(toBob.length, 2);
-		assert.ok(toBob.every(e => [...(e.to ?? []), ...(e.cc ?? [])].includes('bob')));
+		assert.ok(toBob.every((e) => [...(e.to ?? []), ...(e.cc ?? [])].includes('bob')));
 
 		const toDave = await adapter.listSent('alice', { to: ['dave'] });
 		assert.equal(toDave.length, 1);
@@ -210,10 +264,16 @@ test('listSent filters by recipient intersection (to + cc)', async () => {
 test('readMessage surfaces supersedes and supersededBy', async () => {
 	await withAdapter(async (adapter) => {
 		const { id: id1 } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 't', body: 'a',
+			from: 'alice',
+			to: ['bob'],
+			subject: 't',
+			body: 'a',
 		});
 		const { id: id2 } = await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob'], body: 'b',
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob'],
+			body: 'b',
 		});
 
 		const newMsg = await adapter.readMessage(id2);
@@ -237,7 +297,10 @@ test('predecessor frontmatter rewrite preserves all original fields', async () =
 			projectCode: 'AUTH',
 		});
 		await adapter.supersedeMessage({
-			from: 'alice', supersedes: [id1], to: ['bob', 'carol'], body: 'consolidated',
+			from: 'alice',
+			supersedes: [id1],
+			to: ['bob', 'carol'],
+			body: 'consolidated',
 		});
 
 		const reread = await adapter.readMessage(id1, { inlineParent: false });
@@ -285,7 +348,10 @@ test('sendMessage rejects unknown member', async () => {
 test('sendMessage accepts exact roster casing (capitalized roster)', async () => {
 	await withRosterAdapter(['Alice', 'Bob'], async (adapter) => {
 		const { id } = await adapter.sendMessage({
-			from: 'Alice', to: ['Bob'], subject: 's', body: 'b',
+			from: 'Alice',
+			to: ['Bob'],
+			subject: 's',
+			body: 'b',
 		});
 		assert.ok(id);
 		const sent = await adapter.listSent('Alice');
@@ -296,12 +362,19 @@ test('sendMessage accepts exact roster casing (capitalized roster)', async () =>
 test('supersedeMessage also enforces roster casing', async () => {
 	await withRosterAdapter(['alice', 'bob'], async (adapter) => {
 		const { id } = await adapter.sendMessage({
-			from: 'alice', to: ['bob'], subject: 's', body: 'b',
+			from: 'alice',
+			to: ['bob'],
+			subject: 's',
+			body: 'b',
 		});
 		await assert.rejects(
-			() => adapter.supersedeMessage({
-				from: 'Alice', supersedes: [id], to: ['bob'], body: 'x',
-			}),
+			() =>
+				adapter.supersedeMessage({
+					from: 'Alice',
+					supersedes: [id],
+					to: ['bob'],
+					body: 'x',
+				}),
 			/does not match roster case/,
 		);
 	});

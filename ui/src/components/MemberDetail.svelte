@@ -1,232 +1,240 @@
 <script lang="ts">
-	import { api } from '../lib/api.js';
-	import { router } from '../lib/router.svelte.js';
-	import { identity } from '../lib/identity.svelte.js';
-	import type { MemberDetail, MessageSummary, Message, TodoItem } from '../lib/types.js';
+import { api } from '../lib/api.js';
+import { router } from '../lib/router.svelte.js';
+import { identity } from '../lib/identity.svelte.js';
+import type { MemberDetail, MessageSummary, Message, TodoItem } from '../lib/types.js';
 
-	let { name }: { name: string } = $props();
+let { name }: { name: string } = $props();
 
-	let detail: MemberDetail | null = $state(null);
-	let inbox: MessageSummary[] = $state([]);
-	let archives: MessageSummary[] = $state([]);
-	let showArchives = $state(false);
-	let loading = $state(true);
-	let tab: 'inbox' | 'todos' | 'state' | 'schedule' = $state('inbox');
-	let expandedMsg: string | null = $state(null);
-	let msgCache: Record<string, Message> = $state({});
+let detail: MemberDetail | null = $state(null);
+let inbox: MessageSummary[] = $state([]);
+let archives: MessageSummary[] = $state([]);
+let showArchives = $state(false);
+let loading = $state(true);
+let tab: 'inbox' | 'todos' | 'state' | 'schedule' = $state('inbox');
+let expandedMsg: string | null = $state(null);
+let msgCache: Record<string, Message> = $state({});
 
-	const isMe = $derived(identity.name === name);
+const isMe = $derived(identity.name === name);
 
-	async function load() {
-		loading = true;
-		const [d, inb, arch] = await Promise.all([
-			api.member(name),
-			api.inbox(name),
-			api.archives(name),
-		]);
-		detail = d;
-		inbox = inb;
-		archives = arch;
-		loading = false;
+async function load() {
+	loading = true;
+	const [d, inb, arch] = await Promise.all([api.member(name), api.inbox(name), api.archives(name)]);
+	detail = d;
+	inbox = inb;
+	archives = arch;
+	loading = false;
 
-		const expandId = router.query.msg;
-		if (expandId) {
-			tab = 'inbox';
-			expandedMsg = expandId;
-			if (!msgCache[expandId]) {
-				try {
-					msgCache[expandId] = await api.message(expandId);
-				} catch { /* missing from store */ }
+	const expandId = router.query.msg;
+	if (expandId) {
+		tab = 'inbox';
+		expandedMsg = expandId;
+		if (!msgCache[expandId]) {
+			try {
+				msgCache[expandId] = await api.message(expandId);
+			} catch {
+				/* missing from store */
 			}
 		}
 	}
+}
 
-	$effect(() => { name; load(); });
+$effect(() => {
+	name;
+	load();
+});
 
-	async function toggleExpand(id: string) {
-		if (expandedMsg === id) {
-			expandedMsg = null;
-			return;
+async function toggleExpand(id: string) {
+	if (expandedMsg === id) {
+		expandedMsg = null;
+		return;
+	}
+	expandedMsg = id;
+	if (!msgCache[id]) {
+		try {
+			const msg = await api.message(id);
+			msgCache[id] = msg;
+		} catch {
+			/* missing from store */
 		}
-		expandedMsg = id;
-		if (!msgCache[id]) {
-			try {
-				const msg = await api.message(id);
-				msgCache[id] = msg;
-			} catch { /* missing from store */ }
-		}
 	}
+}
 
-	async function deleteMessage(id: string) {
-		await api.deleteMessage(name, id);
-		inbox = inbox.filter(m => m.id !== id);
+async function deleteMessage(id: string) {
+	await api.deleteMessage(name, id);
+	inbox = inbox.filter((m) => m.id !== id);
+}
+
+async function archiveMessage(id: string) {
+	await api.archiveMessage(name, id);
+	inbox = inbox.filter((m) => m.id !== id);
+	archives = await api.archives(name);
+}
+
+async function deleteArchive(id: string) {
+	await api.deleteArchive(name, id);
+	archives = archives.filter((m) => m.id !== id);
+}
+
+let newTodoTitle = $state('');
+let newTodoPriority = $state('today');
+
+async function addTodo() {
+	if (!newTodoTitle.trim() || !detail) return;
+	const items = [...detail.todos.items, { title: newTodoTitle.trim(), priority: newTodoPriority, status: 'pending' }];
+	await api.updateTodos(name, { items });
+	detail.todos.items = items;
+	newTodoTitle = '';
+}
+
+async function removeTodo(idx: number) {
+	if (!detail) return;
+	const items = detail.todos.items.filter((_, i) => i !== idx);
+	await api.updateTodos(name, { items });
+	detail.todos.items = items;
+}
+
+async function toggleTodoStatus(idx: number) {
+	if (!detail) return;
+	const items = [...detail.todos.items];
+	const item = { ...items[idx] };
+	item.status = item.status === 'done' ? 'pending' : 'done';
+	items[idx] = item;
+	await api.updateTodos(name, { items });
+	detail.todos.items = items;
+}
+
+let newEventTitle = $state('');
+let newEventTime = $state('');
+
+async function addEvent() {
+	if (!newEventTime || !detail) return;
+	const title = newEventTitle.trim() || '(untitled)';
+	await api.addEvent(name, {
+		title,
+		time: new Date(newEventTime).toISOString(),
+	});
+	const fresh = await api.schedule(name);
+	detail.schedule.events = fresh.events as typeof detail.schedule.events;
+	newEventTitle = '';
+	newEventTime = '';
+}
+
+async function removeEvent(id: string) {
+	if (!detail || !id) return;
+	await api.removeEvent(name, id);
+	detail.schedule.events = detail.schedule.events.filter((e) => (e as { id?: string }).id !== id);
+}
+
+function priorityColor(p: string): string {
+	const map: Record<string, string> = {
+		pressing: 'var(--danger)',
+		today: 'var(--warning)',
+		thisWeek: 'var(--primary)',
+		later: 'var(--text-light)',
+	};
+	return map[p] ?? 'var(--text-muted)';
+}
+
+function groupByPriority(items: TodoItem[]): [string, TodoItem[]][] {
+	const order = ['pressing', 'today', 'thisWeek', 'later'];
+	const groups = new Map<string, TodoItem[]>();
+	for (const item of items) {
+		const p = item.priority ?? 'later';
+		if (!groups.has(p)) groups.set(p, []);
+		groups.get(p)!.push(item);
 	}
+	return order.filter((p) => groups.has(p)).map((p) => [p, groups.get(p)!]);
+}
 
-	async function archiveMessage(id: string) {
-		await api.archiveMessage(name, id);
-		inbox = inbox.filter(m => m.id !== id);
-		archives = await api.archives(name);
-	}
+const todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
+let editingState = $state(false);
+let stateText = $state('');
+let savingState = $state(false);
 
-	async function deleteArchive(id: string) {
-		await api.deleteArchive(name, id);
-		archives = archives.filter(m => m.id !== id);
-	}
+function startEditState() {
+	stateText = detail?.state ?? '';
+	editingState = true;
+}
 
-	let newTodoTitle = $state('');
-	let newTodoPriority = $state('today');
+async function saveState() {
+	if (!detail) return;
+	savingState = true;
+	await api.updateState(name, stateText);
+	detail.state = stateText;
+	editingState = false;
+	savingState = false;
+}
 
-	async function addTodo() {
-		if (!newTodoTitle.trim() || !detail) return;
-		const items = [...detail.todos.items, { title: newTodoTitle.trim(), priority: newTodoPriority, status: 'pending' }];
-		await api.updateTodos(name, { items });
-		detail.todos.items = items;
-		newTodoTitle = '';
-	}
+function cancelEditState() {
+	editingState = false;
+}
 
-	async function removeTodo(idx: number) {
-		if (!detail) return;
-		const items = detail.todos.items.filter((_, i) => i !== idx);
-		await api.updateTodos(name, { items });
-		detail.todos.items = items;
-	}
+const profileMeta = $derived(detail?.profile.meta ?? {});
 
-	async function toggleTodoStatus(idx: number) {
-		if (!detail) return;
-		const items = [...detail.todos.items];
-		const item = { ...items[idx] };
-		item.status = item.status === 'done' ? 'pending' : 'done';
-		items[idx] = item;
-		await api.updateTodos(name, { items });
-		detail.todos.items = items;
-	}
+let editingProfile = $state(false);
+let savingProfile = $state(false);
+let profileError = $state('');
+let editTitle = $state('');
+let editType: 'ai' | 'human' = $state('ai');
+let editActive = $state(true);
+let editRoles = $state('');
+let editDescription = $state('');
+let editBody = $state('');
 
-	let newEventTitle = $state('');
-	let newEventTime = $state('');
+function startEditProfile() {
+	if (!detail) return;
+	const meta = detail.profile.meta as Record<string, unknown>;
+	editTitle = (meta.title as string) ?? '';
+	editType = (meta.type as 'ai' | 'human') ?? 'ai';
+	editActive = meta.active !== false;
+	const roles = Array.isArray(meta.roles) ? (meta.roles as string[]) : [];
+	editRoles = roles.join(', ');
+	editDescription = (meta.description as string) ?? '';
+	editBody = detail.profile.body ?? '';
+	profileError = '';
+	editingProfile = true;
+}
 
-	async function addEvent() {
-		if (!newEventTime || !detail) return;
-		const title = newEventTitle.trim() || '(untitled)';
-		await api.addEvent(name, {
-			title,
-			time: new Date(newEventTime).toISOString(),
+async function saveProfile() {
+	if (!detail) return;
+	savingProfile = true;
+	profileError = '';
+	try {
+		const roles = editRoles
+			.split(',')
+			.map((r) => r.trim())
+			.filter(Boolean);
+		await api.updateMemberProfile(name, {
+			title: editTitle.trim(),
+			type: editType,
+			active: editActive,
+			roles,
+			description: editDescription.trim(),
+			body: editBody,
 		});
-		const fresh = await api.schedule(name);
-		detail.schedule.events = fresh.events as typeof detail.schedule.events;
-		newEventTitle = '';
-		newEventTime = '';
+		editingProfile = false;
+		await load();
+	} catch (err) {
+		profileError = err instanceof Error ? err.message : 'Failed to save';
+	} finally {
+		savingProfile = false;
 	}
+}
 
-	async function removeEvent(id: string) {
-		if (!detail || !id) return;
-		await api.removeEvent(name, id);
-		detail.schedule.events = detail.schedule.events.filter(e => (e as { id?: string }).id !== id);
+async function deleteMember() {
+	if (!detail) return;
+	const confirmed = window.confirm(
+		`Delete member "${name}"? This will remove their profile, mailbox, todos, and schedule. This cannot be undone.`,
+	);
+	if (!confirmed) return;
+	try {
+		await api.deleteMember(name);
+		router.navigate('/');
+	} catch (err) {
+		profileError = err instanceof Error ? err.message : 'Failed to delete';
 	}
-
-	function priorityColor(p: string): string {
-		const map: Record<string, string> = {
-			pressing: 'var(--danger)',
-			today: 'var(--warning)',
-			thisWeek: 'var(--primary)',
-			later: 'var(--text-light)',
-		};
-		return map[p] ?? 'var(--text-muted)';
-	}
-
-	function groupByPriority(items: TodoItem[]): [string, TodoItem[]][] {
-		const order = ['pressing', 'today', 'thisWeek', 'later'];
-		const groups = new Map<string, TodoItem[]>();
-		for (const item of items) {
-			const p = item.priority ?? 'later';
-			if (!groups.has(p)) groups.set(p, []);
-			groups.get(p)!.push(item);
-		}
-		return order.filter(p => groups.has(p)).map(p => [p, groups.get(p)!]);
-	}
-
-	const todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
-	let editingState = $state(false);
-	let stateText = $state('');
-	let savingState = $state(false);
-
-	function startEditState() {
-		stateText = detail?.state ?? '';
-		editingState = true;
-	}
-
-	async function saveState() {
-		if (!detail) return;
-		savingState = true;
-		await api.updateState(name, stateText);
-		detail.state = stateText;
-		editingState = false;
-		savingState = false;
-	}
-
-	function cancelEditState() {
-		editingState = false;
-	}
-
-	const profileMeta = $derived(detail?.profile.meta ?? {});
-
-	let editingProfile = $state(false);
-	let savingProfile = $state(false);
-	let profileError = $state('');
-	let editTitle = $state('');
-	let editType: 'ai' | 'human' = $state('ai');
-	let editActive = $state(true);
-	let editRoles = $state('');
-	let editDescription = $state('');
-	let editBody = $state('');
-
-	function startEditProfile() {
-		if (!detail) return;
-		const meta = detail.profile.meta as Record<string, unknown>;
-		editTitle = (meta.title as string) ?? '';
-		editType = (meta.type as 'ai' | 'human') ?? 'ai';
-		editActive = meta.active !== false;
-		const roles = Array.isArray(meta.roles) ? (meta.roles as string[]) : [];
-		editRoles = roles.join(', ');
-		editDescription = (meta.description as string) ?? '';
-		editBody = detail.profile.body ?? '';
-		profileError = '';
-		editingProfile = true;
-	}
-
-	async function saveProfile() {
-		if (!detail) return;
-		savingProfile = true;
-		profileError = '';
-		try {
-			const roles = editRoles.split(',').map(r => r.trim()).filter(Boolean);
-			await api.updateMemberProfile(name, {
-				title: editTitle.trim(),
-				type: editType,
-				active: editActive,
-				roles,
-				description: editDescription.trim(),
-				body: editBody,
-			});
-			editingProfile = false;
-			await load();
-		} catch (err) {
-			profileError = err instanceof Error ? err.message : 'Failed to save';
-		} finally {
-			savingProfile = false;
-		}
-	}
-
-	async function deleteMember() {
-		if (!detail) return;
-		const confirmed = window.confirm(`Delete member "${name}"? This will remove their profile, mailbox, todos, and schedule. This cannot be undone.`);
-		if (!confirmed) return;
-		try {
-			await api.deleteMember(name);
-			router.navigate('/');
-		} catch (err) {
-			profileError = err instanceof Error ? err.message : 'Failed to delete';
-		}
-	}
+}
 </script>
 
 {#if loading}

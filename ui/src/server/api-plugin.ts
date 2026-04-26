@@ -126,7 +126,7 @@ function json(res: ServerResponse, data: unknown, status = 200) {
 function readBody(req: IncomingMessage): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let data = '';
-		req.on('data', (chunk: Buffer) => data += chunk);
+		req.on('data', (chunk: Buffer) => (data += chunk));
 		req.on('end', () => resolve(data));
 		req.on('error', reject);
 	});
@@ -144,35 +144,55 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
 		if (val === 'true') val = true;
 		else if (val === 'false') val = false;
 		else if (typeof val === 'string' && val.startsWith('[') && val.endsWith(']'))
-			val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
+			val = val
+				.slice(1, -1)
+				.split(',')
+				.map((s) => s.trim().replace(/^["']|["']$/g, ''));
 		meta[key] = val;
 	}
 	return { meta, body: match[2].trim() };
 }
 
 async function readJson(path: string, fallback: unknown = null): Promise<any> {
-	try { return JSON.parse(await readFile(path, 'utf-8')); }
-	catch { return fallback; }
+	try {
+		return JSON.parse(await readFile(path, 'utf-8'));
+	} catch {
+		return fallback;
+	}
 }
 
 async function readText(path: string, fallback = ''): Promise<string> {
-	try { return await readFile(path, 'utf-8'); }
-	catch { return fallback; }
+	try {
+		return await readFile(path, 'utf-8');
+	} catch {
+		return fallback;
+	}
 }
 
 async function dirExists(path: string): Promise<boolean> {
-	try { await access(path, constants.F_OK); return true; } catch { return false; }
+	try {
+		await access(path, constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function countMdFiles(dir: string): Promise<number> {
 	try {
 		const files = await readdir(dir);
-		return files.filter(f => f.endsWith('.md')).length;
-	} catch { return 0; }
+		return files.filter((f) => f.endsWith('.md')).length;
+	} catch {
+		return 0;
+	}
 }
 
 function slugify(text: string): string {
-	return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+	return text
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-|-$/g, '')
+		.slice(0, 50);
 }
 
 function isValidMemberName(name: string): boolean {
@@ -188,7 +208,7 @@ interface ProfileFields {
 }
 
 function serializeRoles(roles: string[]): string {
-	const escaped = roles.map(r => r.includes(',') || r.includes(' ') ? `"${r.replace(/"/g, '\\"')}"` : r);
+	const escaped = roles.map((r) => (r.includes(',') || r.includes(' ') ? `"${r.replace(/"/g, '\\"')}"` : r));
 	return `[${escaped.join(', ')}]`;
 }
 
@@ -241,7 +261,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 	const auth = opts.auth ?? {};
 	const trustProxy = auth.trustProxy === true;
-	const identityHeaders = (auth.identityHeaders ?? []).map(h => h.toLowerCase());
+	const identityHeaders = (auth.identityHeaders ?? []).map((h) => h.toLowerCase());
 
 	async function resolveIdentity(
 		req: IncomingMessage,
@@ -257,9 +277,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			if (!email) continue;
 			const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
 			const members: any[] = manifest.members ?? [];
-			const match = members.find(
-				(m: any) => typeof m.email === 'string' && m.email.toLowerCase() === email,
-			);
+			const match = members.find((m: any) => typeof m.email === 'string' && m.email.toLowerCase() === email);
 			return {
 				name: match ? match.name : null,
 				locked: true,
@@ -278,20 +296,22 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 	async function getMemberSummaries() {
 		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
-		return Promise.all(manifest.members.map(async (m: Record<string, unknown>) => {
-			const dir = join(teamDir, 'members', m.name as string);
-			const inboxSummaries = await messagingAdapter.listInbox(m.name as string).catch(() => []);
-			const todos = await readJson(join(dir, 'todo.json'), { items: [] });
-			const items: any[] = todos.items ?? [];
-			const events = await scheduleAdapter.listEvents(m.name as string).catch(() => []);
-			return {
-				...m,
-				inboxCount: inboxSummaries.length,
-				todoCount: items.length,
-				blockedCount: items.filter((t: any) => t.status === 'blocked').length,
-				eventCount: events.length,
-			};
-		}));
+		return Promise.all(
+			manifest.members.map(async (m: Record<string, unknown>) => {
+				const dir = join(teamDir, 'members', m.name as string);
+				const inboxSummaries = await messagingAdapter.listInbox(m.name as string).catch(() => []);
+				const todos = await readJson(join(dir, 'todo.json'), { items: [] });
+				const items: any[] = todos.items ?? [];
+				const events = await scheduleAdapter.listEvents(m.name as string).catch(() => []);
+				return {
+					...m,
+					inboxCount: inboxSummaries.length,
+					todoCount: items.length,
+					blockedCount: items.filter((t: any) => t.status === 'blocked').length,
+					eventCount: events.length,
+				};
+			}),
+		);
 	}
 
 	async function getMemberDetail(name: string) {
@@ -322,7 +342,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	}
 
 	async function getTicketSummary(): Promise<Record<string, number> | null> {
-		if (!await hasTickets() || !ticketsDir) return null;
+		if (!(await hasTickets()) || !ticketsDir) return null;
 		const stages = ['fix', 'plan', 'implement', 'review', 'blocked', 'complete'];
 		const counts: Record<string, number> = {};
 		for (const stage of stages) {
@@ -332,11 +352,18 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	}
 
 	async function getSibling(): Promise<{ name: string; url: string } | null> {
-		if (!siblingDir || !await dirExists(siblingDir)) return null;
+		if (!siblingDir || !(await dirExists(siblingDir))) return null;
 		return { name: 'tess', url: `http://localhost:${siblingPort}` };
 	}
 
-	async function createMemo(memo: { title: string; content: string; importance: string; authorName: string; projectCodes?: string[]; expiresAt?: string }) {
+	async function createMemo(memo: {
+		title: string;
+		content: string;
+		importance: string;
+		authorName: string;
+		projectCodes?: string[];
+		expiresAt?: string;
+	}) {
 		const memosPath = join(teamDir, 'memos.json');
 		const data = await readJson(memosPath, { items: [] });
 		const items: any[] = data.items ?? [];
@@ -369,7 +396,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		try {
 			await access(join(archivesDir, filename), constants.F_OK);
 			filename = `memo-${slug}-${Date.now().toString(36)}.json`;
-		} catch { /* no collision */ }
+		} catch {
+			/* no collision */
+		}
 		await writeFile(join(archivesDir, filename), JSON.stringify(memo, null, '\t'), 'utf-8');
 		return { archivedAs: filename };
 	}
