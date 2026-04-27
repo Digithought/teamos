@@ -8,7 +8,7 @@ import ComposeMessage from './components/ComposeMessage.svelte';
 import IdentityPicker from './components/IdentityPicker.svelte';
 import OrgEditor from './components/OrgEditor.svelte';
 
-let sibling: SiblingInfo | null = $state(null);
+let sibling = $state<SiblingInfo | null>(null);
 
 const memberMatch = $derived(router.match('/member/:name'));
 const isCompose = $derived(router.path === '/compose');

@@ -9,7 +9,7 @@ let orgSaving = $state(false);
 let orgError = $state('');
 let orgDirty = $derived(orgDraft !== orgContent);
 
-let projects: Project[] = $state([]);
+let projects = $state<Project[]>([]);
 let projectsLoading = $state(true);
 
 let showNew = $state(false);
@@ -20,7 +20,7 @@ let newStatus = $state('active');
 let savingNew = $state(false);
 let newError = $state('');
 
-let editingCode: string | null = $state(null);
+let editingCode = $state<string | null>(null);
 let editName = $state('');
 let editDescription = $state('');
 let editStatus = $state('active');

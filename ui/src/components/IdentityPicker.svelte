@@ -3,7 +3,7 @@ import { identity } from '../lib/identity.svelte.js';
 import { api } from '../lib/api.js';
 import type { MemberSummary } from '../lib/types.js';
 
-let members: MemberSummary[] = $state([]);
+let members = $state<MemberSummary[]>([]);
 let open = $state(false);
 let loaded = $state(false);
 

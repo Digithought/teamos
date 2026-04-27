@@ -4,21 +4,21 @@ import { router } from '../lib/router.svelte.js';
 import { identity } from '../lib/identity.svelte.js';
 import type { MemberSummary, Project, Message } from '../lib/types.js';
 
-let members: MemberSummary[] = $state([]);
-let projects: Project[] = $state([]);
+let members = $state<MemberSummary[]>([]);
+let projects = $state<Project[]>([]);
 let loading = $state(true);
 let sending = $state(false);
 let sent = $state(false);
 
-let to: Set<string> = $state(new Set());
-let cc: Set<string> = $state(new Set());
+let to = $state<Set<string>>(new Set());
+let cc = $state<Set<string>>(new Set());
 let from = $state(identity.name ?? '');
 let subject = $state('');
 let projectCode = $state('');
 let body = $state('');
 
-let replyMessage: Message | null = $state(null);
-let inboxOwner: string | null = $state(null);
+let replyMessage = $state<Message | null>(null);
+let inboxOwner = $state<string | null>(null);
 let isReplyAll = $state(false);
 
 const isReply = $derived(!!replyMessage);

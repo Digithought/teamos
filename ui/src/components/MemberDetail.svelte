@@ -6,14 +6,14 @@ import type { MemberDetail, MessageSummary, Message, TodoItem } from '../lib/typ
 
 let { name }: { name: string } = $props();
 
-let detail: MemberDetail | null = $state(null);
-let inbox: MessageSummary[] = $state([]);
-let archives: MessageSummary[] = $state([]);
+let detail = $state<MemberDetail | null>(null);
+let inbox = $state<MessageSummary[]>([]);
+let archives = $state<MessageSummary[]>([]);
 let showArchives = $state(false);
 let loading = $state(true);
-let tab: 'inbox' | 'todos' | 'state' | 'schedule' = $state('inbox');
-let expandedMsg: string | null = $state(null);
-let msgCache: Record<string, Message> = $state({});
+let tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
+let expandedMsg = $state<string | null>(null);
+let msgCache = $state<Record<string, Message>>({});
 
 const isMe = $derived(identity.name === name);
 
@@ -176,7 +176,7 @@ let editingProfile = $state(false);
 let savingProfile = $state(false);
 let profileError = $state('');
 let editTitle = $state('');
-let editType: 'ai' | 'human' = $state('ai');
+let editType = $state<'ai' | 'human'>('ai');
 let editActive = $state(true);
 let editRoles = $state('');
 let editDescription = $state('');

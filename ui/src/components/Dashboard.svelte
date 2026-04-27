@@ -5,11 +5,11 @@ import type { MemberSummary, Memo, Project, TicketCounts, SiblingInfo } from '..
 import MemberCard from './MemberCard.svelte';
 import TicketPipeline from './TicketPipeline.svelte';
 
-let members: MemberSummary[] = $state([]);
-let memos: Memo[] = $state([]);
-let projects: Project[] = $state([]);
-let tickets: TicketCounts | null = $state(null);
-let sibling: SiblingInfo | null = $state(null);
+let members = $state<MemberSummary[]>([]);
+let memos = $state<Memo[]>([]);
+let projects = $state<Project[]>([]);
+let tickets = $state<TicketCounts | null>(null);
+let sibling = $state<SiblingInfo | null>(null);
 let loading = $state(true);
 let stopPending = $state(false);
 let stoppingCycle = $state(false);
@@ -21,7 +21,7 @@ let savingMember = $state(false);
 let memberError = $state('');
 let newMemberName = $state('');
 let newMemberTitle = $state('');
-let newMemberType: 'ai' | 'human' = $state('ai');
+let newMemberType = $state<'ai' | 'human'>('ai');
 let newMemberRoles = $state('');
 let newMemberDescription = $state('');
 
@@ -31,7 +31,7 @@ let memoTitle = $state('');
 let memoContent = $state('');
 let memoImportance = $state('medium');
 let memoAuthor = $state('');
-let memoProjectCodes: string[] = $state([]);
+let memoProjectCodes = $state<string[]>([]);
 let memoExpiresAt = $state('');
 
 async function load() {

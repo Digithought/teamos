@@ -10,9 +10,24 @@ import type {
 	MessagingInfo,
 } from './types.js';
 
+async function failure(res: Response): Promise<Error> {
+	let detail = '';
+	try {
+		const data = await res.json();
+		if (data && typeof data.error === 'string') detail = data.error;
+	} catch {
+		try {
+			detail = (await res.text()).trim();
+		} catch {
+			/* ignore */
+		}
+	}
+	return new Error(detail || `${res.status} ${res.statusText}`);
+}
+
 async function get<T>(url: string): Promise<T> {
 	const res = await fetch(url);
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await failure(res);
 	return res.json();
 }
 
@@ -22,7 +37,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body),
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await failure(res);
 	return res.json();
 }
 
@@ -32,12 +47,12 @@ async function put(url: string, body: unknown): Promise<void> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body),
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await failure(res);
 }
 
 async function del(url: string): Promise<void> {
 	const res = await fetch(url, { method: 'DELETE' });
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await failure(res);
 }
 
 async function patch(url: string, body: unknown): Promise<void> {
@@ -46,7 +61,7 @@ async function patch(url: string, body: unknown): Promise<void> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body),
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await failure(res);
 }
 
 export interface CreateMemberArgs {
