@@ -9,6 +9,7 @@ let projects = $state<Project[]>([]);
 let loading = $state(true);
 let sending = $state(false);
 let sent = $state(false);
+let sendError = $state<string | null>(null);
 
 let to = $state<Set<string>>(new Set());
 let cc = $state<Set<string>>(new Set());
@@ -94,15 +95,22 @@ function selectAllAI() {
 async function send() {
 	if (to.size === 0 || !body.trim() || !from.trim()) return;
 	sending = true;
-	await api.sendMessage({
-		from,
-		to: [...to],
-		cc: cc.size > 0 ? [...cc] : undefined,
-		subject: subject || undefined,
-		body: body.trim(),
-		replyTo: replyMessage?.id,
-		projectCode: projectCode || undefined,
-	});
+	sendError = null;
+	try {
+		await api.sendMessage({
+			from,
+			to: [...to],
+			cc: cc.size > 0 ? [...cc] : undefined,
+			subject: subject || undefined,
+			body: body.trim(),
+			replyTo: replyMessage?.id,
+			projectCode: projectCode || undefined,
+		});
+	} catch (err) {
+		sendError = err instanceof Error ? err.message : String(err);
+		sending = false;
+		return;
+	}
 	sending = false;
 	if (isReply) {
 		router.navigate(backPath);
@@ -118,6 +126,7 @@ function reset() {
 	projectCode = '';
 	body = '';
 	sent = false;
+	sendError = null;
 	replyMessage = null;
 	inboxOwner = null;
 	isReplyAll = false;
@@ -225,6 +234,12 @@ function reset() {
 			<textarea id="body" bind:value={body} rows="10" placeholder="Write your message (markdown supported)..."></textarea>
 		</div>
 
+		{#if sendError}
+			<div class="send-error" role="alert">
+				<strong>Send failed:</strong> {sendError}
+			</div>
+		{/if}
+
 		<div class="form-actions">
 			<button
 				class="btn btn-primary"
@@ -298,6 +313,17 @@ function reset() {
 	}
 
 	.form-actions { margin-top: 1.5rem; }
+
+	.send-error {
+		margin-top: 1rem;
+		padding: 0.75rem 1rem;
+		border-radius: var(--radius);
+		background: var(--danger-subtle, rgba(220, 38, 38, 0.1));
+		color: var(--danger, #dc2626);
+		border: 1px solid var(--danger, #dc2626);
+		font-size: 0.875rem;
+		word-break: break-word;
+	}
 
 	.btn {
 		padding: 0.625rem 1.25rem;
