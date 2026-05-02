@@ -193,12 +193,16 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 				if (result.done) {
 					resultExitCode = result.exitCode ?? 0;
 					clearTimeout(idleTimer);
-					idleTimer = setTimeout(() => {
-						const msg = `\n[runner] Agent sent result but didn't exit — killing stale process.\n`;
-						process.stderr.write(msg);
-						logStream.write(msg);
-						killTree(child);
-					}, 30_000);
+					// Tree-kill on the `result` message rather than waiting for a
+					// graceful exit. On Windows, Claude sometimes leaves MCP server
+					// children (chrome-devtools-mcp, playwright-mcp, plus our own
+					// teamos-tools mcp-server.mjs) running after a clean exit,
+					// leaking ~150 MB each across many ticket runs and eventually
+					// starving the system enough that the VS Code pty host crashes
+					// and every terminal disconnects. taskkill /T /F walks the
+					// descendants and reaps them while the parent PID is still
+					// valid.
+					killTree(child);
 				}
 			}
 
