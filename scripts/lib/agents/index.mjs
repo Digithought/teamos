@@ -29,10 +29,18 @@ function killTree(child) {
 		try {
 			execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
 		} catch {
-			try { child.kill('SIGKILL'); } catch { /* already gone */ }
+			try {
+				child.kill('SIGKILL');
+			} catch {
+				/* already gone */
+			}
 		}
 	} else {
-		try { child.kill('SIGKILL'); } catch { /* already gone */ }
+		try {
+			child.kill('SIGKILL');
+		} catch {
+			/* already gone */
+		}
 	}
 }
 
