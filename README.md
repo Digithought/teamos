@@ -120,7 +120,7 @@ node teamos/scripts/init.mjs
 node /path/to/teamos/scripts/init.mjs
 ```
 
-This creates the `team/` workspace with directories, empty manifests, and agent-rule references.
+This creates the `team/` workspace with directories, empty manifests, and agent-rule references. It also installs a `teamos-tools` entry in the project's `.mcp.json` so the Claude CLI discovers the TeamOS MCP server. The entry uses `${TEAMOS_MEMBER_NAME}` env-var interpolation; the runner sets that variable per cycle, and the file itself is never modified between cycles. Other servers in `.mcp.json` are preserved on re-init.
 
 ### 2. Add a team member
 
@@ -373,7 +373,7 @@ A unit of work can include:
 
 Messages behave like email — `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer that forms a thread. Every message is stored once in `team/messages/<id>.md` with YAML frontmatter; per-member mailboxes (`inbox.json`, `sent.json`, `archives.json`) are lists of message ids.
 
-Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly:
+Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly. Every tool accepts an optional `member` argument identifying whose mailbox/todos/schedule/triggers the call operates against; when omitted, the server uses the `TEAMOS_MEMBER_NAME` set by the runner. Cycle agents never need to pass `member` explicitly — interactive sessions do.
 
 | Tool | Purpose |
 |---|---|

@@ -9,13 +9,20 @@
  * matches teamos/docs/tasks.md; the schedule tool contract matches
  * teamos/docs/schedule.md.
  *
- * Environment variables:
- *   TEAMOS_TEAM_DIR          — path to the team/ directory
- *   TEAMOS_MEMBER_NAME       — the member this cycle is running for
+ * Environment variables (all optional):
+ *   TEAMOS_TEAM_DIR          — path to the team/ directory (default: <cwd>/team)
+ *   TEAMOS_MEMBER_NAME       — default member identity when a tool call omits `member`
  *   TEAMOS_MESSAGING_ADAPTER — messaging adapter name (default: file)
  *   TEAMOS_TASKS_ADAPTER     — tasks adapter name     (default: file)
  *   TEAMOS_SCHEDULE_ADAPTER  — schedule adapter name  (default: file)
  *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
+ *
+ * Every tool accepts an optional `member` argument identifying the team member
+ * whose mailbox / todos / schedule / triggers the call operates against. When
+ * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. This makes the same
+ * server process usable by any member — the runner sets the env var per-cycle
+ * so existing agent behavior is unchanged, while interactive sessions can act
+ * as any member by passing `member` explicitly.
  */
 
 import { join } from 'node:path';
@@ -27,12 +34,19 @@ import { FileMessagingAdapter } from './file.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
 
-const teamDir = process.env.TEAMOS_TEAM_DIR;
-const memberName = process.env.TEAMOS_MEMBER_NAME;
+const teamDir = process.env.TEAMOS_TEAM_DIR || join(process.cwd(), 'team');
+const envMemberName = process.env.TEAMOS_MEMBER_NAME || null;
 
-if (!teamDir || !memberName) {
-	process.stderr.write('[mcp-server] Missing TEAMOS_TEAM_DIR or TEAMOS_MEMBER_NAME\n');
-	process.exit(1);
+function resolveMember(args) {
+	const name = (args && args.member) || envMemberName;
+	if (!name) {
+		throw {
+			code: -32602,
+			message:
+				'Missing member identity: pass `member: "<name>"` in the tool call or set TEAMOS_MEMBER_NAME in the environment.',
+		};
+	}
+	return name;
 }
 
 const messagingAdapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
@@ -91,7 +105,16 @@ const triggers = makeTriggersAdapter(triggersAdapterName);
 
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
-const TOOLS = [
+// Every tool's inputSchema is augmented with an optional `member` field at
+// module load (see TOOLS below). The handler resolves the active member via
+// resolveMember(args), falling back to TEAMOS_MEMBER_NAME when omitted, so
+// tool definitions below stay focused on tool-specific arguments.
+const MEMBER_PROP = {
+	type: 'string',
+	description: 'Member identity (defaults to the runner-set member).',
+};
+
+const BASE_TOOLS = [
 	{
 		name: 'send_message',
 		description:
@@ -412,6 +435,16 @@ const TOOLS = [
 	},
 ];
 
+// Inject the optional `member` field into every tool's input schema. Kept out
+// of the per-tool definitions so the schemas above stay legible.
+const TOOLS = BASE_TOOLS.map((tool) => ({
+	...tool,
+	inputSchema: {
+		...tool.inputSchema,
+		properties: { member: MEMBER_PROP, ...(tool.inputSchema.properties || {}) },
+	},
+}));
+
 // ─── Tool handlers ─────────────────────────────────────────────────────────────
 
 function textResult(payload) {
@@ -424,7 +457,7 @@ async function handleToolCall(name, args) {
 		case 'send_message': {
 			const { to, subject, body, cc, replyTo, projectCode } = args;
 			const { id, sentAt } = await adapter.sendMessage({
-				from: memberName,
+				from: resolveMember(args),
 				to,
 				cc,
 				subject,
@@ -438,7 +471,7 @@ async function handleToolCall(name, args) {
 		case 'supersede_message': {
 			const { supersedes, to, subject, body, cc, replyTo, projectCode } = args;
 			const result = await adapter.supersedeMessage({
-				from: memberName,
+				from: resolveMember(args),
 				supersedes,
 				to,
 				cc,
@@ -457,74 +490,74 @@ async function handleToolCall(name, args) {
 		}
 
 		case 'list_inbox':
-			return textResult(await adapter.listInbox(memberName));
+			return textResult(await adapter.listInbox(resolveMember(args)));
 
 		case 'list_sent':
-			return textResult(await adapter.listSent(memberName, { to: args.to }));
+			return textResult(await adapter.listSent(resolveMember(args), { to: args.to }));
 
 		case 'list_archives':
-			return textResult(await adapter.listArchives(memberName));
+			return textResult(await adapter.listArchives(resolveMember(args)));
 
 		case 'archive_message': {
 			const { id } = args;
-			await adapter.archiveMessage(memberName, id);
+			await adapter.archiveMessage(resolveMember(args), id);
 			return textResult(`Archived ${id}`);
 		}
 
 		case 'unarchive_message': {
 			const { id } = args;
-			await adapter.unarchiveMessage(memberName, id);
+			await adapter.unarchiveMessage(resolveMember(args), id);
 			return textResult(`Unarchived ${id}`);
 		}
 
 		case 'list_todos':
-			return textResult(await tasks.listTodos(memberName));
+			return textResult(await tasks.listTodos(resolveMember(args)));
 
 		case 'add_todo': {
 			const { title, priority, description, notes, projectCode, status } = args;
-			const { id } = await tasks.addTodo(memberName, { title, priority, description, notes, projectCode, status });
+			const { id } = await tasks.addTodo(resolveMember(args), { title, priority, description, notes, projectCode, status });
 			return textResult({ id });
 		}
 
 		case 'update_todo': {
-			const { id, ...patch } = args;
-			await tasks.updateTodo(memberName, id, patch);
+			const { id, member: _m, ...patch } = args;
+			await tasks.updateTodo(resolveMember(args), id, patch);
 			return textResult(`Updated ${id}`);
 		}
 
 		case 'complete_todo': {
 			const { id } = args;
-			await tasks.completeTodo(memberName, id);
+			await tasks.completeTodo(resolveMember(args), id);
 			return textResult(`Completed ${id}`);
 		}
 
 		case 'list_events':
-			return textResult(await schedule.listEvents(memberName));
+			return textResult(await schedule.listEvents(resolveMember(args)));
 
 		case 'add_event': {
 			const { title, time, description, recurrence, projectCode } = args;
-			const { id } = await schedule.addEvent(memberName, { title, time, description, recurrence, projectCode });
+			const { id } = await schedule.addEvent(resolveMember(args), { title, time, description, recurrence, projectCode });
 			return textResult({ id });
 		}
 
 		case 'update_event': {
-			const { id, ...patch } = args;
-			await schedule.updateEvent(memberName, id, patch);
+			const { id, member: _m, ...patch } = args;
+			await schedule.updateEvent(resolveMember(args), id, patch);
 			return textResult(`Updated ${id}`);
 		}
 
 		case 'remove_event': {
 			const { id } = args;
-			await schedule.removeEvent(memberName, id);
+			await schedule.removeEvent(resolveMember(args), id);
 			return textResult(`Removed ${id}`);
 		}
 
 		case 'list_triggers':
-			return textResult(await triggers.listTriggers(memberName));
+			return textResult(await triggers.listTriggers(resolveMember(args)));
 
 		case 'add_trigger': {
 			const { priority, reason, paths, author, authorNot, messageMatches } = args;
-			const { id } = await triggers.addTrigger(memberName, {
+			const { id } = await triggers.addTrigger(resolveMember(args), {
 				priority,
 				reason,
 				paths,
@@ -536,14 +569,14 @@ async function handleToolCall(name, args) {
 		}
 
 		case 'update_trigger': {
-			const { id, ...patch } = args;
-			await triggers.updateTrigger(memberName, id, patch);
+			const { id, member: _m, ...patch } = args;
+			await triggers.updateTrigger(resolveMember(args), id, patch);
 			return textResult(`Updated ${id}`);
 		}
 
 		case 'remove_trigger': {
 			const { id } = args;
-			await triggers.removeTrigger(memberName, id);
+			await triggers.removeTrigger(resolveMember(args), id);
 			return textResult(`Removed ${id}`);
 		}
 
@@ -628,4 +661,6 @@ rl.on('close', () => {
 	process.exit(0);
 });
 
-process.stderr.write(`[mcp-server] Started for member=${memberName}\n`);
+process.stderr.write(
+	`[mcp-server] Started (default member=${envMemberName ?? '<unset — supply `member` in tool calls>'})\n`,
+);
