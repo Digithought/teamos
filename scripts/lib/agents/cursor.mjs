@@ -30,22 +30,22 @@ export function formatCursorJsonLine(line) {
 				return {
 					text: ok(tc.shellToolCall.result)
 						? `  > exit ${tc.shellToolCall.result.success?.exitCode ?? 0}\n`
-						: `  > failed\n`,
+						: '  > failed\n',
 				};
 			if (tc.readToolCall)
 				return {
 					text: ok(tc.readToolCall.result)
 						? `  > read ${tc.readToolCall.result.success?.totalLines ?? 0} lines\n`
-						: `  > failed\n`,
+						: '  > failed\n',
 				};
 			if (tc.editToolCall || tc.writeToolCall || tc.deleteToolCall)
-				return { text: ok(Object.values(tc)[0]?.result) ? `  > done\n` : `  > failed\n` };
-			return { text: `  > done\n` };
+				return { text: ok(Object.values(tc)[0]?.result) ? '  > done\n' : '  > failed\n' };
+			return { text: '  > done\n' };
 		}
 	} catch {
 		/* not JSON, pass through */
 	}
-	const text = line.endsWith('\n') ? line : line + '\n';
+	const text = line.endsWith('\n') ? line : `${line}\n`;
 	return { text };
 }
 

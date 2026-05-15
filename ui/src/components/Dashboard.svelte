@@ -1,32 +1,32 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
-import type { MemberSummary, Memo, Project, TicketCounts, SiblingInfo } from '../lib/types.js';
+import type { MemberSummary, Memo, Project, SiblingInfo, TicketCounts } from '../lib/types.js';
 import MemberCard from './MemberCard.svelte';
 import TicketPipeline from './TicketPipeline.svelte';
 
-let members = $state<MemberSummary[]>([]);
+let _members = $state<MemberSummary[]>([]);
 let memos = $state<Memo[]>([]);
-let projects = $state<Project[]>([]);
+let _projects = $state<Project[]>([]);
 let tickets = $state<TicketCounts | null>(null);
-let sibling = $state<SiblingInfo | null>(null);
-let loading = $state(true);
-let stopPending = $state(false);
-let stoppingCycle = $state(false);
+let _sibling = $state<SiblingInfo | null>(null);
+let _loading = $state(true);
+let _stopPending = $state(false);
+let _stoppingCycle = $state(false);
 let paused = $state(false);
-let pauseBusy = $state(false);
+let _pauseBusy = $state(false);
 
-let showNewMember = $state(false);
-let savingMember = $state(false);
-let memberError = $state('');
+let _showNewMember = $state(false);
+let _savingMember = $state(false);
+let _memberError = $state('');
 let newMemberName = $state('');
 let newMemberTitle = $state('');
 let newMemberType = $state<'ai' | 'human'>('ai');
 let newMemberRoles = $state('');
 let newMemberDescription = $state('');
 
-let showNewMemo = $state(false);
-let savingMemo = $state(false);
+let _showNewMemo = $state(false);
+let _savingMemo = $state(false);
 let memoTitle = $state('');
 let memoContent = $state('');
 let memoImportance = $state('medium');
@@ -35,7 +35,7 @@ let memoProjectCodes = $state<string[]>([]);
 let memoExpiresAt = $state('');
 
 async function load() {
-	loading = true;
+	_loading = true;
 	const [m, memosData, p, t, s, cs] = await Promise.all([
 		api.members(),
 		api.memos(),
@@ -44,14 +44,14 @@ async function load() {
 		api.sibling().catch(() => null),
 		api.cycleStatus().catch(() => ({ stopPending: false, paused: false })),
 	]);
-	members = m;
+	_members = m;
 	memos = memosData.items ?? [];
-	projects = p.projects ?? [];
+	_projects = p.projects ?? [];
 	tickets = t;
-	sibling = s;
-	stopPending = cs.stopPending;
+	_sibling = s;
+	_stopPending = cs.stopPending;
 	paused = cs.paused;
-	loading = false;
+	_loading = false;
 }
 
 $effect(() => {
@@ -59,14 +59,14 @@ $effect(() => {
 });
 
 async function cycleStop() {
-	stoppingCycle = true;
+	_stoppingCycle = true;
 	await api.cycleStop();
-	stopPending = true;
-	stoppingCycle = false;
+	_stopPending = true;
+	_stoppingCycle = false;
 }
 
 async function togglePause() {
-	pauseBusy = true;
+	_pauseBusy = true;
 	try {
 		if (paused) {
 			await api.cycleResume();
@@ -76,7 +76,7 @@ async function togglePause() {
 			paused = true;
 		}
 	} finally {
-		pauseBusy = false;
+		_pauseBusy = false;
 	}
 }
 
@@ -91,14 +91,14 @@ function openNewMember() {
 	newMemberType = 'ai';
 	newMemberRoles = '';
 	newMemberDescription = '';
-	memberError = '';
-	showNewMember = true;
+	_memberError = '';
+	_showNewMember = true;
 }
 
 async function saveMember() {
 	if (!newMemberName.trim()) return;
-	savingMember = true;
-	memberError = '';
+	_savingMember = true;
+	_memberError = '';
 	try {
 		const roles = newMemberRoles
 			.split(',')
@@ -112,12 +112,12 @@ async function saveMember() {
 			description: newMemberDescription.trim() || undefined,
 			active: true,
 		});
-		showNewMember = false;
+		_showNewMember = false;
 		await load();
 	} catch (err) {
-		memberError = err instanceof Error ? err.message : 'Failed to create member';
+		_memberError = err instanceof Error ? err.message : 'Failed to create member';
 	} finally {
-		savingMember = false;
+		_savingMember = false;
 	}
 }
 
@@ -130,7 +130,7 @@ function openNewMemo() {
 	const oneWeek = new Date();
 	oneWeek.setDate(oneWeek.getDate() + 7);
 	memoExpiresAt = oneWeek.toISOString().slice(0, 10);
-	showNewMemo = true;
+	_showNewMemo = true;
 }
 
 function toggleProjectCode(code: string) {
@@ -143,7 +143,7 @@ function toggleProjectCode(code: string) {
 
 async function saveMemo() {
 	if (!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim()) return;
-	savingMemo = true;
+	_savingMemo = true;
 	const created = await api.createMemo({
 		title: memoTitle.trim(),
 		content: memoContent.trim(),
@@ -153,11 +153,13 @@ async function saveMemo() {
 		expiresAt: memoExpiresAt || undefined,
 	});
 	memos = [...memos, created];
-	showNewMemo = false;
-	savingMemo = false;
+	_showNewMemo = false;
+	_savingMemo = false;
 }
 
-const hasTickets = $derived(tickets && Object.values(tickets).some((v): v is number => typeof v === 'number' && v > 0));
+const _hasTickets = $derived(
+	tickets && Object.values(tickets).some((v): v is number => typeof v === 'number' && v > 0),
+);
 </script>
 
 {#if loading}

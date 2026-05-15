@@ -1,15 +1,15 @@
 <script lang="ts">
-import { identity } from '../lib/identity.svelte.js';
 import { api } from '../lib/api.js';
+import { identity } from '../lib/identity.svelte.js';
 import type { MemberSummary } from '../lib/types.js';
 
-let members = $state<MemberSummary[]>([]);
-let open = $state(false);
-let loaded = $state(false);
+let _members = $state<MemberSummary[]>([]);
+let _open = $state(false);
+let _loaded = $state(false);
 
 async function load() {
-	members = await api.members();
-	loaded = true;
+	_members = await api.members();
+	_loaded = true;
 }
 
 $effect(() => {
@@ -19,7 +19,7 @@ $effect(() => {
 function pick(name: string) {
 	if (identity.locked) return;
 	identity.set(name);
-	open = false;
+	_open = false;
 }
 </script>
 

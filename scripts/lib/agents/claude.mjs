@@ -51,7 +51,7 @@ export function formatClaudeJsonLine(line) {
 	} catch {
 		/* not JSON, pass through */
 	}
-	const text = line.endsWith('\n') ? line : line + '\n';
+	const text = line.endsWith('\n') ? line : `${line}\n`;
 	return { text };
 }
 

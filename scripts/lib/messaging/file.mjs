@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { pathExists } from '../util.mjs';
 
 /**
@@ -52,11 +52,11 @@ function serializeMessage(msg) {
 	lines.push(`id: ${msg.id}`);
 	lines.push(`from: ${msg.from}`);
 	lines.push(`to: [${(msg.to ?? []).join(', ')}]`);
-	if (msg.cc && msg.cc.length) lines.push(`cc: [${msg.cc.join(', ')}]`);
+	if (msg.cc?.length) lines.push(`cc: [${msg.cc.join(', ')}]`);
 	lines.push(`subject: ${msg.subject ?? ''}`);
 	lines.push(`sentAt: ${msg.sentAt}`);
 	if (msg.replyTo) lines.push(`replyTo: ${msg.replyTo}`);
-	if (msg.supersedes && msg.supersedes.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
+	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
 	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
 	lines.push('---', '', (msg.body ?? '').trimEnd(), '');
@@ -135,8 +135,7 @@ export class FileMessagingAdapter {
 		const caseMatch = roster.find((n) => n.toLowerCase() === lower);
 		if (caseMatch) {
 			throw new Error(
-				`${role}: "${name}" does not match roster case — members.json declares "${caseMatch}". ` +
-					`Use the canonical name to avoid phantom directories on case-sensitive filesystems.`,
+				`${role}: "${name}" does not match roster case — members.json declares "${caseMatch}". Use the canonical name to avoid phantom directories on case-sensitive filesystems.`,
 			);
 		}
 		throw new Error(`${role}: "${name}" is not in members.json (known: ${roster.join(', ')}).`);
@@ -166,7 +165,7 @@ export class FileMessagingAdapter {
 	async _writeMailbox(member, kind, items) {
 		const path = this._mailboxPath(member, kind);
 		await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, JSON.stringify({ items }, null, '\t') + '\n', 'utf-8');
+		await writeFile(path, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
 	}
 
 	async _appendToMailbox(member, kind, id) {
@@ -295,9 +294,7 @@ export class FileMessagingAdapter {
 				.map((d) => `${d.recipient} (from ${d.id})`)
 				.join(', ');
 			throw new Error(
-				`supersedeMessage: new recipients must cover every predecessor recipient. Missing: ${sample}` +
-					(droppedRecipients.length > 3 ? `, and ${droppedRecipients.length - 3} more` : '') +
-					'. To address a smaller audience, send a regular message instead of superseding.',
+				`supersedeMessage: new recipients must cover every predecessor recipient. Missing: ${sample}${droppedRecipients.length > 3 ? `, and ${droppedRecipients.length - 3} more` : ''}. To address a smaller audience, send a regular message instead of superseding.`,
 			);
 		}
 
@@ -386,7 +383,7 @@ export class FileMessagingAdapter {
 				sentAt: msg.sentAt,
 				projectCode: msg.projectCode,
 				hasParent: !!msg.replyTo,
-				supersedes: msg.supersedes && msg.supersedes.length ? msg.supersedes : undefined,
+				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,
 			});
 		}

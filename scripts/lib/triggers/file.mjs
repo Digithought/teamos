@@ -1,6 +1,6 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
@@ -60,7 +60,7 @@ function globToRegex(glob) {
 		} else if (c === '?') {
 			re += '[^/]';
 		} else if ('.+()|^$[]{}\\/'.includes(c)) {
-			re += '\\' + c;
+			re += `\\${c}`;
 		} else {
 			re += c;
 		}
@@ -147,7 +147,7 @@ export class FileTriggersAdapter {
 		const path = this._path(member);
 		await mkdir(dirname(path), { recursive: true });
 		const body = { cursor: state.cursor ?? null, items: state.items ?? [] };
-		await writeFile(path, JSON.stringify(body, null, '\t') + '\n', 'utf-8');
+		await writeFile(path, `${JSON.stringify(body, null, '\t')}\n`, 'utf-8');
 	}
 
 	async _loadNormalized(member) {
@@ -206,30 +206,30 @@ export class FileTriggersAdapter {
 			next.priority = patch.priority;
 		}
 		if (patch.reason !== undefined) {
-			if (patch.reason === null || patch.reason === '') delete next.reason;
+			if (patch.reason === null || patch.reason === '') next.reason = undefined;
 			else next.reason = String(patch.reason);
 		}
 		if (patch.paths !== undefined) {
 			if (patch.paths === null || (Array.isArray(patch.paths) && patch.paths.length === 0)) {
-				delete next.paths;
+				next.paths = undefined;
 			} else if (Array.isArray(patch.paths)) {
 				next.paths = patch.paths.filter((p) => typeof p === 'string' && p);
-				if (!next.paths.length) delete next.paths;
+				if (!next.paths.length) next.paths = undefined;
 			} else {
 				throw new Error('update_trigger: paths must be an array of glob strings');
 			}
 		}
 		if (patch.author !== undefined) {
-			if (patch.author === null || patch.author === '') delete next.author;
+			if (patch.author === null || patch.author === '') next.author = undefined;
 			else next.author = String(patch.author);
 		}
 		if (patch.authorNot !== undefined) {
-			if (patch.authorNot === null || patch.authorNot === '') delete next.authorNot;
+			if (patch.authorNot === null || patch.authorNot === '') next.authorNot = undefined;
 			else next.authorNot = String(patch.authorNot);
 		}
 		if (patch.messageMatches !== undefined) {
 			if (patch.messageMatches === null || patch.messageMatches === '') {
-				delete next.messageMatches;
+				next.messageMatches = undefined;
 			} else {
 				// Validate that the regex compiles so bad patterns are caught at
 				// mutation time, not later during a scan.
@@ -325,7 +325,7 @@ export class FileTriggersAdapter {
 				if (!matchesSubject(trigger, commit.subject)) continue;
 				matchedIds.push(trigger.id);
 				const pIdx = PRIORITY_ORDER.indexOf(trigger.priority);
-				const bestIdx = bestPriority == null ? Infinity : PRIORITY_ORDER.indexOf(bestPriority);
+				const bestIdx = bestPriority == null ? Number.POSITIVE_INFINITY : PRIORITY_ORDER.indexOf(bestPriority);
 				if (pIdx < bestIdx) bestPriority = trigger.priority;
 			}
 			if (matchedIds.length === 0) continue;

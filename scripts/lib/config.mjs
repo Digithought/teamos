@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathExists } from './util.mjs';
 

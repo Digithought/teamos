@@ -1,16 +1,16 @@
 import { writeFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-	readTextOrEmpty,
-	formatTimestamp,
-	buildLogPath,
-	checkStop,
-	waitWhilePaused,
-	buildToolsPromptSection,
-} from './util.mjs';
-import { PRIORITY_ORDER, pickNextPriority, normalizeVruntimes, rotateAfter } from './scheduler.mjs';
 import { runAgent } from './agents/index.mjs';
+import { PRIORITY_ORDER, normalizeVruntimes, pickNextPriority, rotateAfter } from './scheduler.mjs';
+import {
+	buildLogPath,
+	buildToolsPromptSection,
+	checkStop,
+	formatTimestamp,
+	readTextOrEmpty,
+	waitWhilePaused,
+} from './util.mjs';
 import { getMembersWithWork } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,7 +25,7 @@ const BACKOFF_MAX_MS = 30 * 60 * 1000; // cap at 30 minutes
 
 function formatRecipients(to, cc) {
 	const parts = [`To: ${(to ?? []).join(', ') || '(none)'}`];
-	if (cc && cc.length) parts.push(`Cc: ${cc.join(', ')}`);
+	if (cc?.length) parts.push(`Cc: ${cc.join(', ')}`);
 	return parts.join('  ');
 }
 
@@ -176,7 +176,7 @@ export async function buildCyclePrompt(
 		`# TeamOS Cycle: ${member.name} (${member.title})`,
 		`# Priority: ${priority}`,
 		`# Time: ${formatTimestamp()}`,
-		`# Team directory: team/`,
+		'# Team directory: team/',
 		`# Member directory: team/members/${member.name}/`,
 		'',
 		'## Organization',

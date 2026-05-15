@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 /**
  * File-based schedule adapter.
@@ -26,7 +26,7 @@ function makeEventId() {
 function isValidIsoTime(value) {
 	if (typeof value !== 'string' || !value) return false;
 	const d = new Date(value);
-	return !isNaN(d.getTime());
+	return !Number.isNaN(d.getTime());
 }
 
 function normalizeRecurrence(rec) {
@@ -95,7 +95,7 @@ export class FileScheduleAdapter {
 	async _writeEvents(member, events) {
 		const path = this._schedulePath(member);
 		await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, JSON.stringify({ events }, null, '\t') + '\n', 'utf-8');
+		await writeFile(path, `${JSON.stringify({ events }, null, '\t')}\n`, 'utf-8');
 	}
 
 	/**
@@ -208,7 +208,7 @@ export class FileScheduleAdapter {
 			next.title = patch.title.trim();
 		}
 		if (patch.description !== undefined) {
-			if (patch.description === null || patch.description === '') delete next.description;
+			if (patch.description === null || patch.description === '') next.description = undefined;
 			else next.description = String(patch.description);
 		}
 		if (patch.time !== undefined) {
@@ -219,7 +219,7 @@ export class FileScheduleAdapter {
 		}
 		if (patch.recurrence !== undefined) {
 			if (patch.recurrence === null) {
-				delete next.recurrence;
+				next.recurrence = undefined;
 			} else {
 				const rec = normalizeRecurrence(patch.recurrence);
 				if (!rec) {
@@ -231,7 +231,7 @@ export class FileScheduleAdapter {
 			}
 		}
 		if (patch.projectCode !== undefined) {
-			if (patch.projectCode === null || patch.projectCode === '') delete next.projectCode;
+			if (patch.projectCode === null || patch.projectCode === '') next.projectCode = undefined;
 			else next.projectCode = String(patch.projectCode);
 		}
 

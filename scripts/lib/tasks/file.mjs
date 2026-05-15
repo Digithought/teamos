@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
 /**
@@ -60,7 +60,7 @@ export class FileTasksAdapter {
 	async _writeItems(member, items) {
 		const path = this._todoPath(member);
 		await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, JSON.stringify({ items }, null, '\t') + '\n', 'utf-8');
+		await writeFile(path, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
 	}
 
 	/**
@@ -135,7 +135,7 @@ export class FileTasksAdapter {
 			next.title = patch.title.trim();
 		}
 		if (patch.description !== undefined) {
-			if (patch.description === null || patch.description === '') delete next.description;
+			if (patch.description === null || patch.description === '') next.description = undefined;
 			else next.description = String(patch.description);
 		}
 		if (patch.priority !== undefined) {
@@ -145,15 +145,15 @@ export class FileTasksAdapter {
 			next.priority = patch.priority;
 		}
 		if (patch.notes !== undefined) {
-			if (patch.notes === null || patch.notes === '') delete next.notes;
+			if (patch.notes === null || patch.notes === '') next.notes = undefined;
 			else next.notes = String(patch.notes);
 		}
 		if (patch.projectCode !== undefined) {
-			if (patch.projectCode === null || patch.projectCode === '') delete next.projectCode;
+			if (patch.projectCode === null || patch.projectCode === '') next.projectCode = undefined;
 			else next.projectCode = String(patch.projectCode);
 		}
 		if (patch.status !== undefined) {
-			if (patch.status === null) delete next.status;
+			if (patch.status === null) next.status = undefined;
 			else if (patch.status === 'blocked') next.status = 'blocked';
 			else throw new Error('update_todo: status must be "blocked" or null');
 		}

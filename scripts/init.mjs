@@ -14,11 +14,11 @@
  * Idempotent and non-destructive — safe to re-run at any time.
  */
 
-import { readFile, writeFile, mkdir, symlink, lstat, access } from 'node:fs/promises';
-import { join, dirname, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { constants } from 'node:fs';
+import { access, lstat, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
@@ -133,7 +133,7 @@ async function addGitignoreEntry(gitignorePath, entry) {
 		return false;
 	}
 	const separator = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
-	await writeFile(gitignorePath, content + separator + entry + '\n', 'utf-8');
+	await writeFile(gitignorePath, `${content + separator + entry}\n`, 'utf-8');
 	return true;
 }
 

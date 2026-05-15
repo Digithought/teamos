@@ -1,15 +1,15 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
-import { router } from '../lib/router.svelte.js';
 import { identity } from '../lib/identity.svelte.js';
-import type { MemberSummary, Project, Message } from '../lib/types.js';
+import { router } from '../lib/router.svelte.js';
+import type { MemberSummary, Message, Project } from '../lib/types.js';
 
 let members = $state<MemberSummary[]>([]);
-let projects = $state<Project[]>([]);
-let loading = $state(true);
-let sending = $state(false);
-let sent = $state(false);
-let sendError = $state<string | null>(null);
+let _projects = $state<Project[]>([]);
+let _loading = $state(true);
+let _sending = $state(false);
+let _sent = $state(false);
+let _sendError = $state<string | null>(null);
 
 let to = $state<Set<string>>(new Set());
 let cc = $state<Set<string>>(new Set());
@@ -20,7 +20,7 @@ let body = $state('');
 
 let replyMessage = $state<Message | null>(null);
 let inboxOwner = $state<string | null>(null);
-let isReplyAll = $state(false);
+let _isReplyAll = $state(false);
 
 const isReply = $derived(!!replyMessage);
 const backPath = $derived.by(() => {
@@ -36,12 +36,12 @@ $effect(() => {
 async function load() {
 	const [m, p] = await Promise.all([api.members(), api.projects()]);
 	members = m;
-	projects = p.projects ?? [];
+	_projects = p.projects ?? [];
 
 	const re = router.query.re;
 	const inbox = router.query.inbox;
 	const replyAll = router.query.all === '1';
-	isReplyAll = replyAll;
+	_isReplyAll = replyAll;
 	if (re) {
 		inboxOwner = inbox ?? null;
 		try {
@@ -67,7 +67,7 @@ async function load() {
 		}
 	}
 
-	loading = false;
+	_loading = false;
 }
 
 $effect(() => {
@@ -94,8 +94,8 @@ function selectAllAI() {
 
 async function send() {
 	if (to.size === 0 || !body.trim() || !from.trim()) return;
-	sending = true;
-	sendError = null;
+	_sending = true;
+	_sendError = null;
 	try {
 		await api.sendMessage({
 			from,
@@ -107,16 +107,16 @@ async function send() {
 			projectCode: projectCode || undefined,
 		});
 	} catch (err) {
-		sendError = err instanceof Error ? err.message : String(err);
-		sending = false;
+		_sendError = err instanceof Error ? err.message : String(err);
+		_sending = false;
 		return;
 	}
-	sending = false;
+	_sending = false;
 	if (isReply) {
 		router.navigate(backPath);
 		return;
 	}
-	sent = true;
+	_sent = true;
 }
 
 function reset() {
@@ -125,11 +125,11 @@ function reset() {
 	subject = '';
 	projectCode = '';
 	body = '';
-	sent = false;
-	sendError = null;
+	_sent = false;
+	_sendError = null;
 	replyMessage = null;
 	inboxOwner = null;
-	isReplyAll = false;
+	_isReplyAll = false;
 }
 </script>
 

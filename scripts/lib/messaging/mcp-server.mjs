@@ -18,12 +18,12 @@
  *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
  */
 
-import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-import { FileMessagingAdapter } from './file.mjs';
-import { FileTasksAdapter } from '../tasks/file.mjs';
+import { createInterface } from 'node:readline';
 import { FileScheduleAdapter } from '../schedule/file.mjs';
+import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileTriggersAdapter } from '../triggers/file.mjs';
+import { FileMessagingAdapter } from './file.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
 
@@ -555,11 +555,11 @@ async function handleToolCall(name, args) {
 // ─── JSON-RPC / MCP protocol ──────────────────────────────────────────────────
 
 function sendResponse(id, result) {
-	process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
 }
 
 function sendError(id, code, message) {
-	process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
+	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
 }
 
 async function handleMessage(message) {

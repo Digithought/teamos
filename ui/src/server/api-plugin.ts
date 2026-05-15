@@ -1,8 +1,8 @@
-import type { Plugin } from 'vite';
-import { readdir, readFile, writeFile, unlink, mkdir, access, rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import { constants } from 'node:fs';
+import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import type { Plugin } from 'vite';
 
 interface MessageSummary {
 	id: string;
@@ -239,7 +239,7 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 		if (re.test(fm)) {
 			fm = fm.replace(re, `${key}: ${value}`);
 		} else {
-			fm = fm + `\n${key}: ${value}`;
+			fm = `${fm}\n${key}: ${value}`;
 		}
 	};
 
@@ -256,7 +256,7 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 export function teamosApi(opts: ApiOptions): Plugin {
 	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter } = opts;
 	const siblingPort = opts.siblingPort ?? 3004;
-	let ticketsDir = opts.ticketsDir ?? null;
+	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
 
 	const auth = opts.auth ?? {};
@@ -457,7 +457,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		if (input.email) entry.email = input.email.trim().toLowerCase();
 		members.push(entry);
 		manifest.members = members;
-		await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+		await writeFile(manifestPath, `${JSON.stringify(manifest, null, '\t')}\n`, 'utf-8');
 		return entry;
 	}
 
@@ -480,12 +480,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			if (patch.active !== undefined) entry.active = patch.active;
 			if (patch.roles !== undefined) entry.roles = patch.roles;
 			if (patch.email !== undefined) {
-				if (patch.email === null || patch.email === '') delete entry.email;
+				if (patch.email === null || patch.email === '') entry.email = undefined;
 				else entry.email = String(patch.email).trim().toLowerCase();
 			}
 			members[idx] = entry;
 			manifest.members = members;
-			await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+			await writeFile(manifestPath, `${JSON.stringify(manifest, null, '\t')}\n`, 'utf-8');
 		}
 		return { ok: true };
 	}
@@ -498,7 +498,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		if (idx === -1) throw new Error(`Member "${name}" not found`);
 		members.splice(idx, 1);
 		manifest.members = members;
-		await writeFile(manifestPath, JSON.stringify(manifest, null, '\t') + '\n', 'utf-8');
+		await writeFile(manifestPath, `${JSON.stringify(manifest, null, '\t')}\n`, 'utf-8');
 
 		const memberDir = join(teamDir, 'members', name);
 		await rm(memberDir, { recursive: true, force: true });
@@ -567,7 +567,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					}
 
 					if (path.match(/^\/api\/memos\/(\d+)\/archive$/) && method === 'POST') {
-						const idx = parseInt(path.match(/^\/api\/memos\/(\d+)\/archive$/)![1], 10);
+						const idx = Number.parseInt(path.match(/^\/api\/memos\/(\d+)\/archive$/)![1], 10);
 						return json(res, await archiveMemo(idx));
 					}
 
@@ -593,7 +593,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						};
 						projects.push(entry);
 						data.projects = projects;
-						await writeFile(projectsPath, JSON.stringify(data, null, '\t') + '\n', 'utf-8');
+						await writeFile(projectsPath, `${JSON.stringify(data, null, '\t')}\n`, 'utf-8');
 						return json(res, entry, 201);
 					}
 
@@ -616,7 +616,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							projects[idx] = entry;
 						}
 						data.projects = projects;
-						await writeFile(projectsPath, JSON.stringify(data, null, '\t') + '\n', 'utf-8');
+						await writeFile(projectsPath, `${JSON.stringify(data, null, '\t')}\n`, 'utf-8');
 						return json(res, { ok: true });
 					}
 

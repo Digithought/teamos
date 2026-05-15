@@ -1,6 +1,6 @@
-import { readFile, access, mkdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
 import { constants } from 'node:fs';
+import { access, mkdir, readFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 
 export const STOP_FILE = '.stop';
 export const PAUSE_FILE = '.pause';

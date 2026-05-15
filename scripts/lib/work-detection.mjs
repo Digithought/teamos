@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathExists } from './util.mjs';
 import { PRIORITY_ORDER } from './scheduler.mjs';
+import { pathExists } from './util.mjs';
 
 // ─── Member discovery ──────────────────────────────────────────────────────────
 

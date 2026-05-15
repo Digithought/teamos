@@ -1,11 +1,11 @@
-import { readFile, writeFile, unlink } from 'node:fs/promises';
-import { spawn, execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createAuggieAdapter } from './auggie.mjs';
 import { createClaudeAdapter } from './claude.mjs';
 import { createCursorAdapter } from './cursor.mjs';
-import { createAuggieAdapter } from './auggie.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -94,7 +94,7 @@ async function writeMcpConfig(cwd, mcpContext) {
 		},
 	};
 
-	await writeFile(mcpConfigPath, JSON.stringify(config, null, '\t') + '\n', 'utf-8');
+	await writeFile(mcpConfigPath, `${JSON.stringify(config, null, '\t')}\n`, 'utf-8');
 	return { path: mcpConfigPath, hadExisting: Object.keys(existing).length > 0, original: existing };
 }
 
@@ -109,10 +109,10 @@ async function cleanupMcpConfig(mcpState) {
 			// Restore original content (minus our injected server)
 			const restored = { ...mcpState.original };
 			if (restored.mcpServers) {
-				delete restored.mcpServers['teamos-tools'];
-				delete restored.mcpServers['teamos-messaging'];
+				restored.mcpServers['teamos-tools'] = undefined;
+				restored.mcpServers['teamos-messaging'] = undefined;
 			}
-			await writeFile(mcpState.path, JSON.stringify(restored, null, '\t') + '\n', 'utf-8');
+			await writeFile(mcpState.path, `${JSON.stringify(restored, null, '\t')}\n`, 'utf-8');
 		} else {
 			await unlink(mcpState.path);
 		}
@@ -193,7 +193,7 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 
 			function processLine(line) {
 				if (!formatStream) {
-					writeOut(line + '\n');
+					writeOut(`${line}\n`);
 					return;
 				}
 				const result = formatStream(line);

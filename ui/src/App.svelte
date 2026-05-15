@@ -1,18 +1,18 @@
 <script lang="ts">
-import { router } from './lib/router.svelte.js';
-import { api } from './lib/api.js';
-import type { SiblingInfo } from './lib/types.js';
-import Dashboard from './components/Dashboard.svelte';
-import MemberDetail from './components/MemberDetail.svelte';
 import ComposeMessage from './components/ComposeMessage.svelte';
+import Dashboard from './components/Dashboard.svelte';
 import IdentityPicker from './components/IdentityPicker.svelte';
+import MemberDetail from './components/MemberDetail.svelte';
 import OrgEditor from './components/OrgEditor.svelte';
+import { api } from './lib/api.js';
+import { router } from './lib/router.svelte.js';
+import type { SiblingInfo } from './lib/types.js';
 
 let sibling = $state<SiblingInfo | null>(null);
 
-const memberMatch = $derived(router.match('/member/:name'));
-const isCompose = $derived(router.path === '/compose');
-const isOrg = $derived(router.path === '/org');
+const _memberMatch = $derived(router.match('/member/:name'));
+const _isCompose = $derived(router.path === '/compose');
+const _isOrg = $derived(router.path === '/org');
 
 $effect(() => {
 	api

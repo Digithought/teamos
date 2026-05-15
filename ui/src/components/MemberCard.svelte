@@ -1,10 +1,10 @@
 <script lang="ts">
-import type { MemberSummary } from '../lib/types.js';
 import { identity } from '../lib/identity.svelte.js';
+import type { MemberSummary } from '../lib/types.js';
 
-let { member }: { member: MemberSummary } = $props();
+const { member }: { member: MemberSummary } = $props();
 
-const isMe = $derived(identity.name === member.name);
+const _isMe = $derived(identity.name === member.name);
 </script>
 
 <a class="card" class:is-me={isMe} href="#/member/{member.name}">

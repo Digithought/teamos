@@ -18,9 +18,9 @@
  *   - Any file not created by teamos init
  */
 
-import { readFile, writeFile, unlink, lstat, readlink, access } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import { constants } from 'node:fs';
+import { access, lstat, readFile, readlink, unlink, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ async function removeTeamosSectionFromRootFiles(projectRoot) {
 			await unlink(filePath);
 			log(`Removed ${name} (was teamos-only content)`);
 		} else {
-			await writeFile(filePath, result + '\n', 'utf-8');
+			await writeFile(filePath, `${result}\n`, 'utf-8');
 			log(`Removed teamos section from ${name}`);
 		}
 	}
@@ -163,7 +163,7 @@ async function handleSymlinkMode(projectRoot) {
 			await unlink(gitignorePath);
 			log('Removed .gitignore (was teamos-only content)');
 		} else {
-			await writeFile(gitignorePath, result + '\n', 'utf-8');
+			await writeFile(gitignorePath, `${result}\n`, 'utf-8');
 			log('Cleaned teamos entries from .gitignore');
 		}
 	}

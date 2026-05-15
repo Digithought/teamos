@@ -1,9 +1,9 @@
 <script lang="ts">
 import type { TicketCounts } from '../lib/types.js';
 
-let { tickets, siblingUrl = null }: { tickets: TicketCounts; siblingUrl?: string | null } = $props();
+const { tickets, siblingUrl = null }: { tickets: TicketCounts; siblingUrl?: string | null } = $props();
 
-const stages = [
+const _stages = [
 	{ key: 'fix', label: 'Fix', color: 'var(--danger)' },
 	{ key: 'plan', label: 'Plan', color: 'var(--warning)' },
 	{ key: 'implement', label: 'Implement', color: 'var(--primary)' },
@@ -12,7 +12,7 @@ const stages = [
 	{ key: 'complete', label: 'Complete', color: 'var(--success)' },
 ];
 
-const total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
+const _total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
 </script>
 
 <div class="pipeline">

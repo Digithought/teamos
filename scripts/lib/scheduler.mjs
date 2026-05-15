@@ -26,7 +26,7 @@ export const DEFAULT_CADENCE_MS = {
  */
 export function pickNextPriority(vruntime, candidates) {
 	let best = null;
-	let bestVrt = Infinity;
+	let bestVrt = Number.POSITIVE_INFINITY;
 	for (const { priority } of candidates) {
 		const vrt = vruntime[priority] ?? 0;
 		if (vrt < bestVrt) {

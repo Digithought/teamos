@@ -39,29 +39,29 @@
 process.stdout._handle?.setBlocking?.(true);
 process.stderr._handle?.setBlocking?.(true);
 
-import { join, dirname } from 'node:path';
-import { writeFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { pathExists, ensureLogsDir, buildLogPath, checkStop, waitWhilePaused } from './lib/util.mjs';
-import { PRIORITY_ORDER, DEFAULT_PRIORITY_WEIGHTS, DEFAULT_CADENCE_MS } from './lib/scheduler.mjs';
-import { loadSchedulerState, saveSchedulerState, idleWait } from './lib/state.mjs';
 import { runAgent } from './lib/agents/index.mjs';
-import {
-	loadMembers,
-	getMembersWithWork,
-	ensureSelfAssessmentEvents,
-	ensureDailyCheckinEvents,
-} from './lib/work-detection.mjs';
-import { runMaintenance, buildClerkPrompt } from './lib/maintenance.mjs';
+import { loadConfig, loadDotEnv, resolveEnvVars } from './lib/config.mjs';
 import { runCycle, runPass } from './lib/cycle.mjs';
+import { buildClerkPrompt, runMaintenance } from './lib/maintenance.mjs';
 import { createMessagingAdapter } from './lib/messaging/index.mjs';
-import { createTasksAdapter } from './lib/tasks/index.mjs';
 import { createScheduleAdapter } from './lib/schedule/index.mjs';
-import { createTriggersAdapter } from './lib/triggers/index.mjs';
+import { DEFAULT_CADENCE_MS, DEFAULT_PRIORITY_WEIGHTS, PRIORITY_ORDER } from './lib/scheduler.mjs';
+import { idleWait, loadSchedulerState, saveSchedulerState } from './lib/state.mjs';
 import { createSyncAdapter } from './lib/sync/index.mjs';
-import { loadConfig, resolveEnvVars, loadDotEnv } from './lib/config.mjs';
+import { createTasksAdapter } from './lib/tasks/index.mjs';
+import { createTriggersAdapter } from './lib/triggers/index.mjs';
+import { buildLogPath, checkStop, ensureLogsDir, pathExists, waitWhilePaused } from './lib/util.mjs';
+import {
+	ensureDailyCheckinEvents,
+	ensureSelfAssessmentEvents,
+	getMembersWithWork,
+	loadMembers,
+} from './lib/work-detection.mjs';
 
 // ─── Path resolution ───────────────────────────────────────────────────────────
 
@@ -175,7 +175,7 @@ function parseArgs(argv) {
 				opts.member = argv[++i];
 				break;
 			case '--max-cycles':
-				opts.maxCycles = parseInt(argv[++i], 10);
+				opts.maxCycles = Number.parseInt(argv[++i], 10);
 				break;
 			case '--once':
 				opts.once = true;
@@ -186,13 +186,13 @@ function parseArgs(argv) {
 				opts.once = false;
 				break;
 			case '--interval':
-				opts.intervalMs = parseInt(argv[++i], 10) * 60 * 1000;
+				opts.intervalMs = Number.parseInt(argv[++i], 10) * 60 * 1000;
 				opts.loop = true;
 				opts.once = false;
 				break;
 			case '--remote-pull-interval': {
-				const mins = parseInt(argv[++i], 10);
-				if (isNaN(mins) || mins < 0) {
+				const mins = Number.parseInt(argv[++i], 10);
+				if (Number.isNaN(mins) || mins < 0) {
 					console.error('Invalid --remote-pull-interval: expected non-negative minutes (0 disables).');
 					process.exit(1);
 				}
@@ -215,8 +215,8 @@ function parseArgs(argv) {
 				const spec = argv[++i];
 				if (spec) {
 					const [pri, count] = spec.split(':');
-					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseInt(count, 10))) {
-						opts.budgets[pri] = parseInt(count, 10);
+					if (PRIORITY_ORDER.includes(pri) && !Number.isNaN(Number.parseInt(count, 10))) {
+						opts.budgets[pri] = Number.parseInt(count, 10);
 					} else {
 						console.error(`Invalid --budget spec: "${spec}". Use priority:count (e.g. later:2)`);
 						process.exit(1);
@@ -228,8 +228,8 @@ function parseArgs(argv) {
 				const spec = argv[++i];
 				if (spec) {
 					const [pri, w] = spec.split(':');
-					if (PRIORITY_ORDER.includes(pri) && !isNaN(parseFloat(w)) && parseFloat(w) > 0) {
-						opts.weights[pri] = parseFloat(w);
+					if (PRIORITY_ORDER.includes(pri) && !Number.isNaN(Number.parseFloat(w)) && Number.parseFloat(w) > 0) {
+						opts.weights[pri] = Number.parseFloat(w);
 					} else {
 						console.error(`Invalid --weight spec: "${spec}". Use priority:weight (e.g. pressing:8)`);
 						process.exit(1);
@@ -243,9 +243,9 @@ function parseArgs(argv) {
 					const [pri, val] = spec.split(':');
 					if (PRIORITY_ORDER.includes(pri) && val) {
 						const unit = val.slice(-1);
-						const num = parseFloat(val.slice(0, -1));
-						const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : NaN;
-						if (!isNaN(num) && !isNaN(multiplier) && num >= 0) {
+						const num = Number.parseFloat(val.slice(0, -1));
+						const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : Number.NaN;
+						if (!Number.isNaN(num) && !Number.isNaN(multiplier) && num >= 0) {
 							opts.cadences[pri] = num * multiplier;
 						} else {
 							console.error(`Invalid --cadence value: "${val}". Use <number>h or <number>d (e.g. today:4h, later:3d)`);
@@ -349,7 +349,7 @@ async function main() {
 		await writeFile(
 			clerkLog,
 			[
-				`Clerk run (manual)`,
+				'Clerk run (manual)',
 				`Agent: ${opts.agent}`,
 				`TeamOS: ${version}`,
 				`Started: ${new Date().toISOString()}`,
@@ -594,7 +594,7 @@ async function main() {
 			console.log(`\n[runner] Reached max cycles (${opts.maxCycles}).`);
 		}
 		if (result.timedOut) {
-			console.log(`[runner] Reached time limit (60min).`);
+			console.log('[runner] Reached time limit (60min).');
 		}
 
 		console.log(`\nDone — ${result.cycleCount} cycle(s), ${result.totalMemberRuns} member run(s).`);

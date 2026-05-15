@@ -1,33 +1,33 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
-import { router } from '../lib/router.svelte.js';
 import { identity } from '../lib/identity.svelte.js';
-import type { MemberDetail, MessageSummary, Message, TodoItem } from '../lib/types.js';
+import { router } from '../lib/router.svelte.js';
+import type { MemberDetail, Message, MessageSummary, TodoItem } from '../lib/types.js';
 
-let { name }: { name: string } = $props();
+const { name }: { name: string } = $props();
 
 let detail = $state<MemberDetail | null>(null);
 let inbox = $state<MessageSummary[]>([]);
 let archives = $state<MessageSummary[]>([]);
-let showArchives = $state(false);
-let loading = $state(true);
-let tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
+const _showArchives = $state(false);
+let _loading = $state(true);
+let _tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
 let expandedMsg = $state<string | null>(null);
-let msgCache = $state<Record<string, Message>>({});
+const msgCache = $state<Record<string, Message>>({});
 
-const isMe = $derived(identity.name === name);
+const _isMe = $derived(identity.name === name);
 
 async function load() {
-	loading = true;
+	_loading = true;
 	const [d, inb, arch] = await Promise.all([api.member(name), api.inbox(name), api.archives(name)]);
 	detail = d;
 	inbox = inb;
 	archives = arch;
-	loading = false;
+	_loading = false;
 
 	const expandId = router.query.msg;
 	if (expandId) {
-		tab = 'inbox';
+		_tab = 'inbox';
 		expandedMsg = expandId;
 		if (!msgCache[expandId]) {
 			try {
@@ -77,7 +77,7 @@ async function deleteArchive(id: string) {
 }
 
 let newTodoTitle = $state('');
-let newTodoPriority = $state('today');
+const newTodoPriority = $state('today');
 
 async function addTodo() {
 	if (!newTodoTitle.trim() || !detail) return;
@@ -147,34 +147,34 @@ function groupByPriority(items: TodoItem[]): [string, TodoItem[]][] {
 	return order.filter((p) => groups.has(p)).map((p) => [p, groups.get(p)!]);
 }
 
-const todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
-let editingState = $state(false);
+const _todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
+let _editingState = $state(false);
 let stateText = $state('');
-let savingState = $state(false);
+let _savingState = $state(false);
 
 function startEditState() {
 	stateText = detail?.state ?? '';
-	editingState = true;
+	_editingState = true;
 }
 
 async function saveState() {
 	if (!detail) return;
-	savingState = true;
+	_savingState = true;
 	await api.updateState(name, stateText);
 	detail.state = stateText;
-	editingState = false;
-	savingState = false;
+	_editingState = false;
+	_savingState = false;
 }
 
 function cancelEditState() {
-	editingState = false;
+	_editingState = false;
 }
 
-const profileMeta = $derived(detail?.profile.meta ?? {});
+const _profileMeta = $derived(detail?.profile.meta ?? {});
 
-let editingProfile = $state(false);
-let savingProfile = $state(false);
-let profileError = $state('');
+let _editingProfile = $state(false);
+let _savingProfile = $state(false);
+let _profileError = $state('');
 let editTitle = $state('');
 let editType = $state<'ai' | 'human'>('ai');
 let editActive = $state(true);
@@ -192,14 +192,14 @@ function startEditProfile() {
 	editRoles = roles.join(', ');
 	editDescription = (meta.description as string) ?? '';
 	editBody = detail.profile.body ?? '';
-	profileError = '';
-	editingProfile = true;
+	_profileError = '';
+	_editingProfile = true;
 }
 
 async function saveProfile() {
 	if (!detail) return;
-	savingProfile = true;
-	profileError = '';
+	_savingProfile = true;
+	_profileError = '';
 	try {
 		const roles = editRoles
 			.split(',')
@@ -213,12 +213,12 @@ async function saveProfile() {
 			description: editDescription.trim(),
 			body: editBody,
 		});
-		editingProfile = false;
+		_editingProfile = false;
 		await load();
 	} catch (err) {
-		profileError = err instanceof Error ? err.message : 'Failed to save';
+		_profileError = err instanceof Error ? err.message : 'Failed to save';
 	} finally {
-		savingProfile = false;
+		_savingProfile = false;
 	}
 }
 
@@ -232,7 +232,7 @@ async function deleteMember() {
 		await api.deleteMember(name);
 		router.navigate('/');
 	} catch (err) {
-		profileError = err instanceof Error ? err.message : 'Failed to delete';
+		_profileError = err instanceof Error ? err.message : 'Failed to delete';
 	}
 }
 </script>

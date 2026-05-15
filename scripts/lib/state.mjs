@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PRIORITY_ORDER } from './scheduler.mjs';
-import { checkStop, checkPause } from './util.mjs';
+import { checkPause, checkStop } from './util.mjs';
 
 const IDLE_POLL_MS = 30 * 1000;
 
@@ -16,7 +16,7 @@ export async function loadSchedulerState(logsDir) {
 			const ts = state.lastServedAt?.[p];
 			lastServedAt[p] = typeof ts === 'number' && ts > 0 && ts <= now ? ts : now;
 			const v = state.vruntime?.[p];
-			vruntime[p] = typeof v === 'number' && isFinite(v) ? v : 0;
+			vruntime[p] = typeof v === 'number' && Number.isFinite(v) ? v : 0;
 		}
 		const lastServedMember = state.lastServedMember ?? {};
 		const validTs = (v) => (typeof v === 'number' && v > 0 && v <= now ? v : 0);
@@ -44,7 +44,7 @@ export async function saveSchedulerState(logsDir, state) {
 		lastEfficiencyAt: state.lastEfficiencyAt,
 		updatedAt: new Date().toISOString(),
 	};
-	await writeFile(join(logsDir, 'scheduler-state.json'), JSON.stringify(out, null, '\t') + '\n', 'utf-8').catch(
+	await writeFile(join(logsDir, 'scheduler-state.json'), `${JSON.stringify(out, null, '\t')}\n`, 'utf-8').catch(
 		() => {},
 	);
 }
