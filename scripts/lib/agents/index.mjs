@@ -1,14 +1,9 @@
-import { readFile, writeFile, unlink } from 'node:fs/promises';
+import { writeFile, unlink } from 'node:fs/promises';
 import { spawn, execSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createClaudeAdapter } from './claude.mjs';
 import { createCursorAdapter } from './cursor.mjs';
 import { createAuggieAdapter } from './auggie.mjs';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes with no output → assume hung
 
@@ -44,9 +39,6 @@ function killTree(child) {
 	}
 }
 
-/** Path to the MCP server script. */
-const MCP_SERVER_PATH = join(__dirname, '..', 'messaging', 'mcp-server.mjs');
-
 /** Agent adapter registry. */
 const agents = {
 	claude: createClaudeAdapter,
@@ -60,65 +52,21 @@ export function getAvailableAgents() {
 }
 
 /**
- * Write a temporary .mcp.json so the Claude CLI discovers the messaging MCP server.
- * Returns the path so it can be cleaned up after the agent exits.
+ * Build the env vars the MCP server reads, merged onto the runner's env so
+ * `${TEAMOS_MEMBER_NAME}` interpolation in the project's static `.mcp.json`
+ * (installed by `init.mjs`) resolves to the active member for this cycle.
  */
-async function writeMcpConfig(cwd, mcpContext) {
-	const mcpConfigPath = join(cwd, '.mcp.json');
-
-	// Preserve any existing .mcp.json content
-	let existing = {};
-	try {
-		existing = JSON.parse(await readFile(mcpConfigPath, 'utf-8'));
-	} catch {
-		/* no existing file */
-	}
-
-	const config = {
-		...existing,
-		mcpServers: {
-			...(existing.mcpServers || {}),
-			'teamos-tools': {
-				type: 'stdio',
-				command: 'node',
-				args: [MCP_SERVER_PATH],
-				env: {
-					TEAMOS_TEAM_DIR: mcpContext.teamDir,
-					TEAMOS_MEMBER_NAME: mcpContext.memberName,
-					TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapterName || 'file',
-					TEAMOS_TASKS_ADAPTER: mcpContext.tasksAdapterName || 'file',
-					TEAMOS_SCHEDULE_ADAPTER: mcpContext.scheduleAdapterName || 'file',
-					TEAMOS_TRIGGERS_ADAPTER: mcpContext.triggersAdapterName || 'file',
-				},
-			},
-		},
+function buildMcpEnv(mcpContext) {
+	if (!mcpContext) return process.env;
+	return {
+		...process.env,
+		TEAMOS_TEAM_DIR: mcpContext.teamDir,
+		TEAMOS_MEMBER_NAME: mcpContext.memberName,
+		TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapterName || 'file',
+		TEAMOS_TASKS_ADAPTER: mcpContext.tasksAdapterName || 'file',
+		TEAMOS_SCHEDULE_ADAPTER: mcpContext.scheduleAdapterName || 'file',
+		TEAMOS_TRIGGERS_ADAPTER: mcpContext.triggersAdapterName || 'file',
 	};
-
-	await writeFile(mcpConfigPath, JSON.stringify(config, null, '\t') + '\n', 'utf-8');
-	return { path: mcpConfigPath, hadExisting: Object.keys(existing).length > 0, original: existing };
-}
-
-/**
- * Clean up the temporary .mcp.json after the agent exits.
- * If there was pre-existing content, restore it; otherwise delete the file.
- */
-async function cleanupMcpConfig(mcpState) {
-	if (!mcpState) return;
-	try {
-		if (mcpState.hadExisting) {
-			// Restore original content (minus our injected server)
-			const restored = { ...mcpState.original };
-			if (restored.mcpServers) {
-				delete restored.mcpServers['teamos-tools'];
-				delete restored.mcpServers['teamos-messaging'];
-			}
-			await writeFile(mcpState.path, JSON.stringify(restored, null, '\t') + '\n', 'utf-8');
-		} else {
-			await unlink(mcpState.path);
-		}
-	} catch {
-		/* best effort */
-	}
 }
 
 /**
@@ -141,19 +89,14 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 	const instructionFile = logFile.replace(/\.log$/, '.prompt.md');
 	await writeFile(instructionFile, prompt, 'utf-8');
 
-	// Set up MCP config if messaging context provided
-	let mcpState = null;
-	if (mcpContext && agentName === 'claude') {
-		mcpState = await writeMcpConfig(cwd, mcpContext);
-	}
-
 	const adapterResult = adapter(instructionFile, prompt, { cwd });
 	const logStream = createWriteStream(logFile, { flags: 'a' });
 	const { cmd, args, shellCmd, formatStream } = adapterResult;
 
+	const spawnEnv = buildMcpEnv(mcpContext);
 	const spawnArgs = shellCmd
-		? [shellCmd, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true }]
-		: [cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: false }];
+		? [shellCmd, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }]
+		: [cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: false, env: spawnEnv }];
 
 	try {
 		return await new Promise((resolve, reject) => {
@@ -245,6 +188,5 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 	} finally {
 		process.stdout.write('\x1b[0m');
 		await unlink(instructionFile).catch(() => {});
-		await cleanupMcpConfig(mcpState);
 	}
 }

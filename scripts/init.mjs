@@ -267,6 +267,60 @@ async function createTeamSymlinks(projectRoot) {
 	}
 }
 
+/**
+ * Merge the teamos-tools MCP server entry into `.mcp.json` at the project root.
+ *
+ * Written once at init; the runner does not touch this file at cycle time.
+ * The server's env uses `${TEAMOS_MEMBER_NAME}` so the runner can set the
+ * active member per spawn while the config itself stays static. Interactive
+ * sessions (TEAMOS_MEMBER_NAME unset) supply `member` as a tool argument.
+ *
+ * Any existing `.mcp.json` content is preserved, including other servers.
+ */
+async function ensureMcpConfig(projectRoot, mode) {
+	const mcpConfigPath = join(projectRoot, '.mcp.json');
+	const mcpServerPath =
+		mode === 'symlink'
+			? // Cross-repo symlink: resolve to the source location.
+				relative(projectRoot, join(TEAMOS_ROOT, 'scripts', 'lib', 'messaging', 'mcp-server.mjs'))
+			: 'teamos/scripts/lib/messaging/mcp-server.mjs';
+
+	let existing = {};
+	try {
+		existing = JSON.parse(await readFile(mcpConfigPath, 'utf-8'));
+	} catch {
+		/* no existing file */
+	}
+
+	const teamosEntry = {
+		type: 'stdio',
+		command: 'node',
+		args: [mcpServerPath.split('\\').join('/')],
+		env: {
+			TEAMOS_MEMBER_NAME: '${TEAMOS_MEMBER_NAME}',
+		},
+	};
+
+	const updated = {
+		...existing,
+		mcpServers: {
+			...(existing.mcpServers || {}),
+			'teamos-tools': teamosEntry,
+		},
+	};
+
+	const before = JSON.stringify(existing.mcpServers?.['teamos-tools'] ?? null);
+	const after = JSON.stringify(teamosEntry);
+
+	if (before === after && Object.keys(existing).length > 0) {
+		log('.mcp.json teamos-tools entry already up-to-date, skipping');
+		return;
+	}
+
+	await writeFile(mcpConfigPath, JSON.stringify(updated, null, '\t') + '\n', 'utf-8');
+	log(before === 'null' ? 'Added teamos-tools to .mcp.json' : 'Updated teamos-tools entry in .mcp.json');
+}
+
 async function ensureRootAgentRules(projectRoot) {
 	const rootSection = await readFile(join(TEAMOS_ROOT, 'agent-rules', 'root.md'), 'utf-8');
 	const name = ROOT_AGENT_RULE;
@@ -363,7 +417,10 @@ async function main() {
 	// Step 4: Ensure root AGENTS.md has teamos section
 	await ensureRootAgentRules(projectRoot);
 
-	// Step 5: Update .gitignore (symlink mode only)
+	// Step 5: Install / merge the teamos-tools MCP server into .mcp.json
+	await ensureMcpConfig(projectRoot, mode);
+
+	// Step 6: Update .gitignore (symlink mode only)
 	if (mode === 'symlink') {
 		await updateGitignoreForSymlinks(projectRoot);
 	}
