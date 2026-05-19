@@ -9,25 +9,25 @@ const { name }: { name: string } = $props();
 let detail = $state<MemberDetail | null>(null);
 let inbox = $state<MessageSummary[]>([]);
 let archives = $state<MessageSummary[]>([]);
-const _showArchives = $state(false);
-let _loading = $state(true);
-let _tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
+let showArchives = $state(false);
+let loading = $state(true);
+let tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
 let expandedMsg = $state<string | null>(null);
 const msgCache = $state<Record<string, Message>>({});
 
-const _isMe = $derived(identity.name === name);
+const isMe = $derived(identity.name === name);
 
 async function load() {
-	_loading = true;
+	loading = true;
 	const [d, inb, arch] = await Promise.all([api.member(name), api.inbox(name), api.archives(name)]);
 	detail = d;
 	inbox = inb;
 	archives = arch;
-	_loading = false;
+	loading = false;
 
 	const expandId = router.query.msg;
 	if (expandId) {
-		_tab = 'inbox';
+		tab = 'inbox';
 		expandedMsg = expandId;
 		if (!msgCache[expandId]) {
 			try {
@@ -77,7 +77,7 @@ async function deleteArchive(id: string) {
 }
 
 let newTodoTitle = $state('');
-const newTodoPriority = $state('today');
+let newTodoPriority = $state('today');
 
 async function addTodo() {
 	if (!newTodoTitle.trim() || !detail) return;
@@ -147,34 +147,34 @@ function groupByPriority(items: TodoItem[]): [string, TodoItem[]][] {
 	return order.filter((p) => groups.has(p)).map((p) => [p, groups.get(p)!]);
 }
 
-const _todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
-let _editingState = $state(false);
+const todoGroups = $derived(detail ? groupByPriority(detail.todos.items) : []);
+let editingState = $state(false);
 let stateText = $state('');
-let _savingState = $state(false);
+let savingState = $state(false);
 
 function startEditState() {
 	stateText = detail?.state ?? '';
-	_editingState = true;
+	editingState = true;
 }
 
 async function saveState() {
 	if (!detail) return;
-	_savingState = true;
+	savingState = true;
 	await api.updateState(name, stateText);
 	detail.state = stateText;
-	_editingState = false;
-	_savingState = false;
+	editingState = false;
+	savingState = false;
 }
 
 function cancelEditState() {
-	_editingState = false;
+	editingState = false;
 }
 
-const _profileMeta = $derived(detail?.profile.meta ?? {});
+const profileMeta = $derived(detail?.profile.meta ?? {});
 
-let _editingProfile = $state(false);
-let _savingProfile = $state(false);
-let _profileError = $state('');
+let editingProfile = $state(false);
+let savingProfile = $state(false);
+let profileError = $state('');
 let editTitle = $state('');
 let editType = $state<'ai' | 'human'>('ai');
 let editActive = $state(true);
@@ -192,14 +192,14 @@ function startEditProfile() {
 	editRoles = roles.join(', ');
 	editDescription = (meta.description as string) ?? '';
 	editBody = detail.profile.body ?? '';
-	_profileError = '';
-	_editingProfile = true;
+	profileError = '';
+	editingProfile = true;
 }
 
 async function saveProfile() {
 	if (!detail) return;
-	_savingProfile = true;
-	_profileError = '';
+	savingProfile = true;
+	profileError = '';
 	try {
 		const roles = editRoles
 			.split(',')
@@ -213,12 +213,12 @@ async function saveProfile() {
 			description: editDescription.trim(),
 			body: editBody,
 		});
-		_editingProfile = false;
+		editingProfile = false;
 		await load();
 	} catch (err) {
-		_profileError = err instanceof Error ? err.message : 'Failed to save';
+		profileError = err instanceof Error ? err.message : 'Failed to save';
 	} finally {
-		_savingProfile = false;
+		savingProfile = false;
 	}
 }
 
@@ -232,7 +232,7 @@ async function deleteMember() {
 		await api.deleteMember(name);
 		router.navigate('/');
 	} catch (err) {
-		_profileError = err instanceof Error ? err.message : 'Failed to delete';
+		profileError = err instanceof Error ? err.message : 'Failed to delete';
 	}
 }
 </script>

@@ -5,28 +5,28 @@ import type { MemberSummary, Memo, Project, SiblingInfo, TicketCounts } from '..
 import MemberCard from './MemberCard.svelte';
 import TicketPipeline from './TicketPipeline.svelte';
 
-let _members = $state<MemberSummary[]>([]);
+let members = $state<MemberSummary[]>([]);
 let memos = $state<Memo[]>([]);
-let _projects = $state<Project[]>([]);
+let projects = $state<Project[]>([]);
 let tickets = $state<TicketCounts | null>(null);
-let _sibling = $state<SiblingInfo | null>(null);
-let _loading = $state(true);
-let _stopPending = $state(false);
-let _stoppingCycle = $state(false);
+let sibling = $state<SiblingInfo | null>(null);
+let loading = $state(true);
+let stopPending = $state(false);
+let stoppingCycle = $state(false);
 let paused = $state(false);
-let _pauseBusy = $state(false);
+let pauseBusy = $state(false);
 
-let _showNewMember = $state(false);
-let _savingMember = $state(false);
-let _memberError = $state('');
+let showNewMember = $state(false);
+let savingMember = $state(false);
+let memberError = $state('');
 let newMemberName = $state('');
 let newMemberTitle = $state('');
 let newMemberType = $state<'ai' | 'human'>('ai');
 let newMemberRoles = $state('');
 let newMemberDescription = $state('');
 
-let _showNewMemo = $state(false);
-let _savingMemo = $state(false);
+let showNewMemo = $state(false);
+let savingMemo = $state(false);
 let memoTitle = $state('');
 let memoContent = $state('');
 let memoImportance = $state('medium');
@@ -35,7 +35,7 @@ let memoProjectCodes = $state<string[]>([]);
 let memoExpiresAt = $state('');
 
 async function load() {
-	_loading = true;
+	loading = true;
 	const [m, memosData, p, t, s, cs] = await Promise.all([
 		api.members(),
 		api.memos(),
@@ -44,14 +44,14 @@ async function load() {
 		api.sibling().catch(() => null),
 		api.cycleStatus().catch(() => ({ stopPending: false, paused: false })),
 	]);
-	_members = m;
+	members = m;
 	memos = memosData.items ?? [];
-	_projects = p.projects ?? [];
+	projects = p.projects ?? [];
 	tickets = t;
-	_sibling = s;
-	_stopPending = cs.stopPending;
+	sibling = s;
+	stopPending = cs.stopPending;
 	paused = cs.paused;
-	_loading = false;
+	loading = false;
 }
 
 $effect(() => {
@@ -59,14 +59,14 @@ $effect(() => {
 });
 
 async function cycleStop() {
-	_stoppingCycle = true;
+	stoppingCycle = true;
 	await api.cycleStop();
-	_stopPending = true;
-	_stoppingCycle = false;
+	stopPending = true;
+	stoppingCycle = false;
 }
 
 async function togglePause() {
-	_pauseBusy = true;
+	pauseBusy = true;
 	try {
 		if (paused) {
 			await api.cycleResume();
@@ -76,7 +76,7 @@ async function togglePause() {
 			paused = true;
 		}
 	} finally {
-		_pauseBusy = false;
+		pauseBusy = false;
 	}
 }
 
@@ -91,14 +91,14 @@ function openNewMember() {
 	newMemberType = 'ai';
 	newMemberRoles = '';
 	newMemberDescription = '';
-	_memberError = '';
-	_showNewMember = true;
+	memberError = '';
+	showNewMember = true;
 }
 
 async function saveMember() {
 	if (!newMemberName.trim()) return;
-	_savingMember = true;
-	_memberError = '';
+	savingMember = true;
+	memberError = '';
 	try {
 		const roles = newMemberRoles
 			.split(',')
@@ -112,12 +112,12 @@ async function saveMember() {
 			description: newMemberDescription.trim() || undefined,
 			active: true,
 		});
-		_showNewMember = false;
+		showNewMember = false;
 		await load();
 	} catch (err) {
-		_memberError = err instanceof Error ? err.message : 'Failed to create member';
+		memberError = err instanceof Error ? err.message : 'Failed to create member';
 	} finally {
-		_savingMember = false;
+		savingMember = false;
 	}
 }
 
@@ -130,7 +130,7 @@ function openNewMemo() {
 	const oneWeek = new Date();
 	oneWeek.setDate(oneWeek.getDate() + 7);
 	memoExpiresAt = oneWeek.toISOString().slice(0, 10);
-	_showNewMemo = true;
+	showNewMemo = true;
 }
 
 function toggleProjectCode(code: string) {
@@ -143,7 +143,7 @@ function toggleProjectCode(code: string) {
 
 async function saveMemo() {
 	if (!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim()) return;
-	_savingMemo = true;
+	savingMemo = true;
 	const created = await api.createMemo({
 		title: memoTitle.trim(),
 		content: memoContent.trim(),
@@ -153,11 +153,11 @@ async function saveMemo() {
 		expiresAt: memoExpiresAt || undefined,
 	});
 	memos = [...memos, created];
-	_showNewMemo = false;
-	_savingMemo = false;
+	showNewMemo = false;
+	savingMemo = false;
 }
 
-const _hasTickets = $derived(
+const hasTickets = $derived(
 	tickets && Object.values(tickets).some((v): v is number => typeof v === 'number' && v > 0),
 );
 </script>

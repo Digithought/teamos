@@ -3,13 +3,13 @@ import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
 import type { MemberSummary } from '../lib/types.js';
 
-let _members = $state<MemberSummary[]>([]);
-let _open = $state(false);
-let _loaded = $state(false);
+let members = $state<MemberSummary[]>([]);
+let open = $state(false);
+let loaded = $state(false);
 
 async function load() {
-	_members = await api.members();
-	_loaded = true;
+	members = await api.members();
+	loaded = true;
 }
 
 $effect(() => {
@@ -19,7 +19,7 @@ $effect(() => {
 function pick(name: string) {
 	if (identity.locked) return;
 	identity.set(name);
-	_open = false;
+	open = false;
 }
 </script>
 

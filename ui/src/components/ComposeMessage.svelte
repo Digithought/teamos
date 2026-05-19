@@ -5,11 +5,11 @@ import { router } from '../lib/router.svelte.js';
 import type { MemberSummary, Message, Project } from '../lib/types.js';
 
 let members = $state<MemberSummary[]>([]);
-let _projects = $state<Project[]>([]);
-let _loading = $state(true);
-let _sending = $state(false);
-let _sent = $state(false);
-let _sendError = $state<string | null>(null);
+let projects = $state<Project[]>([]);
+let loading = $state(true);
+let sending = $state(false);
+let sent = $state(false);
+let sendError = $state<string | null>(null);
 
 let to = $state<Set<string>>(new Set());
 let cc = $state<Set<string>>(new Set());
@@ -20,7 +20,7 @@ let body = $state('');
 
 let replyMessage = $state<Message | null>(null);
 let inboxOwner = $state<string | null>(null);
-let _isReplyAll = $state(false);
+let isReplyAll = $state(false);
 
 const isReply = $derived(!!replyMessage);
 const backPath = $derived.by(() => {
@@ -36,12 +36,12 @@ $effect(() => {
 async function load() {
 	const [m, p] = await Promise.all([api.members(), api.projects()]);
 	members = m;
-	_projects = p.projects ?? [];
+	projects = p.projects ?? [];
 
 	const re = router.query.re;
 	const inbox = router.query.inbox;
 	const replyAll = router.query.all === '1';
-	_isReplyAll = replyAll;
+	isReplyAll = replyAll;
 	if (re) {
 		inboxOwner = inbox ?? null;
 		try {
@@ -67,7 +67,7 @@ async function load() {
 		}
 	}
 
-	_loading = false;
+	loading = false;
 }
 
 $effect(() => {
@@ -94,8 +94,8 @@ function selectAllAI() {
 
 async function send() {
 	if (to.size === 0 || !body.trim() || !from.trim()) return;
-	_sending = true;
-	_sendError = null;
+	sending = true;
+	sendError = null;
 	try {
 		await api.sendMessage({
 			from,
@@ -107,16 +107,16 @@ async function send() {
 			projectCode: projectCode || undefined,
 		});
 	} catch (err) {
-		_sendError = err instanceof Error ? err.message : String(err);
-		_sending = false;
+		sendError = err instanceof Error ? err.message : String(err);
+		sending = false;
 		return;
 	}
-	_sending = false;
+	sending = false;
 	if (isReply) {
 		router.navigate(backPath);
 		return;
 	}
-	_sent = true;
+	sent = true;
 }
 
 function reset() {
@@ -125,11 +125,11 @@ function reset() {
 	subject = '';
 	projectCode = '';
 	body = '';
-	_sent = false;
-	_sendError = null;
+	sent = false;
+	sendError = null;
 	replyMessage = null;
 	inboxOwner = null;
-	_isReplyAll = false;
+	isReplyAll = false;
 }
 </script>
 

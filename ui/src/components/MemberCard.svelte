@@ -4,7 +4,7 @@ import type { MemberSummary } from '../lib/types.js';
 
 const { member }: { member: MemberSummary } = $props();
 
-const _isMe = $derived(identity.name === member.name);
+const isMe = $derived(identity.name === member.name);
 </script>
 
 <a class="card" class:is-me={isMe} href="#/member/{member.name}">

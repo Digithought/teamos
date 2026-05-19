@@ -3,7 +3,7 @@ import type { TicketCounts } from '../lib/types.js';
 
 const { tickets, siblingUrl = null }: { tickets: TicketCounts; siblingUrl?: string | null } = $props();
 
-const _stages = [
+const stages = [
 	{ key: 'fix', label: 'Fix', color: 'var(--danger)' },
 	{ key: 'plan', label: 'Plan', color: 'var(--warning)' },
 	{ key: 'implement', label: 'Implement', color: 'var(--primary)' },
@@ -12,7 +12,7 @@ const _stages = [
 	{ key: 'complete', label: 'Complete', color: 'var(--success)' },
 ];
 
-const _total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
+const total = $derived(Object.values(tickets).reduce((a, b) => a + b, 0));
 </script>
 
 <div class="pipeline">

@@ -4,65 +4,65 @@ import type { Project } from '../lib/types.js';
 
 let orgContent = $state('');
 let orgDraft = $state('');
-let _orgLoading = $state(true);
-let _orgSaving = $state(false);
-let _orgError = $state('');
-const _orgDirty = $derived(orgDraft !== orgContent);
+let orgLoading = $state(true);
+let orgSaving = $state(false);
+let orgError = $state('');
+const orgDirty = $derived(orgDraft !== orgContent);
 
-let _projects = $state<Project[]>([]);
-let _projectsLoading = $state(true);
+let projects = $state<Project[]>([]);
+let projectsLoading = $state(true);
 
-let _showNew = $state(false);
+let showNew = $state(false);
 let newCode = $state('');
 let newName = $state('');
 let newDescription = $state('');
 let newStatus = $state('active');
-let _savingNew = $state(false);
-let _newError = $state('');
+let savingNew = $state(false);
+let newError = $state('');
 
 let editingCode = $state<string | null>(null);
 let editName = $state('');
 let editDescription = $state('');
 let editStatus = $state('active');
-let _savingEdit = $state(false);
-let _editError = $state('');
+let savingEdit = $state(false);
+let editError = $state('');
 
 async function loadOrg() {
-	_orgLoading = true;
+	orgLoading = true;
 	try {
 		const { content } = await api.org();
 		orgContent = content;
 		orgDraft = content;
 	} catch (err) {
-		_orgError = err instanceof Error ? err.message : 'Failed to load org';
+		orgError = err instanceof Error ? err.message : 'Failed to load org';
 	} finally {
-		_orgLoading = false;
+		orgLoading = false;
 	}
 }
 
 async function loadProjects() {
-	_projectsLoading = true;
+	projectsLoading = true;
 	const { projects: p } = await api.projects();
-	_projects = p ?? [];
-	_projectsLoading = false;
+	projects = p ?? [];
+	projectsLoading = false;
 }
 
 async function saveOrg() {
-	_orgSaving = true;
-	_orgError = '';
+	orgSaving = true;
+	orgError = '';
 	try {
 		await api.updateOrg(orgDraft);
 		orgContent = orgDraft;
 	} catch (err) {
-		_orgError = err instanceof Error ? err.message : 'Failed to save';
+		orgError = err instanceof Error ? err.message : 'Failed to save';
 	} finally {
-		_orgSaving = false;
+		orgSaving = false;
 	}
 }
 
 function resetOrg() {
 	orgDraft = orgContent;
-	_orgError = '';
+	orgError = '';
 }
 
 function openNew() {
@@ -70,14 +70,14 @@ function openNew() {
 	newName = '';
 	newDescription = '';
 	newStatus = 'active';
-	_newError = '';
-	_showNew = true;
+	newError = '';
+	showNew = true;
 }
 
 async function saveNew() {
 	if (!newCode.trim() || !newName.trim()) return;
-	_savingNew = true;
-	_newError = '';
+	savingNew = true;
+	newError = '';
 	try {
 		await api.createProject({
 			code: newCode.trim(),
@@ -85,12 +85,12 @@ async function saveNew() {
 			description: newDescription.trim() || undefined,
 			status: newStatus.trim() || undefined,
 		});
-		_showNew = false;
+		showNew = false;
 		await loadProjects();
 	} catch (err) {
-		_newError = err instanceof Error ? err.message : 'Failed to create project';
+		newError = err instanceof Error ? err.message : 'Failed to create project';
 	} finally {
-		_savingNew = false;
+		savingNew = false;
 	}
 }
 
@@ -99,18 +99,18 @@ function startEdit(project: Project) {
 	editName = project.name;
 	editDescription = project.description ?? '';
 	editStatus = project.status ?? 'active';
-	_editError = '';
+	editError = '';
 }
 
 function cancelEdit() {
 	editingCode = null;
-	_editError = '';
+	editError = '';
 }
 
 async function saveEdit() {
 	if (!editingCode) return;
-	_savingEdit = true;
-	_editError = '';
+	savingEdit = true;
+	editError = '';
 	try {
 		await api.updateProject(editingCode, {
 			name: editName.trim(),
@@ -120,9 +120,9 @@ async function saveEdit() {
 		editingCode = null;
 		await loadProjects();
 	} catch (err) {
-		_editError = err instanceof Error ? err.message : 'Failed to update project';
+		editError = err instanceof Error ? err.message : 'Failed to update project';
 	} finally {
-		_savingEdit = false;
+		savingEdit = false;
 	}
 }
 

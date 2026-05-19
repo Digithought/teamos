@@ -10,9 +10,9 @@ import type { SiblingInfo } from './lib/types.js';
 
 let sibling = $state<SiblingInfo | null>(null);
 
-const _memberMatch = $derived(router.match('/member/:name'));
-const _isCompose = $derived(router.path === '/compose');
-const _isOrg = $derived(router.path === '/org');
+const memberMatch = $derived(router.match('/member/:name'));
+const isCompose = $derived(router.path === '/compose');
+const isOrg = $derived(router.path === '/org');
 
 $effect(() => {
 	api
