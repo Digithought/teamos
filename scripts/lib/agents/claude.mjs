@@ -6,8 +6,14 @@
 export function formatClaudeJsonLine(line) {
 	try {
 		const obj = JSON.parse(line);
-		if (obj.type === 'system' && obj.subtype === 'init') {
-			return { text: `[session ${obj.session_id ?? '?'}]\n` };
+		if (obj.type === 'system') {
+			if (obj.subtype === 'init') {
+				return { text: `[session ${obj.session_id ?? '?'}]\n` };
+			}
+			// thinking_tokens (and any future progress-only system event):
+			// collapse to a single dot so the log shows a thinking heartbeat
+			// rather than a stream of raw JSON.
+			return { text: '.' };
 		}
 		if (obj.type === 'assistant') {
 			const content = obj.message?.content ?? [];
