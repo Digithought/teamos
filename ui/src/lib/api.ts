@@ -7,6 +7,7 @@ import type {
 	MessagingInfo,
 	Project,
 	SiblingInfo,
+	Thread,
 	TicketCounts,
 } from './types.js';
 
@@ -118,6 +119,10 @@ export const api = {
 	sent: (name: string) => get<MessageSummary[]>(`/api/members/${encodeURIComponent(name)}/sent`),
 	archives: (name: string) => get<MessageSummary[]>(`/api/members/${encodeURIComponent(name)}/archives`),
 	message: (id: string) => get<Message>(`/api/messages/${encodeURIComponent(id)}`),
+	/** Subject-grouped, reply-chain-resolved view of a member's mailboxes. */
+	threads: (name: string) => get<Thread[]>(`/api/members/${encodeURIComponent(name)}/threads`),
+	/** Bodies for a whole thread in one request. */
+	messagesBatch: (ids: string[]) => post<Message[]>('/api/messages/batch', { ids }),
 	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),
 	archiveMessage: (member: string, id: string) =>
 		post<{ ok: boolean }>(`/api/members/${encodeURIComponent(member)}/inbox/${encodeURIComponent(id)}/archive`, {}),

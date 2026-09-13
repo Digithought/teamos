@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
@@ -15,6 +15,43 @@ interface MessageSummary {
 	hasParent: boolean;
 	supersedes?: string[];
 	supersededBy?: string;
+}
+
+type MailBox = 'inbox' | 'sent' | 'archives';
+
+/** One message as it appears inside a thread group — no body; bodies are fetched on open. */
+interface ThreadMessage {
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	replyTo?: string;
+	projectCode?: string;
+	supersedes?: string[];
+	supersededBy?: string;
+	/** Which of this member's mailboxes hold the id. Empty = ancestor pulled in for context only. */
+	boxes: MailBox[];
+	/** Reply distance from the root of its own chain. */
+	depth: number;
+}
+
+interface Thread {
+	/** Earliest message in the group — stable enough to key a selection on. */
+	id: string;
+	subject: string;
+	participants: string[];
+	projectCodes: string[];
+	messageCount: number;
+	inboxCount: number;
+	sentCount: number;
+	archiveCount: number;
+	firstAt: string;
+	lastAt: string;
+	lastFrom: string;
+	preview: string;
+	messages: ThreadMessage[];
 }
 
 interface Message {
@@ -327,6 +364,178 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			todos,
 			schedule: { events },
 		};
+	}
+
+	// ─── Thread grouping (a human view over the flat master store) ────────────
+	//
+	// The agent-facing contract is deliberately flat: a thread is the transitive
+	// closure of `replyTo` pointers and a mailbox is a list of ids. That is right
+	// for agents and unreadable for people — a working inbox is ninety rows of
+	// "Re: ..." whose parents live in sent/ or archives/. These helpers build the
+	// view the dashboard renders: chains resolved through the master store
+	// (ancestors are pulled in for context even when they sit in none of this
+	// member's mailboxes), then chains sharing a root subject folded into one
+	// group, so one subject is one row no matter how many chains it spawned.
+
+	const messageCache = new Map<string, { mtimeMs: number; msg: Message }>();
+
+	/**
+	 * Read a message through an mtime-validated cache. Grouping touches every id
+	 * in every mailbox on each request; without this a member with a few hundred
+	 * archived messages re-parses all of them on every page load.
+	 */
+	async function readCachedMessage(id: string): Promise<Message | null> {
+		let mtimeMs: number | null = null;
+		try {
+			mtimeMs = (await stat(join(teamDir, 'messages', `${id}.md`))).mtimeMs;
+		} catch {
+			// Missing, or an adapter that isn't file-backed — fall through uncached.
+		}
+		if (mtimeMs !== null) {
+			const hit = messageCache.get(id);
+			if (hit && hit.mtimeMs === mtimeMs) return hit.msg;
+		}
+		const msg = await messagingAdapter.readMessage(id, { inlineParent: false }).catch(() => null);
+		if (msg && mtimeMs !== null) messageCache.set(id, { mtimeMs, msg });
+		return msg;
+	}
+
+	function normalizeSubject(subject: string): string {
+		return (subject ?? '').replace(/^(\s*re:\s*)+/i, '').trim();
+	}
+
+	function previewOf(body: string): string {
+		return (body ?? '')
+			.replace(/```[\s\S]*?```/g, ' ')
+			.replace(/[#>*_`]/g, '')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.slice(0, 240);
+	}
+
+	/** Cap on how far a replyTo walk follows before giving up on a malformed chain. */
+	const MAX_CHAIN_DEPTH = 128;
+
+	async function buildThreads(member: string): Promise<Thread[]> {
+		// Mailbox membership comes from the adapter listings, not the raw json, so
+		// the supersede-collapse rule applies here exactly as it does everywhere
+		// else and the tab badge matches the dashboard's inbox count.
+		const boxesById = new Map<string, MailBox[]>();
+		const listers: Record<MailBox, () => Promise<MessageSummary[]>> = {
+			inbox: () => messagingAdapter.listInbox(member),
+			sent: () => messagingAdapter.listSent(member),
+			archives: () => messagingAdapter.listArchives(member),
+		};
+		for (const box of ['inbox', 'sent', 'archives'] as MailBox[]) {
+			const entries = await listers[box]().catch(() => []);
+			for (const entry of entries) {
+				const boxes = boxesById.get(entry.id);
+				if (boxes) boxes.push(box);
+				else boxesById.set(entry.id, [box]);
+			}
+		}
+
+		// Every mailbox message, plus every ancestor reachable from one.
+		const loaded = new Map<string, Message>();
+		const pending = [...boxesById.keys()];
+		while (pending.length > 0) {
+			const id = pending.pop() as string;
+			if (loaded.has(id)) continue;
+			const msg = await readCachedMessage(id);
+			if (!msg) continue;
+			loaded.set(id, msg);
+			if (msg.replyTo && !loaded.has(msg.replyTo)) pending.push(msg.replyTo);
+		}
+
+		// Root + depth per message. Memoized, and cycle-guarded: replyTo is written
+		// by the adapter, but a hand-edited store shouldn't hang the server.
+		const chain = new Map<string, { root: string; depth: number }>();
+		function resolve(id: string): { root: string; depth: number } {
+			const memo = chain.get(id);
+			if (memo) return memo;
+			const path: string[] = [];
+			const seen = new Set<string>();
+			let base: { root: string; depth: number } | null = null;
+			let cur: string | undefined = id;
+			while (cur && !seen.has(cur)) {
+				const known = chain.get(cur);
+				if (known) {
+					base = known;
+					break;
+				}
+				seen.add(cur);
+				path.push(cur);
+				const parent: string | undefined = loaded.get(cur)?.replyTo;
+				cur = parent && loaded.has(parent) && path.length < MAX_CHAIN_DEPTH ? parent : undefined;
+			}
+			// path runs leaf → … → root (or → the first node with a known root).
+			const root = base ? base.root : path[path.length - 1];
+			const baseDepth = base ? base.depth + 1 : 0;
+			for (let i = path.length - 1; i >= 0; i--) {
+				chain.set(path[i], { root, depth: baseDepth + (path.length - 1 - i) });
+			}
+			return chain.get(id) as { root: string; depth: number };
+		}
+
+		// Fold chains into subject groups. An ancestor always resolves to the same
+		// root as its descendants, so a group can never be context-only.
+		const groups = new Map<string, string[]>();
+		for (const id of loaded.keys()) {
+			const rootMsg = loaded.get(resolve(id).root) ?? loaded.get(id);
+			const subject = normalizeSubject(rootMsg?.subject ?? '');
+			const key = subject ? subject.toLowerCase() : `id:${resolve(id).root}`;
+			const ids = groups.get(key);
+			if (ids) ids.push(id);
+			else groups.set(key, [id]);
+		}
+
+		const threads: Thread[] = [];
+		for (const ids of groups.values()) {
+			const msgs = ids
+				.map((id) => loaded.get(id) as Message)
+				.sort((a, b) => (a.sentAt || '').localeCompare(b.sentAt || ''));
+			const inMailbox = msgs.filter((m) => boxesById.has(m.id));
+			const latest = inMailbox[inMailbox.length - 1] ?? msgs[msgs.length - 1];
+			const participants: string[] = [];
+			const projectCodes: string[] = [];
+			for (const m of msgs) {
+				for (const who of [m.from, ...(m.to ?? []), ...(m.cc ?? [])]) {
+					if (who && !participants.includes(who)) participants.push(who);
+				}
+				if (m.projectCode && !projectCodes.includes(m.projectCode)) projectCodes.push(m.projectCode);
+			}
+			const boxCount = (box: MailBox) => msgs.filter((m) => boxesById.get(m.id)?.includes(box)).length;
+			threads.push({
+				id: msgs[0].id,
+				subject: normalizeSubject(msgs[0].subject) || msgs[0].subject || '(no subject)',
+				participants,
+				projectCodes,
+				messageCount: msgs.length,
+				inboxCount: boxCount('inbox'),
+				sentCount: boxCount('sent'),
+				archiveCount: boxCount('archives'),
+				firstAt: msgs[0].sentAt,
+				lastAt: latest.sentAt,
+				lastFrom: latest.from,
+				preview: previewOf(latest.body),
+				messages: msgs.map((m) => ({
+					id: m.id,
+					from: m.from,
+					to: m.to ?? [],
+					cc: m.cc?.length ? m.cc : undefined,
+					subject: m.subject,
+					sentAt: m.sentAt,
+					replyTo: m.replyTo,
+					projectCode: m.projectCode,
+					supersedes: m.supersedes?.length ? m.supersedes : undefined,
+					supersededBy: m.supersededBy,
+					boxes: boxesById.get(m.id) ?? [],
+					depth: resolve(m.id).depth,
+				})),
+			});
+		}
+		threads.sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''));
+		return threads;
 	}
 
 	async function sendMessage(msg: {
@@ -664,6 +873,19 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return json(res, await sendMessage(msg), 201);
 					}
 
+					// Bodies for a whole thread in one round trip — the dashboard opens
+					// threads, not single messages.
+					if (path === '/api/messages/batch' && method === 'POST') {
+						const { ids } = JSON.parse(await readBody(req));
+						const wanted: string[] = Array.isArray(ids) ? ids.slice(0, 500).map(String) : [];
+						const out: Message[] = [];
+						for (const id of wanted) {
+							const msg = await readCachedMessage(id);
+							if (msg) out.push(msg);
+						}
+						return json(res, out);
+					}
+
 					let match = path.match(/^\/api\/messages\/([^/]+)$/);
 					if (match && method === 'GET') {
 						const id = decodeURIComponent(match[1]);
@@ -689,6 +911,11 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const name = decodeURIComponent(match[1]);
 						const body = JSON.parse(await readBody(req));
 						return json(res, await updateMemberProfile(name, body));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/threads$/);
+					if (match && method === 'GET') {
+						return json(res, await buildThreads(decodeURIComponent(match[1])));
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/inbox$/);

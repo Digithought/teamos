@@ -233,6 +233,23 @@ When alice sends to `[bob]` with `cc: [carol]`:
 
 Bob and Carol both receive the message through their inbox; neither can tell from the delivery path alone whether they were in To or Cc — they must inspect the message's `to` and `cc` fields to see their role. This matches email.
 
+## Dashboard View
+
+The agent contract above is flat on purpose — a thread is the transitive closure
+of `replyTo`, and a mailbox is a list of ids. People cannot read that directly,
+so the web dashboard reconstructs threads at read time over the same adapter:
+
+- `GET /api/members/:name/threads` — walks each mailbox id back through the
+  master store (pulling in ancestors that live in none of that member's
+  mailboxes, flagged as context), then folds chains sharing a root subject into
+  one conversation. Returns per-message `boxes` and `depth` so the UI can render
+  the reply tree and say which mailbox each message came from.
+- `POST /api/messages/batch` — bodies for a whole conversation in one request.
+
+Both are dashboard-only views. They add nothing to the MCP surface, the
+supersede-collapse rule is applied exactly as `list_inbox` applies it, and an
+adapter that implements the tools above gets the threaded view for free.
+
 ## Retention and Cleanup
 
 The master store grows unbounded in v1. A later clerk pass will handle retention, likely as:

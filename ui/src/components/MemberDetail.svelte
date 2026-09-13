@@ -2,79 +2,30 @@
 import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
-import type { MemberDetail, Message, MessageSummary, TodoItem } from '../lib/types.js';
+import type { MailboxCounts, MemberDetail, TodoItem } from '../lib/types.js';
+import Mailbox from './Mailbox.svelte';
 
 const { name }: { name: string } = $props();
 
 let detail = $state<MemberDetail | null>(null);
-let inbox = $state<MessageSummary[]>([]);
-let archives = $state<MessageSummary[]>([]);
-let showArchives = $state(false);
 let loading = $state(true);
-let tab = $state<'inbox' | 'todos' | 'state' | 'schedule'>('inbox');
-let expandedMsg = $state<string | null>(null);
-const msgCache = $state<Record<string, Message>>({});
+let tab = $state<'messages' | 'todos' | 'state' | 'schedule'>('messages');
+/** Reported up by <Mailbox> so the tab badge doesn't need a second fetch of the same mailboxes. */
+let mailCounts = $state<MailboxCounts | null>(null);
 
 const isMe = $derived(identity.name === name);
 
 async function load() {
 	loading = true;
-	const [d, inb, arch] = await Promise.all([api.member(name), api.inbox(name), api.archives(name)]);
-	detail = d;
-	inbox = inb;
-	archives = arch;
+	detail = await api.member(name);
 	loading = false;
-
-	const expandId = router.query.msg;
-	if (expandId) {
-		tab = 'inbox';
-		expandedMsg = expandId;
-		if (!msgCache[expandId]) {
-			try {
-				msgCache[expandId] = await api.message(expandId);
-			} catch {
-				/* missing from store */
-			}
-		}
-	}
+	if (router.query.msg) tab = 'messages';
 }
 
 $effect(() => {
 	name;
 	load();
 });
-
-async function toggleExpand(id: string) {
-	if (expandedMsg === id) {
-		expandedMsg = null;
-		return;
-	}
-	expandedMsg = id;
-	if (!msgCache[id]) {
-		try {
-			const msg = await api.message(id);
-			msgCache[id] = msg;
-		} catch {
-			/* missing from store */
-		}
-	}
-}
-
-async function deleteMessage(id: string) {
-	await api.deleteMessage(name, id);
-	inbox = inbox.filter((m) => m.id !== id);
-}
-
-async function archiveMessage(id: string) {
-	await api.archiveMessage(name, id);
-	inbox = inbox.filter((m) => m.id !== id);
-	archives = await api.archives(name);
-}
-
-async function deleteArchive(id: string) {
-	await api.deleteArchive(name, id);
-	archives = archives.filter((m) => m.id !== id);
-}
 
 let newTodoTitle = $state('');
 let newTodoPriority = $state('today');
@@ -316,8 +267,8 @@ async function deleteMember() {
 	{/if}
 
 	<div class="tabs">
-		<button class="tab" class:active={tab === 'inbox'} onclick={() => tab = 'inbox'}>
-			Inbox {#if inbox.length > 0}<span class="badge">{inbox.length}</span>{/if}
+		<button class="tab" class:active={tab === 'messages'} onclick={() => tab = 'messages'}>
+			Messages {#if mailCounts && mailCounts.inboxMessages > 0}<span class="badge">{mailCounts.inboxMessages}</span>{/if}
 		</button>
 		<button class="tab" class:active={tab === 'todos'} onclick={() => tab = 'todos'}>
 			Todos {#if detail.todos.items.length > 0}<span class="badge">{detail.todos.items.length}</span>{/if}
@@ -329,107 +280,8 @@ async function deleteMember() {
 	</div>
 
 	<div class="tab-content">
-		{#if tab === 'inbox'}
-			{#if inbox.length === 0}
-				<div class="empty">No inbox messages</div>
-			{:else}
-				<div class="messages">
-					{#each inbox as msg}
-						{@const full = msgCache[msg.id]}
-						<div class="message" class:expanded={expandedMsg === msg.id}>
-							<button class="message-header" onclick={() => toggleExpand(msg.id)}>
-								<span class="msg-subject">{msg.subject || '(no subject)'}</span>
-								<span class="msg-from">{msg.from}</span>
-								<span class="msg-date">{new Date(msg.sentAt).toLocaleString()}</span>
-								{#if msg.projectCode}
-									<span class="msg-project">{msg.projectCode}</span>
-								{/if}
-								{#if msg.hasParent}
-									<span class="msg-thread">thread</span>
-								{/if}
-								{#if msg.supersedes?.length}
-									<span class="msg-supersedes" title="Consolidates {msg.supersedes.length} earlier message{msg.supersedes.length === 1 ? '' : 's'}">
-										supersedes {msg.supersedes.length}
-									</span>
-								{/if}
-								<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
-							</button>
-							{#if expandedMsg === msg.id}
-								<div class="message-body">
-									<div class="msg-meta">
-										<span>To: {msg.to.join(', ')}</span>
-										{#if msg.cc?.length}<span>Cc: {msg.cc.join(', ')}</span>{/if}
-									</div>
-									{#if full}
-										<pre class="msg-text">{full.body}</pre>
-										{#if full.parent}
-											<div class="parent-block">
-												<div class="parent-label">Previous message in thread</div>
-												<div class="parent-meta">
-													<span class="msg-from">{full.parent.from}</span>
-													<span class="msg-date">{new Date(full.parent.sentAt).toLocaleString()}</span>
-												</div>
-												<pre class="msg-text parent">{full.parent.body}</pre>
-											</div>
-										{/if}
-									{:else}
-										<div class="empty">Loading...</div>
-									{/if}
-									<div class="msg-actions">
-										<a class="action-btn reply" href="#/compose?re={encodeURIComponent(msg.id)}&inbox={name}">Reply</a>
-										{#if msg.to.length + (msg.cc?.length ?? 0) > 1}
-											<a class="action-btn reply" href="#/compose?re={encodeURIComponent(msg.id)}&inbox={name}&all=1">Reply All</a>
-										{/if}
-										<button class="action-btn archive" onclick={() => archiveMessage(msg.id)}>Archive</button>
-										<button class="action-btn delete" onclick={() => deleteMessage(msg.id)}>Delete</button>
-									</div>
-								</div>
-							{/if}
-						</div>
-					{/each}
-				</div>
-			{/if}
-
-			{#if archives.length > 0}
-				<button class="toggle-archives" onclick={() => showArchives = !showArchives}>
-					{showArchives ? 'Hide' : 'Show'} archives ({archives.length})
-				</button>
-				{#if showArchives}
-					<div class="messages archives">
-						{#each archives as msg}
-							{@const full = msgCache[msg.id]}
-							<div class="message">
-								<button class="message-header" onclick={() => toggleExpand(msg.id)}>
-									<span class="msg-subject">{msg.subject || '(no subject)'}</span>
-									<span class="msg-from">{msg.from}</span>
-									<span class="msg-date">{msg.sentAt ? new Date(msg.sentAt).toLocaleString() : ''}</span>
-									{#if msg.supersededBy}
-										<span class="msg-superseded" title="Replaced by a later consolidated message">superseded</span>
-									{/if}
-									{#if msg.supersedes?.length}
-										<span class="msg-supersedes" title="Consolidates {msg.supersedes.length} earlier message{msg.supersedes.length === 1 ? '' : 's'}">
-											supersedes {msg.supersedes.length}
-										</span>
-									{/if}
-									<span class="msg-toggle">{expandedMsg === msg.id ? '▼' : '▶'}</span>
-								</button>
-								{#if expandedMsg === msg.id}
-									<div class="message-body">
-										{#if full}
-											<pre class="msg-text">{full.body}</pre>
-										{:else}
-											<div class="empty">Loading...</div>
-										{/if}
-										<div class="msg-actions">
-											<button class="action-btn delete" onclick={() => deleteArchive(msg.id)}>Delete</button>
-										</div>
-									</div>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			{/if}
+		{#if tab === 'messages'}
+			<Mailbox {name} oncounts={(c) => (mailCounts = c)} />
 
 		{:else if tab === 'todos'}
 			<div class="add-form">
@@ -690,129 +542,6 @@ async function deleteMember() {
 		padding: 1rem;
 	}
 	.empty { text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic; }
-
-	.messages { display: flex; flex-direction: column; gap: 0.5rem; }
-	.message {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-	.message-header {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		padding: 0.75rem 1rem;
-		width: 100%;
-		text-align: left;
-		transition: background var(--transition);
-		font-size: 0.875rem;
-	}
-	.message-header:hover { background: var(--bg); }
-	.msg-subject { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.msg-from { color: var(--text-muted); font-size: 0.8rem; }
-	.msg-date { color: var(--text-muted); font-size: 0.8rem; }
-	.msg-project {
-		font-size: 0.7rem;
-		font-weight: 600;
-		padding: 0.06rem 0.4rem;
-		border-radius: 99px;
-		background: var(--primary-subtle);
-		color: var(--primary);
-	}
-	.msg-thread {
-		font-size: 0.7rem;
-		font-weight: 600;
-		padding: 0.06rem 0.4rem;
-		border-radius: 99px;
-		background: var(--bg);
-		color: var(--text-muted);
-		border: 1px solid var(--border);
-	}
-	.msg-supersedes {
-		font-size: 0.7rem;
-		font-weight: 600;
-		padding: 0.06rem 0.4rem;
-		border-radius: 99px;
-		background: var(--warning-subtle, var(--bg));
-		color: var(--warning, var(--text-muted));
-		border: 1px solid var(--warning, var(--border));
-	}
-	.msg-superseded {
-		font-size: 0.7rem;
-		font-weight: 600;
-		padding: 0.06rem 0.4rem;
-		border-radius: 99px;
-		background: var(--bg);
-		color: var(--text-light);
-		border: 1px dashed var(--border);
-		text-decoration: line-through;
-	}
-	.msg-meta {
-		display: flex;
-		gap: 1rem;
-		font-size: 0.75rem;
-		color: var(--text-muted);
-		padding-top: 0.75rem;
-	}
-	.parent-block {
-		margin-top: 0.75rem;
-		padding: 0.5rem 0.75rem;
-		background: var(--bg);
-		border-left: 2px solid var(--border);
-		border-radius: var(--radius);
-	}
-	.parent-label {
-		font-size: 0.7rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		margin-bottom: 0.25rem;
-	}
-	.parent-meta {
-		display: flex;
-		gap: 0.75rem;
-		font-size: 0.75rem;
-		margin-bottom: 0.25rem;
-	}
-	.msg-text.parent { font-size: 0.8rem; color: var(--text-muted); }
-	.msg-toggle { margin-left: auto; color: var(--text-light); }
-	.message-body {
-		padding: 0 1rem 1rem;
-		border-top: 1px solid var(--border);
-	}
-	.msg-text {
-		font-family: var(--font);
-		font-size: 0.875rem;
-		line-height: 1.6;
-		white-space: pre-wrap;
-		word-wrap: break-word;
-		padding: 0.75rem 0;
-	}
-	.msg-actions { display: flex; gap: 0.5rem; }
-	.action-btn {
-		padding: 0.375rem 0.75rem;
-		border-radius: var(--radius);
-		font-size: 0.8rem;
-		font-weight: 600;
-		transition: all var(--transition);
-		text-decoration: none;
-	}
-	.action-btn.reply { background: var(--primary-subtle); color: var(--primary); }
-	.action-btn.reply:hover { background: var(--primary); color: var(--on-primary); }
-	.action-btn.archive { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border); }
-	.action-btn.archive:hover { background: var(--bg); color: var(--text); }
-	.action-btn.delete { color: var(--danger); }
-	.action-btn.delete:hover { background: var(--danger-subtle); }
-
-	.toggle-archives {
-		margin-top: 1rem;
-		font-size: 0.8rem;
-		color: var(--text-muted);
-		padding: 0.375rem 0;
-	}
-	.toggle-archives:hover { color: var(--text); }
-	.archives { margin-top: 0.5rem; opacity: 0.7; }
 
 	.todo-group { margin-bottom: 1.25rem; }
 	.todo-group:last-child { margin-bottom: 0; }

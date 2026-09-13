@@ -40,6 +40,52 @@ export interface Message {
 	parent?: Message;
 }
 
+export type MailBox = 'inbox' | 'sent' | 'archives';
+
+/** One message inside a thread group. No body — bodies load when the thread opens. */
+export interface ThreadMessage {
+	id: string;
+	from: string;
+	to: string[];
+	cc?: string[];
+	subject: string;
+	sentAt: string;
+	replyTo?: string;
+	projectCode?: string;
+	supersedes?: string[];
+	supersededBy?: string;
+	/** Which of the viewed member's mailboxes hold this id. Empty = ancestor shown for context. */
+	boxes: MailBox[];
+	/** Reply distance from the root of its own chain, for indentation. */
+	depth: number;
+}
+
+/** Messages sharing a subject, with their reply chains resolved through the master store. */
+export interface Thread {
+	id: string;
+	subject: string;
+	participants: string[];
+	projectCodes: string[];
+	messageCount: number;
+	inboxCount: number;
+	sentCount: number;
+	archiveCount: number;
+	firstAt: string;
+	lastAt: string;
+	lastFrom: string;
+	preview: string;
+	messages: ThreadMessage[];
+}
+
+/** Thread counts per mailbox filter, plus the raw inbox message count for the tab badge. */
+export interface MailboxCounts {
+	inbox: number;
+	sent: number;
+	archives: number;
+	all: number;
+	inboxMessages: number;
+}
+
 export interface MessagingInfo {
 	adapter: string;
 }

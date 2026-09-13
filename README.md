@@ -664,6 +664,39 @@ npm run dev
 
 The dashboard starts on `http://localhost:3003` by default.
 
+### Messages view
+
+A member's **Messages** tab is a threaded mail reader, not a flat list. The
+protocol stores threads as backward `replyTo` chains with no thread object
+(see `teamos/docs/messages.md`), which is right for agents and unreadable for
+people — a working inbox is ninety rows of `Re: ...` whose parents sit in
+`sent.json` or `archives.json`. The dashboard resolves that shape at read time:
+
+- **One subject, one row.** Chains are walked back through the master store —
+  ancestors are pulled in even when they live in none of *your* mailboxes, and
+  shown greyed as context — then chains sharing a root subject fold into one
+  conversation. Nate's 91-message inbox reads as 38 conversations.
+- **Inbox / Sent / Archived / All** filter the same conversation list; the chip
+  counts are conversations, the tab badge is unhandled inbox messages. A
+  conversation you sent *and* received in appears in both, whole either way.
+- **The reply tree is the reading order.** Replies indent under what they
+  answer; a collapsed row shows sender, your role (`to you` / `cc you` /
+  `you sent`), and either a body snippet or — when a reply renamed the subject
+  mid-thread — the new subject in italics. The newest message opens by default,
+  as does unhandled inbox mail while there is little enough of it to still read
+  as a thread.
+- **Superseded messages** stay visible in-thread with their marker rather than
+  vanishing; `supersedes` / `supersededBy` are rendered as badges.
+
+Archive, unarchive, delete, reply and reply-all act on a single message;
+**Archive thread** clears every unhandled message in the conversation at once.
+Deep links (`#/member/<name>?msg=<id>`) select the containing conversation and
+scroll to that message.
+
+Grouping is served by `GET /api/members/:name/threads` and bodies by
+`POST /api/messages/batch` — both dashboard-only views over the same adapter,
+adding nothing to the agent-facing contract.
+
 ### Identity ("Me")
 
 On first launch, the dashboard prompts you to select your identity from the member list. This determines:
