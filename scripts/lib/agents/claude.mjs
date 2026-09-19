@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 /**
  * Format Claude stream-json lines to readable text.
  * Returns { text, done? } — when done is true the agent has emitted its
@@ -65,7 +68,14 @@ export function formatClaudeJsonLine(line) {
  * Claude CLI agent adapter.
  * Returns { cmd, args, formatStream } for spawning.
  */
-export function createClaudeAdapter(instructionFile) {
+export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
+	// Load the project's `.mcp.json` explicitly rather than relying on the
+	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
+	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
+	// across CLI versions — a cycle without it silently loses teamos-tools and
+	// any other project server. `--mcp-config` is variadic, so it must precede
+	// another flag rather than the trailing prompt string.
+	const mcpConfig = cwd ? join(cwd, '.mcp.json') : null;
 	return {
 		cmd: 'claude',
 		args: [
@@ -77,6 +87,7 @@ export function createClaudeAdapter(instructionFile) {
 			'stream-json',
 			'--effort',
 			'xhigh',
+			...(mcpConfig && existsSync(mcpConfig) ? ['--mcp-config', mcpConfig] : []),
 			'--append-system-prompt-file',
 			instructionFile,
 			'Execute the member cycle as described in the appended system prompt.',
