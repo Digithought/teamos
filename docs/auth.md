@@ -22,6 +22,8 @@ This is **not** a standalone auth system. With `trustProxy: true`, anyone who ca
 
 Default is `false`. Opt in per deployment.
 
+Since the dashboard grew **chat** (`teamos/docs/chat.md`), reaching the port no longer only means reading team state and sending mail — it means spawning agent processes on the host, with `--dangerously-skip-permissions`, as cycles do. The binding rule above is unchanged but now load-bearing: tailnet or proxy-only interface, never a public one.
+
 ## Configuration
 
 Add an `auth` block to `teamos.config.json`:

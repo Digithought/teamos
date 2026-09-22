@@ -59,12 +59,16 @@ teamos/
 │       ├── watches/
 │       │   ├── index.mjs        # Interface + factory
 │       │   └── file.mjs         # File-backed watched.json adapter + probe runner
+│       ├── chat/
+│       │   ├── prompt.mjs       # Chat prompt assembly + transcript rendering
+│       │   └── session.mjs      # Live chat sessions for the dashboard
 │       └── sync/
 │           ├── index.mjs        # Interface + factory
 │           ├── git.mjs          # Git add/commit/push (default)
 │           └── s3.mjs           # S3-compatible sync (Tigris, MinIO)
 ├── agent-rules/
 │   ├── cycle.md                 # Rules for member cycle agents
+│   ├── chat.md                  # Rules for interactive chat sessions
 │   ├── clerk.md                 # Rules for clerk agent
 │   ├── clerk-efficiency.md      # Rules for weekly efficiency analysis
 │   ├── daily-checkin.md         # Rules for daily check-in
@@ -507,7 +511,19 @@ Adapters can be configured via `teamos.config.json` at the project root, with CL
   "watches": { "adapter": "file" },
   "probes": {},
   "sync": { "adapter": "git" },
-  "agent": "claude"
+  "agent": "claude",
+  "chat": { "agent": "claude", "env": {} }
+}
+```
+
+The `chat` section configures the dashboard's live chat with a member (see `teamos/docs/chat.md`). `chat.agent` defaults to the top-level `agent`; `chat.env` layers env vars over the inherited environment for chat spawns only, so conversation tokens can be billed to a different Claude account than the automated cycles:
+
+```json
+{
+  "chat": {
+    "agent": "claude",
+    "env": { "CLAUDE_CODE_OAUTH_TOKEN": "$TEAMOS_CHAT_OAUTH_TOKEN" }
+  }
 }
 ```
 
@@ -729,6 +745,14 @@ scroll to that message.
 Grouping is served by `GET /api/members/:name/threads` and bodies by
 `POST /api/messages/batch` — both dashboard-only views over the same adapter,
 adding nothing to the agent-facing contract.
+
+### Chat with a member
+
+A member's **Chat** tab holds a live conversation with that member. Starting a chat spawns a fresh agent with the same context a cycle gets — profile, state, todos, schedule, inbox — minus the "do a unit of work now" framing. It does **not** attach to a running cycle, and it does not defer one: scheduled cycles keep their cadence while a chat is open, and the pane shows a banner when one is in flight.
+
+Chat is read-everything, write-narrow. The session can read anything and writes exactly one thing: when you end the chat, the whole transcript is filed as a message to the member's inbox. Anything you agree on therefore happens on the member's **next cycle**, not immediately — the file adapters have no locking, so a chat that wrote directly would silently clobber a concurrent cycle. `teamos/docs/chat.md` has the full design, the account configuration, and the failure modes.
+
+Because chat spawns agent processes, the dashboard's binding is now load-bearing: keep the port on a tailnet or behind the auth proxy, never on a public interface. See **Authentication** below and `teamos/docs/auth.md`.
 
 ### Identity ("Me")
 
