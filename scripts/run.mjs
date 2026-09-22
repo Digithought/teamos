@@ -13,6 +13,7 @@
  *   --messaging <name>   Messaging adapter: file                  (default: file)
  *   --tasks <name>       Tasks adapter: file                      (default: file)
  *   --schedule <name>    Schedule adapter: file                   (default: file)
+ *   --watches <name>     Watches adapter: file                     (default: file)
  *   --sync <name>        Sync adapter: git | s3                   (default: git)
  *   --priority <level>   Highest priority to include              (default: pressing)
  *   --member <name>      Only run cycles for a specific member
@@ -55,6 +56,7 @@ import { idleWait, loadSchedulerState, saveSchedulerState } from './lib/state.mj
 import { createSyncAdapter } from './lib/sync/index.mjs';
 import { createTasksAdapter } from './lib/tasks/index.mjs';
 import { createTriggersAdapter } from './lib/triggers/index.mjs';
+import { createWatchesAdapter } from './lib/watches/index.mjs';
 import { buildLogPath, checkStop, ensureLogsDir, pathExists, waitWhilePaused } from './lib/util.mjs';
 import {
 	ensureDailyCheckinEvents,
@@ -99,6 +101,7 @@ function printHelp() {
 		'  --tasks <name>       file                                 (default: file)',
 		'  --schedule <name>    file                                 (default: file)',
 		'  --triggers <name>    file                                 (default: file)',
+		'  --watches <name>     file                                 (default: file)',
 		'  --sync <name>        git | s3                             (default: git)',
 		'  --priority <level>   Highest priority to include           (default: pressing)',
 		'  --member <name>      Only run cycles for a specific member',
@@ -129,6 +132,7 @@ function parseArgs(argv) {
 		tasks: null, // resolved from config if not set
 		schedule: null, // resolved from config if not set
 		triggers: null, // resolved from config if not set
+		watches: null, // resolved from config if not set
 		sync: null, // resolved from config if not set
 		priority: 'pressing',
 		member: null,
@@ -164,6 +168,9 @@ function parseArgs(argv) {
 				break;
 			case '--triggers':
 				opts.triggers = argv[++i];
+				break;
+			case '--watches':
+				opts.watches = argv[++i];
 				break;
 			case '--sync':
 				opts.sync = argv[++i];
@@ -302,6 +309,7 @@ async function main() {
 	if (!opts.tasks) opts.tasks = config.tasks?.adapter || 'file';
 	if (!opts.schedule) opts.schedule = config.schedule?.adapter || 'file';
 	if (!opts.triggers) opts.triggers = config.triggers?.adapter || 'file';
+	if (!opts.watches) opts.watches = config.watches?.adapter || 'file';
 	if (!opts.sync) opts.sync = config.sync?.adapter || 'git';
 
 	// ── Create adapters ──────────────────────────────────────────────────────
@@ -313,6 +321,7 @@ async function main() {
 	const tasksAdapter = await createTasksAdapter(opts.tasks, config, teamDir);
 	const scheduleAdapter = await createScheduleAdapter(opts.schedule, config, teamDir);
 	const triggersAdapter = await createTriggersAdapter(opts.triggers, config, teamDir, repoRoot);
+	const watchesAdapter = await createWatchesAdapter(opts.watches, config, teamDir, repoRoot);
 
 	// ── Load members ─────────────────────────────────────────────────────────
 	const allMembers = await loadMembers(teamDir);
@@ -366,6 +375,7 @@ async function main() {
 			tasksAdapterName: opts.tasks,
 			scheduleAdapterName: opts.schedule,
 			triggersAdapterName: opts.triggers,
+			watchesAdapterName: opts.watches,
 		});
 
 		if (clerkExit !== 0) {
@@ -387,7 +397,7 @@ async function main() {
 		console.log(`\nteamos (${version})`);
 		console.log(`Active AI members: ${members.map((m) => m.name).join(', ')}\n`);
 		console.log(
-			`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`,
+			`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Watches: ${opts.watches} | Sync: ${opts.sync}`,
 		);
 
 		const weightStr = Object.entries(opts.weights)
@@ -402,6 +412,11 @@ async function main() {
 			.join(', ');
 		console.log(`  Weights: ${weightStr}`);
 		console.log(`  Cadences: ${cadenceStr}`);
+
+		// Poll watches so a dry run reports the same work a real pass would.
+		for (const member of members) {
+			await watchesAdapter.poll(member.name).catch(() => {});
+		}
 
 		const logsDir = await ensureLogsDir(teamDir);
 		const state = await loadSchedulerState(logsDir);
@@ -420,6 +435,7 @@ async function main() {
 				scheduleAdapter,
 				tasksAdapter,
 				triggersAdapter,
+				watchesAdapter,
 			);
 			if (withWork.length > 0) {
 				console.log(`  [${priority}]`);
@@ -452,7 +468,7 @@ async function main() {
 		'═'.repeat(72),
 		`  teamos (${version})${opts.loop ? ' [loop mode]' : ' [single pass]'}`,
 		`  ${members.length} active AI member(s): ${members.map((m) => m.name).join(', ')}`,
-		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Sync: ${opts.sync}`,
+		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Watches: ${opts.watches} | Sync: ${opts.sync}`,
 		`  Weights: ${weightStr}`,
 		`  Cadences: ${cadenceStr}`,
 		budgetStr ? `  Budgets: ${budgetStr}` : null,
@@ -504,6 +520,7 @@ async function main() {
 				tasksAdapter,
 				scheduleAdapter,
 				triggersAdapter,
+				watchesAdapter,
 			});
 
 			// Post-pass maintenance
@@ -542,8 +559,10 @@ async function main() {
 					members,
 					schedulerState.lastServedAt,
 					opts.cadences,
-					(m, p, t) => getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter),
+					(m, p, t) =>
+						getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter, watchesAdapter),
 					syncAdapter ? { syncAdapter, workDir: repoRoot, intervalMs: opts.remotePullMs } : null,
+					watchesAdapter,
 				);
 				if (reason === 'stop') {
 					console.log('\n[runner] Stop file detected — exiting loop.');
@@ -574,6 +593,7 @@ async function main() {
 			tasksAdapter,
 			scheduleAdapter,
 			triggersAdapter,
+			watchesAdapter,
 		});
 
 		await runMaintenance({

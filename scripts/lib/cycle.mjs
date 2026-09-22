@@ -136,6 +136,36 @@ async function buildCommitTriggersSection(member, triggersAdapter) {
 	return matches.map(formatCommitMatchForPrompt).join('\n');
 }
 
+function formatWatchObservationForPrompt(obs) {
+	const lines = [];
+	const label =
+		obs.status === 'error'
+			? 'PROBE ERROR'
+			: obs.status === 'hit'
+				? 'hit'
+				: obs.status === 'clear'
+					? 'cleared'
+					: 'changed';
+	const was = obs.previousStatus && obs.previousStatus !== obs.status ? `, was ${obs.previousStatus}` : '';
+	lines.push(`- \`${obs.probe}\` **${label}**${obs.reason ? ` — ${obs.reason}` : ''}  \`(id: ${obs.watchId})\``);
+	lines.push(
+		`    priority: ${obs.priority}  observed: ${obs.observedAt}${obs.exitCode != null ? `  exit: ${obs.exitCode}` : ''}${was}`,
+	);
+	if (obs.error) lines.push(`    probe did not run: ${obs.error}`);
+	const out = (obs.output ?? '').split('\n').filter((l) => l.trim());
+	const shown = out.slice(0, 10);
+	for (const l of shown) lines.push(`    ${l}`);
+	if (out.length > shown.length) lines.push(`    _…and ${out.length - shown.length} more line(s)_`);
+	return lines.join('\n');
+}
+
+async function buildWatchesSection(member, watchesAdapter) {
+	if (!watchesAdapter) return null;
+	const observations = await watchesAdapter.pendingObservations(member).catch(() => []);
+	if (observations.length === 0) return null;
+	return observations.map(formatWatchObservationForPrompt).join('\n');
+}
+
 export async function buildCyclePrompt(
 	member,
 	priority,
@@ -144,6 +174,7 @@ export async function buildCyclePrompt(
 	tasksAdapter,
 	scheduleAdapter,
 	triggersAdapter,
+	watchesAdapter,
 ) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
@@ -159,6 +190,7 @@ export async function buildCyclePrompt(
 		todosText,
 		scheduleSections,
 		triggersSection,
+		watchesSection,
 	] = await Promise.all([
 		readTextOrEmpty(rulesFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
@@ -170,6 +202,7 @@ export async function buildCyclePrompt(
 		buildTodoSection(member.name, tasksAdapter),
 		buildScheduleSections(member.name, scheduleAdapter),
 		buildCommitTriggersSection(member.name, triggersAdapter),
+		buildWatchesSection(member.name, watchesAdapter),
 	]);
 
 	const parts = [
@@ -229,6 +262,17 @@ export async function buildCyclePrompt(
 		);
 	}
 
+	if (watchesSection) {
+		parts.push(
+			'',
+			'## Watches Fired',
+			'',
+			'A probe you watch changed state. These are host-side conditions — no message, todo, event or commit reports them. Handle them as part of this cycle; they are acknowledged only when this cycle succeeds.',
+			'',
+			watchesSection,
+		);
+	}
+
 	const inboxSection = await buildInboxSection(member.name, messagingAdapter);
 	parts.push(...inboxSection);
 
@@ -267,6 +311,7 @@ export async function runCycle({
 	tasksAdapter,
 	scheduleAdapter,
 	triggersAdapter,
+	watchesAdapter,
 }) {
 	let memberRuns = 0;
 	let lastError = null;
@@ -337,9 +382,10 @@ export async function runCycle({
 			tasksAdapter,
 			scheduleAdapter,
 			triggersAdapter,
+			watchesAdapter,
 		);
 		const mcpContext =
-			messagingAdapter || tasksAdapter || scheduleAdapter || triggersAdapter
+			messagingAdapter || tasksAdapter || scheduleAdapter || triggersAdapter || watchesAdapter
 				? {
 						teamDir,
 						memberName: member.name,
@@ -347,6 +393,7 @@ export async function runCycle({
 						tasksAdapterName: opts.tasks,
 						scheduleAdapterName: opts.schedule,
 						triggersAdapterName: opts.triggers,
+						watchesAdapterName: opts.watches,
 					}
 				: undefined;
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext);
@@ -368,6 +415,11 @@ export async function runCycle({
 			if (triggersAdapter && headAtStart) {
 				await triggersAdapter.acknowledgeHead(member.name, headAtStart).catch((err) => {
 					console.error(`[runner] triggers.acknowledgeHead failed for ${member.name}: ${err.message}`);
+				});
+			}
+			if (watchesAdapter) {
+				await watchesAdapter.acknowledgeObservations(member.name).catch((err) => {
+					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}
 		}
@@ -405,6 +457,7 @@ export async function runPass({
 	tasksAdapter,
 	scheduleAdapter,
 	triggersAdapter,
+	watchesAdapter,
 }) {
 	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
 	const weights = opts.weights;
@@ -431,6 +484,16 @@ export async function runPass({
 	}
 
 	while (cycleCount < opts.maxCycles) {
+		// Probe host-side conditions before scanning for work. The adapter
+		// throttles itself, so calling this every cycle is cheap.
+		if (watchesAdapter) {
+			for (const member of members) {
+				await watchesAdapter.poll(member.name).catch((err) => {
+					console.error(`[runner] watches.poll failed for ${member.name}: ${err.message}`);
+				});
+			}
+		}
+
 		if (useTimeout && Date.now() - startTime >= MAX_RUN_MS) {
 			return { cycleCount, totalMemberRuns, stopped: false, timedOut: true, passErrors };
 		}
@@ -456,6 +519,7 @@ export async function runPass({
 				scheduleAdapter,
 				tasksAdapter,
 				triggersAdapter,
+				watchesAdapter,
 			);
 			if (membersWithWork.length > 0) {
 				candidates.push({ priority, members: membersWithWork });
@@ -506,6 +570,7 @@ export async function runPass({
 			tasksAdapter,
 			scheduleAdapter,
 			triggersAdapter,
+			watchesAdapter,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);

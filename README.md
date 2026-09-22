@@ -14,6 +14,7 @@ The runner provides full context — organization docs, news, projects, and the 
 - **Messaging** — File-backed master store exposed to agents over MCP (see `teamos/docs/messages.md`). The contract is designed so a future SMTP/IMAP adapter could drop in without changing the agent contract.
 - **Tasks** — File-backed per-member todo list exposed to agents over MCP (see `teamos/docs/tasks.md`). A future GitHub Issues / Linear / Jira adapter can drop in against the same tool surface.
 - **Triggers** — File-backed per-member commit subscriptions that wake a member when new host-repo commits match path globs, author, or commit-message patterns (see `teamos/docs/triggers.md`). A future GitHub webhook adapter can drop in against the same tool surface.
+- **Watches** — File-backed per-member subscriptions to named host-side probes registered by humans in `teamos.config.json`; a member wakes when a probe's result *changes* (see `teamos/docs/watches.md`). Covers conditions no message, todo, event or commit reports — a supervisor that exited, a queue that drained.
 - **Sync** — Git commit/push (default) or S3-compatible storage (Tigris, MinIO)
 - **Agent** — Claude Code CLI (default, works headless), Cursor, or Augment (local only)
 
@@ -55,6 +56,9 @@ teamos/
 │       ├── triggers/
 │       │   ├── index.mjs        # Interface + factory
 │       │   └── file.mjs         # File-backed triggers.json adapter + git log scan
+│       ├── watches/
+│       │   ├── index.mjs        # Interface + factory
+│       │   └── file.mjs         # File-backed watched.json adapter + probe runner
 │       └── sync/
 │           ├── index.mjs        # Interface + factory
 │           ├── git.mjs          # Git add/commit/push (default)
@@ -92,6 +96,7 @@ team/
 │       ├── todo.json        # Task list
 │       ├── schedule.json
 │       ├── triggers.json    # Commit-trigger subscriptions + last-seen SHA
+│       ├── watched.json     # Watch subscriptions + last acknowledged probe result
 │       ├── inbox.json       # { items: [<messageId>, ...] } — current mail
 │       ├── sent.json        # { items: [...] } — what this member has sent
 │       └── archives.json    # { items: [...] } — handled / archived mail
@@ -208,6 +213,7 @@ node teamos/scripts/run.mjs --no-commit
 | `--tasks <name>` | `file` | Tasks adapter: `file` |
 | `--schedule <name>` | `file` | Schedule adapter: `file` |
 | `--triggers <name>` | `file` | Triggers adapter: `file` |
+| `--watches <name>` | `file` | Watches adapter: `file` |
 | `--sync <name>` | `git` | Sync adapter: `git` or `s3` |
 | `--priority <level>` | `pressing` | Highest priority to include |
 | `--member <name>` | — | Only run cycles for a specific member |
@@ -352,6 +358,7 @@ A member is given a cycle when any of these are true:
 - They have **todo items** at or above the current priority level (checked via the tasks adapter's `hasActionableTodos` contract)
 - They have **schedule events** that are due
 - They have **commit triggers** matching new host-repo commits at or above the current priority level (checked via the triggers adapter's `hasPendingMatches` contract — see `teamos/docs/triggers.md`)
+- They have **watches** whose probe result changed since they were last woken, at or above the current priority level (checked via the watches adapter's `hasPendingObservations` contract — see `teamos/docs/watches.md`)
 
 ## Cycle Behavior
 
@@ -415,7 +422,8 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 9. **Your TODOs** — `team/members/<you>/todo.json` (read-only; mutate via the task MCP tools — see `teamos/docs/tasks.md`)
 10. **Your schedule** — `team/members/<you>/schedule.json`
 11. **Your triggers** — `team/members/<you>/triggers.json` (read-only; mutate via the trigger MCP tools — see `teamos/docs/triggers.md`)
-12. **Your inbox** — ids listed in `team/members/<you>/inbox.json`, with bodies in `team/messages/<id>.md`
+12. **Your watches** — `team/members/<you>/watched.json` (read-only; mutate via the watch MCP tools — see `teamos/docs/watches.md`)
+13. **Your inbox** — ids listed in `team/members/<you>/inbox.json`, with bodies in `team/messages/<id>.md`
 
 The runner also passes a header with the current priority level and timestamp. When working interactively, default to priority `pressing` and follow the priority levels as described above.
 
@@ -459,6 +467,14 @@ Legacy `schedule.json` files (missing ids, using the old `recurring: true` flag 
 
 All adapters implement the stable MCP contract documented in `teamos/docs/triggers.md`: `list_triggers`, `add_trigger`, `update_trigger`, `remove_trigger`. A future GitHub / GitLab webhook adapter can drop in without changing the agent contract — the contract treats ids as opaque strings and exposes no repo-specific machinery.
 
+### Watches Adapters
+
+| Adapter | Flag | Description |
+|---|---|---|
+| `file` | `--watches file` | Per-member subscriptions at `team/members/<name>/watched.json`. Between cycles the adapter runs each watch's named probe — registered by humans under `probes` in `teamos.config.json`, never supplied by the agent — and records the result. A member is woken when a probe's result *changes* (edge-triggered), at the watch's priority, subject to a per-watch cooldown. The acknowledged result advances on successful cycle completion (at-least-once semantics). |
+
+All adapters implement the stable MCP contract documented in `teamos/docs/watches.md`: `list_watches`, `add_watch`, `remove_watch`. A future push-based adapter (an alerting system posting events) can drop in without changing the agent contract — the contract treats ids as opaque strings and never lets an agent name a command.
+
 ### Sync Adapters
 
 | Adapter | Flag | Description |
@@ -488,8 +504,25 @@ Adapters can be configured via `teamos.config.json` at the project root, with CL
   "tasks": { "adapter": "file" },
   "schedule": { "adapter": "file" },
   "triggers": { "adapter": "file" },
+  "watches": { "adapter": "file" },
+  "probes": {},
   "sync": { "adapter": "git" },
   "agent": "claude"
+}
+```
+
+Watch probes are registered in the same file — see `teamos/docs/watches.md` for the field reference:
+```json
+{
+  "probes": {
+    "runner-alive": {
+      "description": "Exit 0 if the named runner's supervisor unit is running",
+      "command": "systemctl",
+      "args": ["is-active", "--quiet", "teamos-{{runner}}"],
+      "params": ["runner"],
+      "timeoutMs": 5000
+    }
+  }
 }
 ```
 

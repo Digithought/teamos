@@ -3,6 +3,8 @@
 	"tasks": { "adapter": "file" },
 	"schedule": { "adapter": "file" },
 	"triggers": { "adapter": "file" },
+	"watches": { "adapter": "file" },
+	"probes": {},
 	"sync": { "adapter": "git" },
 	"agent": "claude",
 	"auth": {

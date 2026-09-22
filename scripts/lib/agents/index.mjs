@@ -66,6 +66,7 @@ function buildMcpEnv(mcpContext) {
 		TEAMOS_TASKS_ADAPTER: mcpContext.tasksAdapterName || 'file',
 		TEAMOS_SCHEDULE_ADAPTER: mcpContext.scheduleAdapterName || 'file',
 		TEAMOS_TRIGGERS_ADAPTER: mcpContext.triggersAdapterName || 'file',
+		TEAMOS_WATCHES_ADAPTER: mcpContext.watchesAdapterName || 'file',
 	};
 }
 

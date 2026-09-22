@@ -160,6 +160,13 @@ export function buildToolsPromptSection(role) {
 		'- **remove_trigger** — Unsubscribe by removing a trigger.',
 		'',
 		'Commits authored by you are skipped by default. The runner advances your cursor after a successful cycle — you never see the same commit twice.',
+		'',
+		`**Watches** — see \`teamos/docs/watches.md\`. Subscribe yourself to a named probe (a small command the humans registered in \`teamos.config.json\`) so host-side conditions — a runner that exited, a queue that drained — wake you. Probes that changed state appear in the cycle prompt under "Watches Fired".`,
+		'- **list_watches** — Fetch your watch subscriptions plus the probes registered on this host.',
+		'- **add_watch** — Subscribe to a probe (`probe`, `priority`, optional `fires`, `exitCode`, `params`, `reason`, `cooldownMinutes`). Returns `{ id }`.',
+		'- **remove_watch** — Unsubscribe by removing a watch.',
+		'',
+		'You cannot supply a command — only a registered probe name, and an unknown name is an error. Watches are **edge-triggered**: you are woken when a probe result changes, not for as long as the condition holds, so a condition that stays true costs you exactly one cycle.',
 	);
 
 	return lines;

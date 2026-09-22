@@ -16,9 +16,10 @@
  *   TEAMOS_TASKS_ADAPTER     — tasks adapter name     (default: file)
  *   TEAMOS_SCHEDULE_ADAPTER  — schedule adapter name  (default: file)
  *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
+ *   TEAMOS_WATCHES_ADAPTER   — watches adapter name       (default: file)
  *
  * Every tool accepts an optional `member` argument identifying the team member
- * whose mailbox / todos / schedule / triggers the call operates against. When
+ * whose mailbox / todos / schedule / triggers / watches the call operates against. When
  * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. This makes the same
  * server process usable by any member — the runner sets the env var per-cycle
  * so existing agent behavior is unchanged, while interactive sessions can act
@@ -27,9 +28,11 @@
 
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { loadConfig } from '../config.mjs';
 import { FileScheduleAdapter } from '../schedule/file.mjs';
 import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileTriggersAdapter } from '../triggers/file.mjs';
+import { FileWatchesAdapter } from '../watches/file.mjs';
 import { FileMessagingAdapter } from './file.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
@@ -53,6 +56,7 @@ const messagingAdapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
 const tasksAdapterName = process.env.TEAMOS_TASKS_ADAPTER || 'file';
 const scheduleAdapterName = process.env.TEAMOS_SCHEDULE_ADAPTER || 'file';
 const triggersAdapterName = process.env.TEAMOS_TRIGGERS_ADAPTER || 'file';
+const watchesAdapterName = process.env.TEAMOS_WATCHES_ADAPTER || 'file';
 
 // The triggers adapter runs `git` in the repo root. The team dir is always
 // team/ under the repo, so repoRoot is its parent.
@@ -98,10 +102,25 @@ function makeTriggersAdapter(name) {
 	}
 }
 
+// The probe registry is host-owned and lives in teamos.config.json — an agent
+// can subscribe to a probe but can never define one.
+const config = await loadConfig(repoRoot);
+
+function makeWatchesAdapter(name) {
+	switch (name) {
+		case 'file':
+			return new FileWatchesAdapter(teamDir, repoRoot, config.probes);
+		default:
+			process.stderr.write(`[mcp-server] Unknown watches adapter: ${name}\n`);
+			process.exit(1);
+	}
+}
+
 const adapter = makeMessagingAdapter(messagingAdapterName);
 const tasks = makeTasksAdapter(tasksAdapterName);
 const schedule = makeScheduleAdapter(scheduleAdapterName);
 const triggers = makeTriggersAdapter(triggersAdapterName);
+const watches = makeWatchesAdapter(watchesAdapterName);
 
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -433,6 +452,60 @@ const BASE_TOOLS = [
 			required: ['id'],
 		},
 	},
+	{
+		name: 'list_watches',
+		description:
+			'List every watch on your subscription list, each with the probe it references and its current acknowledged state. A watch wakes you when a named host-side probe CHANGES result — not while the condition merely stays true. The cycle prompt already lists any watch that fired; call this to audit your subscriptions and to see which probes are registered.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+	{
+		name: 'add_watch',
+		description:
+			'Subscribe yourself to a named probe registered by the humans in teamos.config.json. Use this for host-side conditions no message, todo, event or commit reports — a runner that exited, a queue that drained, a mount that went away. You cannot supply a command: pass a probe name (an unknown name is an error) plus any parameters that probe declares. You are woken on TRANSITION, so a condition that stays true costs you exactly one cycle.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				probe: { type: 'string', description: 'Name of a probe registered under `probes` in teamos.config.json' },
+				priority: {
+					type: 'string',
+					enum: ['pressing', 'today', 'thisWeek', 'later'],
+					description: 'Priority at which a transition wakes you',
+				},
+				fires: {
+					type: 'string',
+					enum: ['nonEmptyOutput', 'exitCode', 'outputChanged'],
+					description:
+						'Hit semantics. nonEmptyOutput (default): the probe printed something. exitCode: the probe exited with `exitCode`. outputChanged: any change in the probe output is a transition.',
+				},
+				exitCode: { type: 'integer', description: 'The exit code that counts as a hit (with fires: "exitCode").' },
+				params: {
+					type: 'object',
+					description: 'Parameters the probe declares, as simple strings. Unknown or missing parameters are an error.',
+					additionalProperties: { type: 'string' },
+				},
+				reason: {
+					type: 'string',
+					description: 'Short note on why you created this watch (appears when you list_watches).',
+				},
+				cooldownMinutes: {
+					type: 'number',
+					description: 'Minimum minutes between wakes from this watch (default 15). Keeps a flapping probe from spamming you.',
+				},
+			},
+			required: ['probe', 'priority'],
+		},
+	},
+	{
+		name: 'remove_watch',
+		description: 'Unsubscribe by removing a watch entirely. Its observation state is discarded with it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'The watch id to remove' },
+			},
+			required: ['id'],
+		},
+	},
 ];
 
 // Inject the optional `member` field into every tool's input schema. Kept out
@@ -580,6 +653,32 @@ async function handleToolCall(name, args) {
 			return textResult(`Removed ${id}`);
 		}
 
+		case 'list_watches':
+			return textResult({
+				watches: await watches.listWatches(resolveMember(args)),
+				registeredProbes: watches.listProbes(),
+			});
+
+		case 'add_watch': {
+			const { probe, priority, fires, exitCode, params, reason, cooldownMinutes } = args;
+			const { id } = await watches.addWatch(resolveMember(args), {
+				probe,
+				priority,
+				fires,
+				exitCode,
+				params,
+				reason,
+				cooldownMinutes,
+			});
+			return textResult({ id });
+		}
+
+		case 'remove_watch': {
+			const { id } = args;
+			await watches.removeWatch(resolveMember(args), id);
+			return textResult(`Removed ${id}`);
+		}
+
 		default:
 			throw { code: -32601, message: `Unknown tool: ${name}` };
 	}
@@ -603,7 +702,7 @@ async function handleMessage(message) {
 			sendResponse(id, {
 				protocolVersion: '2024-11-05',
 				capabilities: { tools: {} },
-				serverInfo: { name: 'teamos-tools', version: '2.2.0' },
+				serverInfo: { name: 'teamos-tools', version: '2.3.0' },
 			});
 			break;
 

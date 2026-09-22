@@ -31,6 +31,7 @@ export async function memberHasWork(
 	scheduleAdapter,
 	tasksAdapter,
 	triggersAdapter,
+	watchesAdapter,
 ) {
 	const memberDir = join(teamDir, 'members', memberName);
 
@@ -78,6 +79,13 @@ export async function memberHasWork(
 		if (await triggersAdapter.hasPendingMatches(memberName, priority)) return true;
 	}
 
+	// Check watches — a probe whose result changed since the member was last
+	// woken counts as work at the watch's priority. Probes are not run here;
+	// the runner polls them between cycles.
+	if (watchesAdapter) {
+		if (await watchesAdapter.hasPendingObservations(memberName, priority)) return true;
+	}
+
 	return false;
 }
 
@@ -89,6 +97,7 @@ export async function getMembersWithWork(
 	scheduleAdapter,
 	tasksAdapter,
 	triggersAdapter,
+	watchesAdapter,
 ) {
 	const results = [];
 	for (const member of members) {
@@ -101,6 +110,7 @@ export async function getMembersWithWork(
 				scheduleAdapter,
 				tasksAdapter,
 				triggersAdapter,
+				watchesAdapter,
 			)
 		) {
 			results.push(member);
