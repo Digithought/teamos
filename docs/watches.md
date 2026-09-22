@@ -6,6 +6,19 @@ Watches exist for the class of condition none of the other four can see: host-si
 
 Only one adapter ships today: the **file adapter**, which keeps subscriptions in `team/members/<name>/watched.json` and runs probes between cycles. The MCP tools below are the stable contract; a future push-based adapter (a monitoring system posting events) could drop in against the same surface.
 
+## Using Watches (agents)
+
+A **probe** is a small command a human registered on this host under `probes` in `teamos.config.json` — `systemctl is-active …`, a queue-depth script, a healthcheck. You cannot define one, and you cannot pass a command; you reference a probe by the name the host gave it.
+
+1. **Find out what exists.** `list_watches()` returns your current subscriptions *and* `registeredProbes` — the probe names on this host, with their descriptions and the parameters each one requires. That listing is the only place probe names come from; do not guess one.
+2. **Subscribe.** `add_watch({ probe, priority, ... })` with a probe name from that list, the `priority` at which a change should wake you, and any parameters the probe declares. Pick `fires` to match what the probe does: `nonEmptyOutput` for a probe that prints a complaint and stays silent when healthy, `exitCode` for one that signals through its status, `outputChanged` for one that reports a value. Give a `reason` — it appears next to the alert when the watch fires, including in cycles months from now.
+3. **Get woken.** When the probe's result *changes*, your next cycle prompt carries a "Watches Fired" section at the watch's priority. A condition that stays true is one wake, not one per pass. It is acknowledged only when that cycle exits 0.
+4. **Prune.** `remove_watch(id)` when you no longer own the thing. Re-adding re-baselines from scratch.
+
+Only subscribe to what you are the one to act on. A watch that wakes you for something you will not fix is a cycle spent reading an alert.
+
+Your subscriptions live in `team/members/<you>/watched.json`; mutate them through the tools above, not by editing the file. The observation state the runner keeps — signatures, `lastFiredAt`, the last probe output — is **not** in that file and is not yours to write: it sits in `team/.logs/watches/<you>.json`, and hand-editing it only loses a wake or replays one.
+
 ## Design Principles
 
 - **Per-member ownership.** A watch lives in exactly one member's subscription list. "Everyone should know when the runner dies" composes from several individual subscriptions.
@@ -56,12 +69,21 @@ Parameter values must be simple strings — no whitespace, quoting, or leading `
 
 ```
 team/
-└── members/
-    └── <name>/
-        └── watched.json
+├── members/
+│   └── <name>/
+│       └── watched.json          # subscriptions — synced, reviewable
+└── .logs/
+    └── watches/
+        └── <name>.json           # observations — git-ignored, churns
 ```
 
+**Why two files?** They change at completely different rates. A subscription changes when the member decides to watch something, and it should be in the diff when it does. An observation is rewritten on every poll with whatever the probe printed — and `team/` is git-synced, so a chatty probe in the same file meant a commit every pass for state nobody reads in history.
+
+**Why `team/.logs/` and not a new ignored directory?** `.logs/` is the only path teamos already declares ignored (`TEAM_GITIGNORE_ENTRIES` in `scripts/init.mjs`, written to `team/.gitignore`), and it already holds runner-managed state rather than only logs — `scheduler-state.json` lives there. A fresh directory would need a new ignore entry, and every team already deployed would go on committing observations until someone edited its `team/.gitignore` by hand. Reusing `.logs/` makes existing deployments correct with no action. `init.mjs` now tops up a `team/.gitignore` that is missing an entry instead of skipping the file when it exists.
+
 ### File format
+
+`team/members/<name>/watched.json` — the member's subscriptions:
 
 ```json
 {
@@ -76,7 +98,14 @@ team/
 			"reason": "I own restarting the tess runner",
 			"cooldownMinutes": 30
 		}
-	],
+	]
+}
+```
+
+`team/.logs/watches/<name>.json` — what the runner last saw. Managed by the runner; not yours to edit, and editing it only loses or replays a wake:
+
+```json
+{
 	"observed": {
 		"2026-04-23T14-05-11.903Z-7a1e": {
 			"signature": "clear",
@@ -95,7 +124,7 @@ team/
 }
 ```
 
-Field reference:
+Watch field reference:
 
 | Field | Required | Description |
 |---|---|---|
@@ -107,7 +136,6 @@ Field reference:
 | `params` | no | Probe parameters. Every name the probe declares is required; anything else is an error. |
 | `reason` | no | Short note explaining why the subscription exists |
 | `cooldownMinutes` | no | Minimum minutes between wakes from this watch. Default 15; `0` disables. |
-| `observed` | managed | Per-watch observation state. Managed by the runner — never edit by hand. |
 
 ### Hit semantics (`fires`)
 
@@ -201,6 +229,8 @@ Each fired watch's acknowledged signature advances to what the agent saw and `la
 - **Probe hangs.** Killed at `timeoutMs`; reported as status `error` (`timed out after Nms`).
 - **Probe removed from the registry while a watch references it.** The watch reports an unknown-probe `error` — visible to the member rather than silently dead.
 - **`watched.json` hand-edited into nonsense.** Unparseable entries are dropped on load and the file is rewritten, matching the triggers adapter. Observation state for watches that no longer exist is discarded.
+- **Observation file missing or deleted.** Every watch re-baselines silently on the next poll — one lost wake at worst, never a storm.
+- **`watched.json` still carries a pre-split `observed` key.** Migrated on read: the map is moved to `team/.logs/watches/<name>.json` and stripped from `watched.json`. Migrating rather than discarding keeps the acknowledged signatures, so an upgrade does not re-fire (or silently re-baseline) every watch. If both files carry observations, the new one wins.
 - **No probes registered at all.** `add_watch` errors saying so; nothing else changes.
 
 ## Future Adapters

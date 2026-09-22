@@ -5,7 +5,8 @@
  * exclusively through the MCP tools `list_watches`, `add_watch`,
  * `remove_watch` — never by writing `watched.json` directly. A watch carries
  * no command: probes are registered by humans under `probes` in
- * teamos.config.json and referenced here by name.
+ * teamos.config.json and referenced here by name. Use `list_watches` to see
+ * which probe names this host has registered.
  */
 export interface Watch {
 	/** Adapter-allocated, opaque id. Agents treat it as a string — never parse or construct. */
@@ -43,7 +44,11 @@ export interface WatchObservationRecord {
 	error?: string;
 }
 
-/** Per-watch observation state. Managed by the runner — agents should not edit this. */
+/**
+ * Per-watch observation state, in team/.logs/watches/<name>.json — a
+ * git-ignored path, kept out of watched.json so a chatty probe does not
+ * produce a commit every poll. Managed by the runner; agents never edit it.
+ */
 export interface WatchState {
 	/** The signature the member has been woken through. Advances only after a successful cycle. */
 	signature: string;
@@ -55,8 +60,12 @@ export interface WatchState {
 	latest: WatchObservationRecord;
 }
 
-/** Root structure for watched.json */
+/** Root structure for team/members/<name>/watched.json */
 export interface Watches {
 	items: Watch[];
+}
+
+/** Root structure for team/.logs/watches/<name>.json */
+export interface WatchObservations {
 	observed: Record<string, WatchState>;
 }

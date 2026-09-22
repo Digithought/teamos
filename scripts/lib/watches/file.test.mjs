@@ -26,6 +26,11 @@ async function withAdapter(probes, fn) {
 	}
 }
 
+/** Observation state lives outside team/members — read it from the .logs tree. */
+async function readObserved(adapter, member) {
+	return JSON.parse(await readFile(adapter._observedPath(member), 'utf-8')).observed;
+}
+
 /** Re-poll ignoring the per-member throttle, with a controllable `now`. */
 async function repoll(adapter, member, now = new Date()) {
 	adapter._lastPollAt.delete(member);
@@ -49,8 +54,7 @@ test('a hand-edited unsafe parameter is rejected at poll time, not executed', as
 		await writeFile(path, JSON.stringify(state));
 
 		await repoll(adapter, 'alice');
-		const observed = JSON.parse(await readFile(path, 'utf-8')).observed;
-		const entry = Object.values(observed)[0];
+		const entry = Object.values(await readObserved(adapter, 'alice'))[0];
 		assert.equal(entry.status, 'error');
 		assert.match(entry.latest?.error ?? entry.error ?? '', /must be a simple string/);
 	});
@@ -206,8 +210,7 @@ test('a hanging probe is killed at its timeout and reported as an error', async 
 	await withAdapter(PROBES, async (adapter) => {
 		await adapter.addWatch('alice', { probe: 'hanging', priority: 'today', cooldownMinutes: 0 });
 		await adapter.poll('alice'); // baseline is itself the timeout error
-		const state = JSON.parse(await readFile(adapter._path('alice'), 'utf-8'));
-		const [observed] = Object.values(state.observed);
+		const [observed] = Object.values(await readObserved(adapter, 'alice'));
 		assert.equal(observed.status, 'error');
 		assert.match(observed.latest.error, /timed out/);
 	});
@@ -272,8 +275,7 @@ test('removeWatch drops the watch and its observation state', async () => {
 		await adapter.poll('alice');
 		await adapter.removeWatch('alice', id);
 		assert.deepEqual(await adapter.listWatches('alice'), []);
-		const state = JSON.parse(await readFile(adapter._path('alice'), 'utf-8'));
-		assert.deepEqual(state.observed, {});
+		assert.deepEqual(await readObserved(adapter, 'alice'), {});
 		await assert.rejects(() => adapter.removeWatch('alice', id), /is not in alice's watches/);
 	});
 });
@@ -283,5 +285,43 @@ test('watches are per-member', async () => {
 		await adapter.addWatch('alice', { probe: 'noisy', priority: 'today' });
 		assert.equal((await adapter.listWatches('alice')).length, 1);
 		assert.deepEqual(await adapter.listWatches('bob'), []);
+	});
+});
+
+test('polling churns the observation file, never the synced subscription file', async () => {
+	// The whole point of the split: team/ is git-synced, so a chatty probe must
+	// not rewrite watched.json every pass.
+	await withAdapter(PROBES, async (adapter) => {
+		await adapter.addWatch('alice', { probe: 'noisy', priority: 'today', cooldownMinutes: 0 });
+		const before = await readFile(adapter._path('alice'), 'utf-8');
+		assert.equal(JSON.parse(before).observed, undefined);
+
+		await adapter.poll('alice');
+		adapter.probes.get('noisy').args = ['-e', 'process.stdout.write("still down\\n")'];
+		await repoll(adapter, 'alice');
+
+		assert.equal(await readFile(adapter._path('alice'), 'utf-8'), before);
+		assert.equal(Object.keys(await readObserved(adapter, 'alice')).length, 1);
+	});
+});
+
+test('a pre-split watched.json migrates its observed map instead of re-firing', async () => {
+	await withAdapter(PROBES, async (adapter) => {
+		const { id } = await adapter.addWatch('alice', { probe: 'noisy', priority: 'today', cooldownMinutes: 0 });
+		await adapter.poll('alice'); // baseline: hit
+
+		// Rewrite the file the way the pre-split adapter wrote it.
+		const items = JSON.parse(await readFile(adapter._path('alice'), 'utf-8')).items;
+		const observed = await readObserved(adapter, 'alice');
+		await rm(adapter._observedPath('alice'));
+		await writeFile(adapter._path('alice'), JSON.stringify({ items, observed }));
+
+		// The acknowledged signature survives, so the still-true condition is silent.
+		await repoll(adapter, 'alice');
+		assert.deepEqual(await adapter.pendingObservations('alice'), []);
+
+		// …and the observed map has moved out of the synced file.
+		assert.equal(JSON.parse(await readFile(adapter._path('alice'), 'utf-8')).observed, undefined);
+		assert.ok((await readObserved(adapter, 'alice'))[id]);
 	});
 });

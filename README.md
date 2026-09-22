@@ -96,7 +96,7 @@ team/
 │       ├── todo.json        # Task list
 │       ├── schedule.json
 │       ├── triggers.json    # Commit-trigger subscriptions + last-seen SHA
-│       ├── watched.json     # Watch subscriptions + last acknowledged probe result
+│       ├── watched.json     # Watch subscriptions (observations live in team/.logs/watches/)
 │       ├── inbox.json       # { items: [<messageId>, ...] } — current mail
 │       ├── sent.json        # { items: [...] } — what this member has sent
 │       └── archives.json    # { items: [...] } — handled / archived mail
@@ -471,7 +471,7 @@ All adapters implement the stable MCP contract documented in `teamos/docs/trigge
 
 | Adapter | Flag | Description |
 |---|---|---|
-| `file` | `--watches file` | Per-member subscriptions at `team/members/<name>/watched.json`. Between cycles the adapter runs each watch's named probe — registered by humans under `probes` in `teamos.config.json`, never supplied by the agent — and records the result. A member is woken when a probe's result *changes* (edge-triggered), at the watch's priority, subject to a per-watch cooldown. The acknowledged result advances on successful cycle completion (at-least-once semantics). |
+| `file` | `--watches file` | Per-member subscriptions at `team/members/<name>/watched.json`, with the per-poll observation state kept out of the synced tree in `team/.logs/watches/<name>.json`. Between cycles the adapter runs each watch's named probe — registered by humans under `probes` in `teamos.config.json`, never supplied by the agent — and records the result. A member is woken when a probe's result *changes* (edge-triggered), at the watch's priority, subject to a per-watch cooldown. The acknowledged result advances on successful cycle completion (at-least-once semantics). |
 
 All adapters implement the stable MCP contract documented in `teamos/docs/watches.md`: `list_watches`, `add_watch`, `remove_watch`. A future push-based adapter (an alerting system posting events) can drop in without changing the agent contract — the contract treats ids as opaque strings and never lets an agent name a command.
 

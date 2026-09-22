@@ -8,11 +8,21 @@ import { PRIORITY_ORDER } from '../scheduler.mjs';
 /**
  * File-backed watches adapter.
  *
- * Per-member state at team/members/<name>/watched.json:
- *   {
- *     "items": [ Watch, ... ],
- *     "observed": { "<watch id>": WatchState, ... }
- *   }
+ * Per-member subscriptions at team/members/<name>/watched.json:
+ *   { "items": [ Watch, ... ] }
+ *
+ * Per-member observations at team/.logs/watches/<name>.json:
+ *   { "observed": { "<watch id>": WatchState, ... } }
+ *
+ * The two halves are split because they change at completely different rates.
+ * Subscriptions are hand-reviewable and change when a member decides to watch
+ * something; observations are rewritten on every poll with whatever the probe
+ * printed. `team/` is git-synced, so keeping both in one file meant a chatty
+ * probe produced a commit every pass. `team/.logs/` is the directory teamos
+ * already git-ignores (see TEAM_GITIGNORE in scripts/init.mjs) and already
+ * holds runner-managed state such as scheduler-state.json, so the churn lands
+ * on the ignored side without a new ignore entry existing deployments would
+ * not have.
  *
  * A watch subscribes the member to a *named probe* — a small command registered
  * by a human under `probes` in teamos.config.json. The runner executes the
@@ -200,6 +210,11 @@ export class FileWatchesAdapter {
 		return join(this.teamDir, 'members', member, 'watched.json');
 	}
 
+	/** Observation state lives in the git-ignored .logs tree, never in team/members. */
+	_observedPath(member) {
+		return join(this.teamDir, '.logs', 'watches', `${member}.json`);
+	}
+
 	_probe(name, toolName) {
 		const probe = this.probes.get(name);
 		if (!probe) {
@@ -213,36 +228,64 @@ export class FileWatchesAdapter {
 	}
 
 	async _readRaw(member) {
+		let items = [];
+		let legacyObserved = null;
 		try {
 			const raw = await readFile(this._path(member), 'utf-8');
 			const data = JSON.parse(raw);
-			return {
-				items: Array.isArray(data.items) ? data.items : [],
-				observed: data.observed && typeof data.observed === 'object' ? data.observed : {},
-			};
+			if (Array.isArray(data.items)) items = data.items;
+			if (data.observed && typeof data.observed === 'object') legacyObserved = data.observed;
 		} catch {
-			return { items: [], observed: {} };
+			/* no subscriptions yet */
 		}
+
+		let observed = {};
+		try {
+			const raw = await readFile(this._observedPath(member), 'utf-8');
+			const data = JSON.parse(raw);
+			if (data.observed && typeof data.observed === 'object') observed = data.observed;
+		} catch {
+			/* no observations yet — every watch baselines on the next poll */
+		}
+
+		// Upgrade path: a watched.json written before the split still carries
+		// `observed`. Migrate it rather than dropping it — discarding the
+		// acknowledged signatures would re-baseline every watch, and a member
+		// that had already been woken about a down runner would be woken again
+		// (or, worse, silently re-baselined onto the broken state). The moved
+		// map wins only when the new file has nothing yet.
+		if (legacyObserved) {
+			if (Object.keys(observed).length === 0) observed = legacyObserved;
+			await this._writeObserved(member, observed);
+			await this._writeItems(member, items);
+		}
+
+		return { items, observed };
 	}
 
-	async _writeRaw(member, state) {
+	async _writeItems(member, items) {
 		const path = this._path(member);
 		await mkdir(dirname(path), { recursive: true });
-		const body = { items: state.items ?? [], observed: state.observed ?? {} };
-		await writeFile(path, `${JSON.stringify(body, null, '\t')}\n`, 'utf-8');
+		await writeFile(path, `${JSON.stringify({ items: items ?? [] }, null, '\t')}\n`, 'utf-8');
+	}
+
+	async _writeObserved(member, observed) {
+		const path = this._observedPath(member);
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, `${JSON.stringify({ observed: observed ?? {} }, null, '\t')}\n`, 'utf-8');
 	}
 
 	async _loadNormalized(member) {
 		const raw = await this._readRaw(member);
-		let mutated = false;
+		let itemsMutated = false;
 		const items = [];
 		for (const entry of raw.items) {
 			const n = normalizeWatch(entry);
 			if (!n) {
-				mutated = true;
+				itemsMutated = true;
 				continue;
 			}
-			if (n !== entry) mutated = true;
+			if (n !== entry) itemsMutated = true;
 			items.push(n);
 		}
 		// Drop observation state for watches that no longer exist.
@@ -250,10 +293,10 @@ export class FileWatchesAdapter {
 		for (const item of items) {
 			if (raw.observed[item.id]) observed[item.id] = raw.observed[item.id];
 		}
-		if (Object.keys(observed).length !== Object.keys(raw.observed).length) mutated = true;
-		const state = { items, observed };
-		if (mutated) await this._writeRaw(member, state);
-		return state;
+		const observedMutated = Object.keys(observed).length !== Object.keys(raw.observed).length;
+		if (itemsMutated) await this._writeItems(member, items);
+		if (observedMutated) await this._writeObserved(member, observed);
+		return { items, observed };
 	}
 
 	async listWatches(member) {
@@ -289,7 +332,7 @@ export class FileWatchesAdapter {
 		});
 		if (!watch) throw new Error('add_watch: invalid watch');
 		state.items.push(watch);
-		await this._writeRaw(member, state);
+		await this._writeItems(member, state.items);
 		this._lastPollAt.delete(member);
 		return { id: watch.id };
 	}
@@ -301,7 +344,8 @@ export class FileWatchesAdapter {
 		if (idx === -1) throw new Error(`remove_watch: ${id} is not in ${member}'s watches`);
 		state.items.splice(idx, 1);
 		delete state.observed[id];
-		await this._writeRaw(member, state);
+		await this._writeItems(member, state.items);
+		await this._writeObserved(member, state.observed);
 		this._lastPollAt.delete(member);
 	}
 
@@ -361,7 +405,7 @@ export class FileWatchesAdapter {
 			}
 			state.observed[watch.id] = { ...prior, latest };
 		}
-		await this._writeRaw(member, state);
+		await this._writeObserved(member, state.observed);
 	}
 
 	/**
@@ -430,7 +474,7 @@ export class FileWatchesAdapter {
 				latest: obs.latest,
 			};
 		}
-		await this._writeRaw(member, state);
+		await this._writeObserved(member, state.observed);
 	}
 
 	/**
