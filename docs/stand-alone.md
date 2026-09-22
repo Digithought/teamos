@@ -182,7 +182,7 @@ The cycle prompt builder tells the agent it has messaging tools available and pr
 
 ### Integration with work detection
 
-`memberHasWork()` calls `messagingAdapter.hasMessages(member)` instead of scanning the inbox directory directly. This makes work detection adapter-agnostic.
+`memberHasWork()` calls `adapters.messaging.hasMessages(member)` instead of scanning the inbox directory directly. This makes work detection adapter-agnostic.
 
 ## Sync Adapter
 

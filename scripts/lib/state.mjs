@@ -56,9 +56,10 @@ export async function saveSchedulerState(logsDir, state) {
  * @param {Object} remote.syncAdapter - adapter with pull(workDir)
  * @param {string} remote.workDir - repo root passed to syncAdapter.pull
  * @param {number} remote.intervalMs - min ms between remote pulls (0 disables)
- * @param {Object} [watchesAdapter] - optional watches adapter; probes are polled
- *   each idle tick (the adapter throttles itself) so a host-side condition can
- *   pull the next pass forward instead of waiting out the interval
+ * @param {Object} [adapters] - the wake-signal adapters; `adapters.watches`
+ *   probes are polled each idle tick (the adapter throttles itself) so a
+ *   host-side condition can pull the next pass forward instead of waiting out
+ *   the interval
  */
 export async function idleWait(
 	ms,
@@ -68,7 +69,7 @@ export async function idleWait(
 	cadences,
 	getMembersWithWork,
 	remote = null,
-	watchesAdapter = null,
+	adapters = {},
 ) {
 	const end = Date.now() + ms;
 	let lastRemotePullAt = Date.now();
@@ -92,9 +93,9 @@ export async function idleWait(
 			lastRemotePullAt = Date.now();
 		}
 
-		if (!paused && watchesAdapter) {
+		if (!paused && adapters.watches) {
 			for (const member of members) {
-				await watchesAdapter.poll(member.name).catch(() => {});
+				await adapters.watches.poll(member.name).catch(() => {});
 			}
 		}
 

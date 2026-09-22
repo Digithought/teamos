@@ -19,25 +19,17 @@ export async function loadMembers(teamDir) {
  * Inbox work is detected in O(1) by reading inbox.json directly — no master
  * store lookups are needed for "does this member have a message?".
  *
- * @param {import('./tasks/index.mjs').TasksAdapter} [tasksAdapter] — if provided,
- *   todos are checked through the adapter contract (`hasActionableTodos`).
- *   Otherwise the file falls back to reading todo.json directly.
+ * @param {Object} [adapters] — the wake-signal adapters: `messaging`, `tasks`,
+ *   `schedule`, `triggers`, `watches`. Each is optional; `adapters.tasks`, when
+ *   provided, checks todos through the adapter contract (`hasActionableTodos`)
+ *   instead of reading todo.json directly.
  */
-export async function memberHasWork(
-	memberName,
-	priority,
-	teamDir,
-	messagingAdapter,
-	scheduleAdapter,
-	tasksAdapter,
-	triggersAdapter,
-	watchesAdapter,
-) {
+export async function memberHasWork(memberName, priority, teamDir, adapters = {}) {
 	const memberDir = join(teamDir, 'members', memberName);
 
 	// Check inbox.json for pending messages
-	if (messagingAdapter) {
-		if (await messagingAdapter.hasMessages(memberName)) return true;
+	if (adapters.messaging) {
+		if (await adapters.messaging.hasMessages(memberName)) return true;
 	} else {
 		const inboxJson = join(memberDir, 'inbox.json');
 		if (await pathExists(inboxJson)) {
@@ -51,8 +43,8 @@ export async function memberHasWork(
 	}
 
 	// Check todos at this priority or higher
-	if (tasksAdapter) {
-		if (await tasksAdapter.hasActionableTodos(memberName, priority)) return true;
+	if (adapters.tasks) {
+		if (await adapters.tasks.hasActionableTodos(memberName, priority)) return true;
 	} else {
 		const todoPath = join(memberDir, 'todo.json');
 		if (await pathExists(todoPath)) {
@@ -69,50 +61,30 @@ export async function memberHasWork(
 
 	// Check schedule for due events — always via adapter so the contract stays
 	// stable across file / calendar backends.
-	if (scheduleAdapter) {
-		if (await scheduleAdapter.hasDueEvents(memberName, new Date())) return true;
+	if (adapters.schedule) {
+		if (await adapters.schedule.hasDueEvents(memberName, new Date())) return true;
 	}
 
 	// Check commit triggers — new commits matching a member's subscriptions at
 	// this priority or higher count as work.
-	if (triggersAdapter) {
-		if (await triggersAdapter.hasPendingMatches(memberName, priority)) return true;
+	if (adapters.triggers) {
+		if (await adapters.triggers.hasPendingMatches(memberName, priority)) return true;
 	}
 
 	// Check watches — a probe whose result changed since the member was last
 	// woken counts as work at the watch's priority. Probes are not run here;
 	// the runner polls them between cycles.
-	if (watchesAdapter) {
-		if (await watchesAdapter.hasPendingObservations(memberName, priority)) return true;
+	if (adapters.watches) {
+		if (await adapters.watches.hasPendingObservations(memberName, priority)) return true;
 	}
 
 	return false;
 }
 
-export async function getMembersWithWork(
-	members,
-	priority,
-	teamDir,
-	messagingAdapter,
-	scheduleAdapter,
-	tasksAdapter,
-	triggersAdapter,
-	watchesAdapter,
-) {
+export async function getMembersWithWork(members, priority, teamDir, adapters = {}) {
 	const results = [];
 	for (const member of members) {
-		if (
-			await memberHasWork(
-				member.name,
-				priority,
-				teamDir,
-				messagingAdapter,
-				scheduleAdapter,
-				tasksAdapter,
-				triggersAdapter,
-				watchesAdapter,
-			)
-		) {
+		if (await memberHasWork(member.name, priority, teamDir, adapters)) {
 			results.push(member);
 		}
 	}

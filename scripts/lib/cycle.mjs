@@ -166,16 +166,7 @@ async function buildWatchesSection(member, watchesAdapter) {
 	return observations.map(formatWatchObservationForPrompt).join('\n');
 }
 
-export async function buildCyclePrompt(
-	member,
-	priority,
-	teamDir,
-	messagingAdapter,
-	tasksAdapter,
-	scheduleAdapter,
-	triggersAdapter,
-	watchesAdapter,
-) {
+export async function buildCyclePrompt(member, priority, teamDir, adapters = {}) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
 
@@ -199,10 +190,10 @@ export async function buildCyclePrompt(
 		readTextOrEmpty(join(teamDir, 'members.json')),
 		readTextOrEmpty(join(memberDir, 'profile.md')),
 		readTextOrEmpty(join(memberDir, 'state.md')),
-		buildTodoSection(member.name, tasksAdapter),
-		buildScheduleSections(member.name, scheduleAdapter),
-		buildCommitTriggersSection(member.name, triggersAdapter),
-		buildWatchesSection(member.name, watchesAdapter),
+		buildTodoSection(member.name, adapters.tasks),
+		buildScheduleSections(member.name, adapters.schedule),
+		buildCommitTriggersSection(member.name, adapters.triggers),
+		buildWatchesSection(member.name, adapters.watches),
 	]);
 
 	const parts = [
@@ -273,7 +264,7 @@ export async function buildCyclePrompt(
 		);
 	}
 
-	const inboxSection = await buildInboxSection(member.name, messagingAdapter);
+	const inboxSection = await buildInboxSection(member.name, adapters.messaging);
 	parts.push(...inboxSection);
 
 	parts.push(...buildToolsPromptSection('cycle'));
@@ -307,11 +298,7 @@ export async function runCycle({
 	useTimeout,
 	failureState,
 	syncAdapter,
-	messagingAdapter,
-	tasksAdapter,
-	scheduleAdapter,
-	triggersAdapter,
-	watchesAdapter,
+	adapters,
 }) {
 	let memberRuns = 0;
 	let lastError = null;
@@ -373,19 +360,10 @@ export async function runCycle({
 		const cycleStart = new Date();
 		// Snapshot the HEAD the agent sees so commit triggers fired during this
 		// cycle's execution don't get silently acknowledged.
-		const headAtStart = triggersAdapter ? await triggersAdapter.currentHead(member.name).catch(() => null) : null;
-		const prompt = await buildCyclePrompt(
-			member,
-			priority,
-			teamDir,
-			messagingAdapter,
-			tasksAdapter,
-			scheduleAdapter,
-			triggersAdapter,
-			watchesAdapter,
-		);
+		const headAtStart = adapters.triggers ? await adapters.triggers.currentHead(member.name).catch(() => null) : null;
+		const prompt = await buildCyclePrompt(member, priority, teamDir, adapters);
 		const mcpContext =
-			messagingAdapter || tasksAdapter || scheduleAdapter || triggersAdapter || watchesAdapter
+			adapters.messaging || adapters.tasks || adapters.schedule || adapters.triggers || adapters.watches
 				? {
 						teamDir,
 						memberName: member.name,
@@ -407,18 +385,18 @@ export async function runCycle({
 			failureState.consecutive = 0;
 			// Only acknowledge on success — on failure, due events fire again
 			// next cycle (at-least-once semantics).
-			if (scheduleAdapter) {
-				await scheduleAdapter.acknowledgeDue(member.name, cycleStart).catch((err) => {
+			if (adapters.schedule) {
+				await adapters.schedule.acknowledgeDue(member.name, cycleStart).catch((err) => {
 					console.error(`[runner] acknowledgeDue failed for ${member.name}: ${err.message}`);
 				});
 			}
-			if (triggersAdapter && headAtStart) {
-				await triggersAdapter.acknowledgeHead(member.name, headAtStart).catch((err) => {
+			if (adapters.triggers && headAtStart) {
+				await adapters.triggers.acknowledgeHead(member.name, headAtStart).catch((err) => {
 					console.error(`[runner] triggers.acknowledgeHead failed for ${member.name}: ${err.message}`);
 				});
 			}
-			if (watchesAdapter) {
-				await watchesAdapter.acknowledgeObservations(member.name).catch((err) => {
+			if (adapters.watches) {
+				await adapters.watches.acknowledgeObservations(member.name).catch((err) => {
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}
@@ -453,11 +431,7 @@ export async function runPass({
 	schedulerState,
 	useTimeout,
 	syncAdapter,
-	messagingAdapter,
-	tasksAdapter,
-	scheduleAdapter,
-	triggersAdapter,
-	watchesAdapter,
+	adapters,
 }) {
 	const { lastServedAt, lastServedMember, vruntime } = schedulerState;
 	const weights = opts.weights;
@@ -486,9 +460,9 @@ export async function runPass({
 	while (cycleCount < opts.maxCycles) {
 		// Probe host-side conditions before scanning for work. The adapter
 		// throttles itself, so calling this every cycle is cheap.
-		if (watchesAdapter) {
+		if (adapters.watches) {
 			for (const member of members) {
-				await watchesAdapter.poll(member.name).catch((err) => {
+				await adapters.watches.poll(member.name).catch((err) => {
 					console.error(`[runner] watches.poll failed for ${member.name}: ${err.message}`);
 				});
 			}
@@ -511,16 +485,7 @@ export async function runPass({
 			if (isBudgetExhausted(priority)) continue;
 			const cadence = opts.cadences[priority];
 			if (cadence && Date.now() - (lastServedAt[priority] ?? 0) < cadence) continue;
-			const membersWithWork = await getMembersWithWork(
-				members,
-				priority,
-				teamDir,
-				messagingAdapter,
-				scheduleAdapter,
-				tasksAdapter,
-				triggersAdapter,
-				watchesAdapter,
-			);
+			const membersWithWork = await getMembersWithWork(members, priority, teamDir, adapters);
 			if (membersWithWork.length > 0) {
 				candidates.push({ priority, members: membersWithWork });
 			}
@@ -566,11 +531,7 @@ export async function runPass({
 			useTimeout,
 			failureState,
 			syncAdapter,
-			messagingAdapter,
-			tasksAdapter,
-			scheduleAdapter,
-			triggersAdapter,
-			watchesAdapter,
+			adapters,
 		});
 		totalMemberRuns += result.memberRuns;
 		if (result.lastError) passErrors.push(result.lastError);

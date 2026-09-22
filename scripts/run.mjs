@@ -317,11 +317,16 @@ async function main() {
 		? null
 		: await createSyncAdapter(opts.sync, { ...config, git: { push: opts.push, ...(config.git || {}) } });
 
-	const messagingAdapter = await createMessagingAdapter(opts.messaging, config, teamDir);
-	const tasksAdapter = await createTasksAdapter(opts.tasks, config, teamDir);
-	const scheduleAdapter = await createScheduleAdapter(opts.schedule, config, teamDir);
-	const triggersAdapter = await createTriggersAdapter(opts.triggers, config, teamDir, repoRoot);
-	const watchesAdapter = await createWatchesAdapter(opts.watches, config, teamDir, repoRoot);
+	// One bag of wake-signal adapters, threaded through work detection, the
+	// cycle prompt and the idle loop. The sync adapter stays separate — it is
+	// not a wake signal and maintenance takes it on its own.
+	const adapters = {
+		messaging: await createMessagingAdapter(opts.messaging, config, teamDir),
+		tasks: await createTasksAdapter(opts.tasks, config, teamDir),
+		schedule: await createScheduleAdapter(opts.schedule, config, teamDir),
+		triggers: await createTriggersAdapter(opts.triggers, config, teamDir, repoRoot),
+		watches: await createWatchesAdapter(opts.watches, config, teamDir, repoRoot),
+	};
 
 	// ── Load members ─────────────────────────────────────────────────────────
 	const allMembers = await loadMembers(teamDir);
@@ -342,10 +347,10 @@ async function main() {
 
 	const autoEvents = config.schedule?.autoEvents || {};
 	if (autoEvents.weeklySelfAssessment !== false) {
-		await ensureSelfAssessmentEvents(allMembers, scheduleAdapter);
+		await ensureSelfAssessmentEvents(allMembers, adapters.schedule);
 	}
 	if (autoEvents.dailyCheckin !== false) {
-		await ensureDailyCheckinEvents(allMembers, scheduleAdapter);
+		await ensureDailyCheckinEvents(allMembers, adapters.schedule);
 	}
 
 	// ── Clerk only ────────────────────────────────────────────────────────────
@@ -415,7 +420,7 @@ async function main() {
 
 		// Poll watches so a dry run reports the same work a real pass would.
 		for (const member of members) {
-			await watchesAdapter.poll(member.name).catch(() => {});
+			await adapters.watches.poll(member.name).catch(() => {});
 		}
 
 		const logsDir = await ensureLogsDir(teamDir);
@@ -427,16 +432,7 @@ async function main() {
 		);
 
 		for (const priority of PRIORITY_ORDER) {
-			const withWork = await getMembersWithWork(
-				members,
-				priority,
-				teamDir,
-				messagingAdapter,
-				scheduleAdapter,
-				tasksAdapter,
-				triggersAdapter,
-				watchesAdapter,
-			);
+			const withWork = await getMembersWithWork(members, priority, teamDir, adapters);
 			if (withWork.length > 0) {
 				console.log(`  [${priority}]`);
 				for (const m of withWork) {
@@ -516,11 +512,7 @@ async function main() {
 				schedulerState,
 				useTimeout: false,
 				syncAdapter,
-				messagingAdapter,
-				tasksAdapter,
-				scheduleAdapter,
-				triggersAdapter,
-				watchesAdapter,
+				adapters,
 			});
 
 			// Post-pass maintenance
@@ -559,10 +551,9 @@ async function main() {
 					members,
 					schedulerState.lastServedAt,
 					opts.cadences,
-					(m, p, t) =>
-						getMembersWithWork(m, p, t, messagingAdapter, scheduleAdapter, tasksAdapter, triggersAdapter, watchesAdapter),
+					(m, p, t) => getMembersWithWork(m, p, t, adapters),
 					syncAdapter ? { syncAdapter, workDir: repoRoot, intervalMs: opts.remotePullMs } : null,
-					watchesAdapter,
+					adapters,
 				);
 				if (reason === 'stop') {
 					console.log('\n[runner] Stop file detected — exiting loop.');
@@ -589,11 +580,7 @@ async function main() {
 			schedulerState,
 			useTimeout: true,
 			syncAdapter,
-			messagingAdapter,
-			tasksAdapter,
-			scheduleAdapter,
-			triggersAdapter,
-			watchesAdapter,
+			adapters,
 		});
 
 		await runMaintenance({
