@@ -45,7 +45,7 @@ function renderMessage(msg, { heading, headingLevel = '###' }) {
 	return lines;
 }
 
-async function buildInboxSection(member, messagingAdapter) {
+export async function buildInboxSection(member, messagingAdapter) {
 	const summaries = await messagingAdapter.listInbox(member);
 	if (summaries.length === 0) {
 		return ['', '## Inbox', '', 'No pending messages.', ''];
@@ -82,7 +82,7 @@ function formatTodoForPrompt(item) {
 	return parts.join('\n');
 }
 
-async function buildTodoSection(member, tasksAdapter) {
+export async function buildTodoSection(member, tasksAdapter) {
 	if (!tasksAdapter) return '_(tasks adapter unavailable)_';
 	const items = await tasksAdapter.listTodos(member).catch(() => []);
 	if (items.length === 0) return '_No open todos._';
@@ -100,7 +100,7 @@ function formatEventForPrompt(event) {
 	return parts.join('\n');
 }
 
-async function buildScheduleSections(member, scheduleAdapter) {
+export async function buildScheduleSections(member, scheduleAdapter) {
 	if (!scheduleAdapter) {
 		return {
 			due: '_(schedule adapter unavailable)_',
