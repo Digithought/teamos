@@ -19,6 +19,8 @@ export default defineConfig(async () => {
 	const { createScheduleAdapter } = await import(
 		pathToFileURL(resolve(teamosRoot, 'scripts/lib/schedule/index.mjs')).href
 	);
+	const { createTasksAdapter } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/tasks/index.mjs')).href);
+	const { ChatSessions } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/chat/session.mjs')).href);
 
 	loadDotEnv(projectRoot);
 	const config = resolveEnvVars(await loadConfig(projectRoot));
@@ -26,6 +28,15 @@ export default defineConfig(async () => {
 	const scheduleAdapterName: string = config.schedule?.adapter || 'file';
 	const messagingAdapter = await createMessagingAdapter(adapterName, config, teamDir);
 	const scheduleAdapter = await createScheduleAdapter(scheduleAdapterName, config, teamDir);
+	// Chat reads the member's todos as well, so it needs the tasks adapter the
+	// dashboard itself has never had to instantiate.
+	const tasksAdapter = await createTasksAdapter(config.tasks?.adapter || 'file', config, teamDir);
+	const chat = new ChatSessions({
+		teamDir,
+		repoRoot: projectRoot,
+		adapters: { messaging: messagingAdapter, tasks: tasksAdapter, schedule: scheduleAdapter },
+		config,
+	});
 
 	return {
 		plugins: [
@@ -39,6 +50,7 @@ export default defineConfig(async () => {
 				scheduleAdapter,
 				scheduleAdapterName,
 				auth: config.auth,
+				chat,
 			}),
 		],
 		server: {

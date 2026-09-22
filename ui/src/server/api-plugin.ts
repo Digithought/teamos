@@ -136,6 +136,41 @@ interface ScheduleAdapter {
 	removeEvent(member: string, id: string): Promise<void>;
 }
 
+interface ChatTranscriptEntry {
+	role: 'human' | 'member';
+	text: string;
+	at: string;
+}
+
+interface ChatSessionInfo {
+	id: string;
+	member: string;
+	human: string;
+	startedAt: string;
+	lastActiveAt: string;
+	busy: boolean;
+	transcript: ChatTranscriptEntry[];
+}
+
+/**
+ * The live-chat controller (`scripts/lib/chat/session.mjs`), injected by the
+ * vite config the same way the adapters are. Sessions live in this process;
+ * the only thing that reaches disk is the transcript, filed through the
+ * messaging adapter when a chat ends — see teamos/docs/chat.md.
+ */
+interface ChatController {
+	create(args: { member: string; human: string }): Promise<unknown>;
+	summarize(session: unknown): ChatSessionInfo;
+	get(id: string): unknown;
+	turn(
+		id: string,
+		text: string,
+		opts: { onEvent: (event: unknown) => void; signal: AbortSignal },
+	): Promise<{ exitCode: number; answer: string }>;
+	end(id: string, opts?: { persist?: boolean }): Promise<{ persisted: boolean; messageId?: string }>;
+	status(member: string): Promise<{ midCycle: boolean; since?: string; session: ChatSessionInfo | null }>;
+}
+
 interface AuthConfig {
 	/** If false, identity headers are ignored — the dashboard trusts its own localStorage selection. */
 	trustProxy?: boolean;
@@ -153,11 +188,31 @@ interface ApiOptions {
 	scheduleAdapter: ScheduleAdapter;
 	scheduleAdapterName: string;
 	auth?: AuthConfig;
+	chat?: ChatController;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200) {
 	res.writeHead(status, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify(data));
+}
+
+/**
+ * Open a Server-Sent Events response and return its writer. One event shape
+ * (a JSON object with a `kind`) on the default event type, so the client is a
+ * few lines of split-on-blank-line rather than an EventSource — the turn that
+ * carries the human's text has to be a POST.
+ */
+function sse(res: ServerResponse): (event: unknown) => void {
+	res.writeHead(200, {
+		'Content-Type': 'text/event-stream',
+		'Cache-Control': 'no-cache',
+		Connection: 'keep-alive',
+		// Vite's dev server doesn't buffer, but a proxy in front of it might.
+		'X-Accel-Buffering': 'no',
+	});
+	return (event: unknown) => {
+		res.write(`data: ${JSON.stringify(event)}\n\n`);
+	};
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -291,7 +346,7 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 }
 
 export function teamosApi(opts: ApiOptions): Plugin {
-	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter } = opts;
+	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter, chat } = opts;
 	const siblingPort = opts.siblingPort ?? 3004;
 	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
@@ -867,6 +922,66 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						});
 					}
 
+					// ─── Chat (live conversation with a member) ──────────────
+					//
+					// Spawns an agent per turn, streams it back, and writes
+					// nothing until the chat ends — see teamos/docs/chat.md for
+					// why the session is read-everything / write-narrow. These
+					// routes make the dashboard a process-spawning surface, so
+					// they inherit the deployment rule the dashboard already
+					// relies on: the port is reachable only through the tailnet
+					// or the auth proxy in front of it.
+					if (path.startsWith('/api/chat/')) {
+						if (!chat) return json(res, { error: 'Chat is not configured on this dashboard.' }, 501);
+
+						if (path === '/api/chat/status' && method === 'GET') {
+							const member = url.searchParams.get('member') ?? '';
+							if (!member) return json(res, { error: 'member is required' }, 400);
+							return json(res, await chat.status(member));
+						}
+
+						if (path === '/api/chat/sessions' && method === 'POST') {
+							const { member, human } = JSON.parse(await readBody(req));
+							const session = await chat.create({ member, human });
+							return json(res, chat.summarize(session), 201);
+						}
+
+						let chatMatch = path.match(/^\/api\/chat\/sessions\/([^/]+)\/turn$/);
+						if (chatMatch && method === 'POST') {
+							const id = decodeURIComponent(chatMatch[1]);
+							const { text } = JSON.parse(await readBody(req));
+							chat.get(id); // 404 before the stream opens, not as an event inside it
+							const controller = new AbortController();
+							// The client going away is the common case (tab closed,
+							// navigated off mid-answer). Abort tree-kills the agent
+							// rather than leaving it to bill out the idle timeout.
+							req.on('close', () => controller.abort());
+							const send = sse(res);
+							try {
+								const { exitCode, answer } = await chat.turn(id, text, {
+									onEvent: (event) => send(event),
+									signal: controller.signal,
+								});
+								send({ kind: 'done', exitCode, answer });
+							} catch (err: any) {
+								send({ kind: 'error', message: err.message });
+							}
+							return res.end();
+						}
+
+						chatMatch = path.match(/^\/api\/chat\/sessions\/([^/]+)$/);
+						if (chatMatch && method === 'GET') {
+							return json(res, chat.summarize(chat.get(decodeURIComponent(chatMatch[1]))));
+						}
+						if (chatMatch && method === 'DELETE') {
+							const id = decodeURIComponent(chatMatch[1]);
+							const persist = url.searchParams.get('persist') !== '0';
+							return json(res, await chat.end(id, { persist }));
+						}
+
+						return json(res, { error: 'Not found' }, 404);
+					}
+
 					// ─── Messages (id-scoped master store) ───────────────────
 					if (path === '/api/messages' && method === 'POST') {
 						const msg = JSON.parse(await readBody(req));
@@ -1017,7 +1132,10 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					json(res, { error: 'Not found' }, 404);
 				} catch (err: any) {
 					console.error('[teamos-api]', err);
-					json(res, { error: err.message }, 500);
+					// Chat errors carry the status they mean (404 unknown member,
+					// 409 a chat already open); everything else is a 500.
+					if (res.headersSent) res.end();
+					else json(res, { error: err.message }, err.status ?? 500);
 				}
 			});
 		},
