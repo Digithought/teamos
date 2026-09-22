@@ -440,14 +440,20 @@ export class FileWatchesAdapter {
 	 */
 	async _runProbe(watch) {
 		let probe;
+		let params;
 		try {
 			probe = this._probe(watch.probe, 'watch');
+			// `add_watch` validates too, but members can reach watched.json with a plain
+			// editor, and this is the only check standing between a hand-edited params
+			// block and the probe's argv. Re-check here so the file, not just the tool,
+			// is the thing that has to be safe.
+			params = validateParams(probe, watch.params, 'watch');
 		} catch (err) {
 			return { stdout: '', stderr: '', exitCode: null, error: err.message };
 		}
 		const cwd = probe.cwd ? (isAbsolute(probe.cwd) ? probe.cwd : join(this.repoRoot, probe.cwd)) : this.repoRoot;
 		try {
-			const { stdout, stderr } = await execFileAsync(probe.command, renderArgs(probe, watch.params ?? {}), {
+			const { stdout, stderr } = await execFileAsync(probe.command, renderArgs(probe, params), {
 				cwd,
 				timeout: probe.timeoutMs,
 				killSignal: 'SIGKILL',

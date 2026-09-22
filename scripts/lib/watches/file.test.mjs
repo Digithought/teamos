@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -35,6 +35,24 @@ async function repoll(adapter, member, now = new Date()) {
 test('addWatch rejects an unknown probe name', async () => {
 	await withAdapter(PROBES, async (adapter) => {
 		await assert.rejects(() => adapter.addWatch('alice', { probe: 'nope', priority: 'today' }), /unknown probe "nope"/);
+	});
+});
+
+test('a hand-edited unsafe parameter is rejected at poll time, not executed', async () => {
+	// Members can reach watched.json with a plain editor, so `add_watch` validation
+	// alone would leave the probe's argv one text edit away from an injected option.
+	await withAdapter(PROBES, async (adapter, dir) => {
+		await adapter.addWatch('alice', { probe: 'echoing', priority: 'today', params: { text: 'safe' } });
+		const path = join(dir, 'members', 'alice', 'watched.json');
+		const state = JSON.parse(await readFile(path, 'utf-8'));
+		state.items[0].params.text = '--injected';
+		await writeFile(path, JSON.stringify(state));
+
+		await repoll(adapter, 'alice');
+		const observed = JSON.parse(await readFile(path, 'utf-8')).observed;
+		const entry = Object.values(observed)[0];
+		assert.equal(entry.status, 'error');
+		assert.match(entry.latest?.error ?? entry.error ?? '', /must be a simple string/);
 	});
 });
 
