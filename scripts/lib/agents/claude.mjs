@@ -3,34 +3,42 @@ import { join } from 'node:path';
 
 /**
  * Format Claude stream-json lines to readable text.
- * Returns { text, done? } — when done is true the agent has emitted its
- * final result and the runner should stop waiting for a clean exit.
+ * Returns { text, done?, events? } — when done is true the agent has emitted
+ * its final result and the runner should stop waiting for a clean exit.
+ *
+ * `text` is the log rendering and is what the runner tees. `events` is the
+ * same line without the log decoration, for callers that render the stream
+ * themselves (the dashboard chat pane) instead of appending it to a cycle log.
+ * An adapter that omits `events` simply produces no structured events.
  */
 export function formatClaudeJsonLine(line) {
 	try {
 		const obj = JSON.parse(line);
 		if (obj.type === 'system') {
 			if (obj.subtype === 'init') {
-				return { text: `[session ${obj.session_id ?? '?'}]\n` };
+				return { text: `[session ${obj.session_id ?? '?'}]\n`, events: [] };
 			}
 			// thinking_tokens (and any future progress-only system event):
 			// collapse to a single dot so the log shows a thinking heartbeat
 			// rather than a stream of raw JSON.
-			return { text: '.' };
+			return { text: '.', events: [{ kind: 'thinking' }] };
 		}
 		if (obj.type === 'assistant') {
 			const content = obj.message?.content ?? [];
 			const parts = [];
+			const events = [];
 			for (const block of content) {
 				if (block.type === 'text' && block.text) {
 					parts.push(`\n[ASSISTANT]\n${block.text}\n`);
+					events.push({ kind: 'text', content: block.text });
 				} else if (block.type === 'tool_use') {
 					const inputStr =
 						typeof block.input === 'object' ? JSON.stringify(block.input).slice(0, 200) : String(block.input ?? '');
 					parts.push(`\n[TOOL:${block.name}] ${inputStr}\n`);
+					events.push({ kind: 'tool', content: block.name, detail: inputStr });
 				}
 			}
-			return { text: parts.join('') || '' };
+			return { text: parts.join('') || '', events };
 		}
 		if (obj.type === 'user') {
 			const content = obj.message?.content ?? [];
@@ -45,7 +53,7 @@ export function formatClaudeJsonLine(line) {
 					parts.push(`\n[USER]\n${block.text}\n`);
 				}
 			}
-			return { text: parts.join('') || '' };
+			return { text: parts.join('') || '', events: [] };
 		}
 		if (obj.type === 'result') {
 			const status = obj.is_error ? 'ERROR' : 'DONE';
@@ -55,27 +63,40 @@ export function formatClaudeJsonLine(line) {
 				text: `\n[RESULT ${status}${dur}${cost}]\n${obj.result ?? ''}\n`,
 				done: true,
 				exitCode: obj.is_error ? 1 : 0,
+				events: [{ kind: 'result', content: obj.result ?? '' }],
 			};
 		}
 	} catch {
 		/* not JSON, pass through */
 	}
 	const text = line.endsWith('\n') ? line : `${line}\n`;
-	return { text };
+	return { text, events: [] };
 }
+
+/** Tools denied to a read-only spawn — every built-in that can change the workspace. */
+const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'KillShell'];
 
 /**
  * Claude CLI agent adapter.
  * Returns { cmd, args, formatStream } for spawning.
+ *
+ * @param {string} instructionFile - Path to the appended system prompt
+ * @param {string} _prompt - Full prompt text (unused; the CLI reads the file)
+ * @param {Object} [options]
+ * @param {string} [options.cwd] - Working directory; also where `.mcp.json` is looked up
+ * @param {boolean} [options.mcp=true] - Load the project's MCP servers. Chat spawns
+ *   pass false: the teamos MCP tools are the mutation surface, and chat must not mutate.
+ * @param {boolean} [options.readOnly=false] - Deny the workspace-writing built-ins.
+ * @param {string} [options.task] - The trailing prompt line; defaults to the cycle framing.
  */
-export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
+export function createClaudeAdapter(instructionFile, _prompt, { cwd, mcp = true, readOnly = false, task } = {}) {
 	// Load the project's `.mcp.json` explicitly rather than relying on the
 	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
 	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
 	// across CLI versions — a cycle without it silently loses teamos-tools and
 	// any other project server. `--mcp-config` is variadic, so it must precede
 	// another flag rather than the trailing prompt string.
-	const mcpConfig = cwd ? join(cwd, '.mcp.json') : null;
+	const mcpConfig = mcp && cwd ? join(cwd, '.mcp.json') : null;
 	return {
 		cmd: 'claude',
 		args: [
@@ -87,10 +108,11 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
 			'stream-json',
 			'--effort',
 			'xhigh',
+			...(readOnly ? ['--disallowed-tools', WRITE_TOOLS.join(',')] : []),
 			...(mcpConfig && existsSync(mcpConfig) ? ['--mcp-config', mcpConfig] : []),
 			'--append-system-prompt-file',
 			instructionFile,
-			'Execute the member cycle as described in the appended system prompt.',
+			task ?? 'Execute the member cycle as described in the appended system prompt.',
 		],
 		formatStream: formatClaudeJsonLine,
 	};

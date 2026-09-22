@@ -79,8 +79,14 @@ function buildMcpEnv(mcpContext) {
  * @param {Object} [mcpContext] - Optional MCP context for messaging tools
  * @param {string} [mcpContext.teamDir] - Path to team/ directory
  * @param {string} [mcpContext.memberName] - Member name for this cycle
+ * @param {Object} [options] - Spawn options used by callers that are not the cycle path
+ * @param {Object} [options.agentOptions] - Extra options handed to the agent adapter
+ * @param {Object} [options.env] - Env vars layered over the runner's own (chat account credentials)
+ * @param {(event: Object) => void} [options.onEvent] - Called per structured stream event
+ * @param {AbortSignal} [options.signal] - Tree-kills the child when aborted
+ * @param {boolean} [options.quiet] - Keep the agent's output out of the runner's stdio
  */
-export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
+export async function runAgent(agentName, prompt, cwd, logFile, mcpContext, options = {}) {
 	const adapter = agents[agentName];
 	if (!adapter) {
 		console.error(`Unknown agent: ${agentName}. Available: ${Object.keys(agents).join(', ')}`);
@@ -90,11 +96,11 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 	const instructionFile = logFile.replace(/\.log$/, '.prompt.md');
 	await writeFile(instructionFile, prompt, 'utf-8');
 
-	const adapterResult = adapter(instructionFile, prompt, { cwd });
+	const adapterResult = adapter(instructionFile, prompt, { cwd, ...(options.agentOptions ?? {}) });
 	const logStream = createWriteStream(logFile, { flags: 'a' });
 	const { cmd, args, shellCmd, formatStream } = adapterResult;
 
-	const spawnEnv = buildMcpEnv(mcpContext);
+	const spawnEnv = { ...buildMcpEnv(mcpContext), ...(options.env ?? {}) };
 	const spawnArgs = shellCmd
 		? [shellCmd, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: spawnEnv }]
 		: [cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: false, env: spawnEnv }];
@@ -106,9 +112,18 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 			let resultExitCode = null;
 			let settled = false;
 
+			// A caller that owns the child's lifetime (the dashboard chat pane,
+			// whose client can disconnect mid-turn) aborts instead of waiting out
+			// the idle timeout. The kill lands on the whole tree; `close` still
+			// settles the promise, so there is one exit path either way.
+			const onAbort = () => killTree(child);
+			options.signal?.addEventListener('abort', onAbort, { once: true });
+			if (options.signal?.aborted) onAbort();
+
 			function settle(code) {
 				if (settled) return;
 				settled = true;
+				options.signal?.removeEventListener('abort', onAbort);
 				clearTimeout(idleTimer);
 				logStream.end(`\n[runner] Agent exited with code ${code}\n`);
 				logStream.once('finish', () => resolve(code));
@@ -128,7 +143,7 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 			resetIdleTimer();
 
 			function writeOut(text) {
-				process.stdout.write(text);
+				if (!options.quiet) process.stdout.write(text);
 				if (!logStream.write(text)) {
 					child.stdout.pause();
 					logStream.once('drain', () => child.stdout.resume());
@@ -142,6 +157,9 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 				}
 				const result = formatStream(line);
 				if (result.text) writeOut(result.text);
+				if (options.onEvent) {
+					for (const event of result.events ?? []) options.onEvent(event);
+				}
 				if (result.done) {
 					resultExitCode = result.exitCode ?? 0;
 					clearTimeout(idleTimer);
@@ -169,12 +187,13 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 
 			child.stderr.on('data', (chunk) => {
 				if (resultExitCode == null) resetIdleTimer();
-				process.stderr.write(chunk);
+				if (!options.quiet) process.stderr.write(chunk);
 				logStream.write(chunk);
 			});
 
 			child.on('error', (err) => {
 				const label = shellCmd ? 'agent' : cmd;
+				options.signal?.removeEventListener('abort', onAbort);
 				console.error(`Failed to spawn ${label}: ${err.message}`);
 				logStream.end(`\n[runner] Agent spawn error: ${err.message}\n`);
 				logStream.once('finish', () => reject(err));
@@ -187,7 +206,7 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 			});
 		});
 	} finally {
-		process.stdout.write('\x1b[0m');
+		if (!options.quiet) process.stdout.write('\x1b[0m');
 		await unlink(instructionFile).catch(() => {});
 	}
 }
