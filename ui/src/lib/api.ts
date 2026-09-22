@@ -1,4 +1,7 @@
 import type {
+	ChatEvent,
+	ChatSession,
+	ChatStatus,
 	MemberDetail,
 	MemberSummary,
 	Memo,
@@ -56,6 +59,13 @@ async function del(url: string): Promise<void> {
 	if (!res.ok) throw await failure(res);
 }
 
+/** DELETE that returns a body — ending a chat reports what it filed. */
+async function delJson<T>(url: string): Promise<T> {
+	const res = await fetch(url, { method: 'DELETE' });
+	if (!res.ok) throw await failure(res);
+	return res.json();
+}
+
 async function patch(url: string, body: unknown): Promise<void> {
 	const res = await fetch(url, {
 		method: 'PATCH',
@@ -105,6 +115,38 @@ export interface SendMessageArgs {
 	body: string;
 	replyTo?: string;
 	projectCode?: string;
+}
+
+/**
+ * Send one chat turn and yield the member's stream as it arrives.
+ *
+ * The turn carries the human's text, so it has to be a POST — which rules out
+ * EventSource and leaves a hand-rolled read of the SSE frames. Aborting the
+ * signal drops the request, which the server takes as "kill the agent".
+ */
+async function* chatTurn(id: string, text: string, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
+	const res = await fetch(`/api/chat/sessions/${encodeURIComponent(id)}/turn`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ text }),
+		signal,
+	});
+	if (!res.ok || !res.body) throw await failure(res);
+	const reader = res.body.getReader();
+	const decoder = new TextDecoder();
+	let buf = '';
+	while (true) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		buf += decoder.decode(value, { stream: true });
+		const frames = buf.split('\n\n');
+		buf = frames.pop() ?? '';
+		for (const frame of frames) {
+			const line = frame.split('\n').find((l) => l.startsWith('data:'));
+			if (!line) continue;
+			yield JSON.parse(line.slice(5).trim()) as ChatEvent;
+		}
+	}
 }
 
 export const api = {
@@ -187,6 +229,15 @@ export const api = {
 	cyclePause: () => post<{ ok: boolean }>('/api/cycle/pause', {}),
 	cycleResume: () => post<{ ok: boolean }>('/api/cycle/resume', {}),
 	cycleStatus: () => get<{ stopPending: boolean; paused: boolean }>('/api/cycle/status'),
+	/** Is a cycle in flight for this member, and is a chat already open? */
+	chatStatus: (member: string) => get<ChatStatus>(`/api/chat/status?member=${encodeURIComponent(member)}`),
+	startChat: (member: string, human: string) => post<ChatSession>('/api/chat/sessions', { member, human }),
+	chatTurn,
+	/** End a chat; the transcript is filed to the member's inbox unless `persist` is false. */
+	endChat: (id: string, persist = true) =>
+		delJson<{ persisted: boolean; messageId?: string }>(
+			`/api/chat/sessions/${encodeURIComponent(id)}${persist ? '' : '?persist=0'}`,
+		),
 	messagingInfo: () => get<MessagingInfo>('/api/messaging/info'),
 	me: () => get<MeInfo>('/api/me'),
 };

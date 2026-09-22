@@ -4,12 +4,13 @@ import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
 import type { MailboxCounts, MemberDetail, TodoItem } from '../lib/types.js';
 import Mailbox from './Mailbox.svelte';
+import MemberChat from './MemberChat.svelte';
 
 const { name }: { name: string } = $props();
 
 let detail = $state<MemberDetail | null>(null);
 let loading = $state(true);
-let tab = $state<'messages' | 'todos' | 'state' | 'schedule'>('messages');
+let tab = $state<'messages' | 'chat' | 'todos' | 'state' | 'schedule'>('messages');
 /** Reported up by <Mailbox> so the tab badge doesn't need a second fetch of the same mailboxes. */
 let mailCounts = $state<MailboxCounts | null>(null);
 
@@ -270,6 +271,7 @@ async function deleteMember() {
 		<button class="tab" class:active={tab === 'messages'} onclick={() => tab = 'messages'}>
 			Messages {#if mailCounts && mailCounts.inboxMessages > 0}<span class="badge">{mailCounts.inboxMessages}</span>{/if}
 		</button>
+		<button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
 		<button class="tab" class:active={tab === 'todos'} onclick={() => tab = 'todos'}>
 			Todos {#if detail.todos.items.length > 0}<span class="badge">{detail.todos.items.length}</span>{/if}
 		</button>
@@ -282,6 +284,9 @@ async function deleteMember() {
 	<div class="tab-content">
 		{#if tab === 'messages'}
 			<Mailbox {name} oncounts={(c) => (mailCounts = c)} />
+
+		{:else if tab === 'chat'}
+			<MemberChat {name} />
 
 		{:else if tab === 'todos'}
 			<div class="add-form">

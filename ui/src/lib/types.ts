@@ -86,6 +86,41 @@ export interface MailboxCounts {
 	inboxMessages: number;
 }
 
+/** One thing said in a chat session, by the human or by the member. */
+export interface ChatTranscriptEntry {
+	role: 'human' | 'member';
+	text: string;
+	at: string;
+}
+
+export interface ChatSession {
+	id: string;
+	member: string;
+	human: string;
+	startedAt: string;
+	lastActiveAt: string;
+	/** True while a turn's agent is still running. */
+	busy: boolean;
+	transcript: ChatTranscriptEntry[];
+}
+
+/** Whether a scheduled cycle is in flight for the member, and any open chat. */
+export interface ChatStatus {
+	midCycle: boolean;
+	since?: string;
+	session: ChatSession | null;
+}
+
+/** One stream event from a chat turn. `text` is the member speaking. */
+export interface ChatEvent {
+	kind: 'text' | 'tool' | 'thinking' | 'result' | 'done' | 'error';
+	content?: string;
+	detail?: string;
+	message?: string;
+	exitCode?: number;
+	answer?: string;
+}
+
 export interface MessagingInfo {
 	adapter: string;
 }
