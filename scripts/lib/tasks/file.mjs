@@ -57,9 +57,14 @@ export class FileTasksAdapter {
 		}
 	}
 
-	async _writeItems(member, items) {
+	/**
+	 * `ensured: true` means the caller already created the directory, so this
+	 * write is a single syscall with nothing awaited between the read that
+	 * produced `items` and the write that persists them — see `addTodo`.
+	 */
+	async _writeItems(member, items, { ensured = false } = {}) {
 		const path = this._todoPath(member);
-		await mkdir(dirname(path), { recursive: true });
+		if (!ensured) await mkdir(dirname(path), { recursive: true });
 		await writeFile(path, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
 	}
 
@@ -104,7 +109,17 @@ export class FileTasksAdapter {
 		if (!isValidPriority(input.priority)) {
 			throw new Error(`add_todo: priority must be one of ${PRIORITY_ORDER.join(', ')}`);
 		}
-		const items = await this._loadNormalized(member);
+		// A chat instance of this member can be adding a todo while a cycle of
+		// the same member is adding one. Claude's file tools catch that for
+		// `state.md` and `profile.md` (an Edit whose `old_string` moved is
+		// rejected) but they never see this file — it is reached only through
+		// the MCP tools, which read and write it wholesale. Appends are the
+		// case worth protecting and the cheap fix covers them: validate first,
+		// create the directory first, then read and write back-to-back with
+		// nothing awaited in between, so the loser of a race is a lost append
+		// only if the two writes interleave within a single tick. A real
+		// compare-and-swap would cost far more than the remaining window is
+		// worth; see teamos/docs/chat.md.
 		const item = sanitizeItem({
 			id: makeTodoId(),
 			title: input.title.trim(),
@@ -114,8 +129,10 @@ export class FileTasksAdapter {
 			projectCode: input.projectCode,
 			status: input.status === 'blocked' ? 'blocked' : undefined,
 		});
+		await mkdir(dirname(this._todoPath(member)), { recursive: true });
+		const items = await this._loadNormalized(member);
 		items.push(item);
-		await this._writeItems(member, items);
+		await this._writeItems(member, items, { ensured: true });
 		return { id: item.id };
 	}
 

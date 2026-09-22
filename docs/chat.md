@@ -2,20 +2,54 @@
 
 TeamOS members run in cycles. Between cycles a member is not running at all — its identity is entirely the files on disk. That makes "talk to a member right now" awkward: until chat, the only way to reach one was to drop a message in its inbox and wait hours for the next cycle to pick it up.
 
-**Chat** closes that gap from the dashboard. Starting a chat spawns a fresh agent holding the member's manifest, state, todos, schedule and inbox — the same context a cycle prompt assembles, minus the instruction to go do work. Every turn spawns a new agent; the transcript carried in the prompt is the session's memory. When the chat ends, the whole conversation is filed as a message in the member's inbox, and the member's **next cycle** acts on it.
+**Chat** closes that gap from the dashboard. Starting a chat spawns a fresh agent holding the member's manifest, state, todos, schedule and inbox — the same context a cycle prompt assembles, and the same tools — minus the instruction to go do work. Every turn spawns a new agent; the transcript carried in the prompt is the session's memory. A chat instance can act on what the conversation decides, there and then. When the chat ends, the whole conversation is filed as a message in the member's inbox as the record of what was said.
 
 Chat is a dashboard feature, not an adapter. It adds nothing to the MCP surface and nothing to the runner.
 
 ## Design Principles
 
 - **Always a fresh session; never attach to a running cycle.** A member mid-cycle is deep in a ticket. Injecting conversation into that context derails the work and pollutes the ticket's history. A freshly spawned instance given the manifest and state *is* the same member in every sense that matters — members are already stateless between cycles.
-- **Chat never defers or blocks scheduled cycles.** The runner keeps its cadence while a chat is open; chat asks it for nothing and tells it nothing. This is the hard constraint, and the next principle follows from it.
-- **Read everything, write narrowly.** The chat session may read anything — manifest, state, todos, inbox, schedule, the host repo. Its **only** write is appending its own transcript, as one message through the messaging adapter. It does not write `state.md`, todos, schedule events, triggers, watches, or anything else.
-- **…because there is no locking anywhere.** `tasks/file.mjs`, `messaging/file.mjs` and `state.mjs` are all plain read-modify-write over JSON. That is safe today only because exactly one process touches a member at a time. Chat breaks that invariant by existing, so it writes as little as it possibly can, and never while a cycle could be rewriting the same structure it is editing.
-- **Actions land one cycle late, on purpose.** If a conversation produces a decision, it lands in the transcript message, and the next cycle executes it. Chat feels "one cycle behind" on actions and that is the design, not a gap to paper over with a second write path. Making chat write directly would first require atomic writes (write-tmp-then-rename) in the adapters; until those exist, a direct write is a silent lost update.
-- **Enforcement, not etiquette.** A chat spawn gets no teamos MCP servers (`mcp: false`) and denies the workspace-writing built-ins (`readOnly: true` → `--disallowed-tools Write,Edit,MultiEdit,NotebookEdit,Bash,KillShell`). The rule holds even if the member decides to be helpful.
-- **One chat per member.** A second concurrent chat with the same member is rejected with 409. Two chats would mean two transcripts of one member diverging in parallel, two agents billing the account, and no merge story for either.
+- **Chat neither defers nor blocks scheduled cycles.** The runner keeps its cadence while a chat is open; chat asks it for nothing and tells it nothing. A chat may open, run and finish entirely inside a cycle of the same member. There is no lease, no lock and no pause — see **Two Instances, One Member** below for why none is needed and what is left uncovered.
+- **Same context, same tools.** A chat spawn gets the project's MCP servers and the built-in file tools exactly as a cycle does. A member that cannot act has to narrate its intentions to its next self, which is a worse failure mode than the race it was avoiding.
+- **One chat per member.** A second concurrent chat with the same member is rejected with 409. Two chats would mean two transcripts of one member diverging in parallel, two agents billing the account, and no merge story for either. Note the asymmetry: chat-beside-cycle is allowed, chat-beside-chat is not — a cycle and a chat have different jobs and different records, two chats have the same job and two records.
+- **The transcript is the record, not the mechanism.** A finished chat is still filed to the member's inbox in full. It is how the conversation enters the member's history and how the next cycle picks up loose ends — not the path by which anything gets done.
 - **The dashboard is the trust boundary.** These routes spawn processes. They add no listener and no auth of their own; they inherit the dashboard's. See **Security** below.
+
+## Two Instances, One Member
+
+A chat and a scheduled cycle for the same member can be running at the same moment. Both are Claude instances, both hold the same profile and state, and both can write. There is no lock anywhere in teamos. This section is the whole argument for why that is acceptable.
+
+### What the tools already guarantee
+
+Claude Code's own file tools implement optimistic concurrency, and they do it across processes because the check is against the filesystem, not against in-process bookkeeping:
+
+- `Edit` requires the file to have been read first, and fails when `old_string` no longer matches what is on disk.
+- `Write` refuses to overwrite a file the instance has not read.
+- The harness notices when a file has changed on disk since it was read, and rejects the write.
+
+`state.md` and `profile.md` — the files a chat is most likely to touch and the ones whose loss would hurt most — are edited exclusively through those tools. A second instance that tries to stomp the first instance's change is stopped, without a lease, a lock or a compare-and-swap. The loser is told the file moved, which is exactly the signal it needs.
+
+This was true before chat existed. The read-only design was written on the assumption that the only protection was "exactly one process touches a member at a time", and that assumption was wrong in the direction of caution.
+
+### What the tools do not cover
+
+The JSON collections — `todo.json`, `schedule.json`, `inbox.json` / `sent.json` / `archives.json` — are never touched with `Edit` or `Write`. They are reached only through the teamos MCP tools, which read the file, modify a list in memory and write it back whole. Claude's read-before-write protection never sees them, and nothing else checks.
+
+Almost every operation on them is additive: add a todo, add an event, deliver a message. For those, re-reading immediately before writing is enough — a concurrent add is lost only if the two writes interleave inside a single tick. So `addTodo`, `addEvent` and `_appendToMailbox` now validate, create the directory, then read and write back-to-back with **no `await` in between**. That is the whole fix. It is three functions and no new abstraction.
+
+The non-additive operations — `updateTodo`, `completeTodo`, `archiveMessage`, `unarchiveMessage`, `acknowledgeDue` — are not protected, and deliberately so. Closing them honestly means a real compare-and-swap, which is a layer this codebase does not have and does not want for the sake of a race whose realistic outcome is one member archiving a message twice.
+
+### What is left: semantics
+
+No locking scheme prevents the actual remaining risk, which is that two instances of the same member each make a reasonable but conflicting decision. The chat instance drops a todo the cycle instance is halfway through; the cycle records "shipped the parser" in state while the chat records "parser blocked on review". Both writes succeed. Both are individually correct. Together they are nonsense.
+
+That is a coordination problem, not a concurrency-control problem, and the defences against it are:
+
+- `agent-rules/chat.md` tells the instance plainly that it is the second one, and how to behave: re-read before writing, append rather than rewrite a section someone else may have touched, and treat a rejected write as the other instance rather than as an obstacle.
+- The mid-cycle indicator tells the human the same thing.
+- The cycle-completion event and the changed-file list stop the chat instance answering from a picture that has gone stale.
+
+None of this is enforcement. It is the honest position: the structural races are closed, the semantic one is managed, and a member that is bad at sharing a desk with itself will still occasionally make a mess.
 
 ## Session Lifecycle
 
@@ -48,11 +82,12 @@ Every turn re-sends the whole conversation, because every turn is a new process.
 | Todos, due events, upcoming events | yes |
 | Inbox (with one hop of thread context) | yes |
 | Commit triggers / watches fired | **no** — those are wake signals for a cycle, and acknowledging them is a cycle's job |
-| Agent Tools (MCP) section | **no** — a chat session has no tools to describe |
+| Agent Tools (MCP) section | yes — the chat instance has the tools, so it is told about them |
 | Cycle rules, "execute a cycle at priority X" | **no** — replaced by `agent-rules/chat.md` |
 | Conversation so far | chat only |
+| Files changed since the chat opened | chat only — see below |
 
-`agent-rules/chat.md` is the chat counterpart of `agent-rules/cycle.md`: it tells the member it may read anything, may write nothing, and that anything actionable must be said plainly in the reply because the next cycle reads its words, not its intentions.
+`agent-rules/chat.md` is the chat counterpart of `agent-rules/cycle.md`. It tells the member it is a *second instance* of itself, that another instance may be working right now, to re-read before writing, to prefer appending over rewriting, and to treat a rejected write as the other instance rather than as something to force through.
 
 ## Transcript Persistence
 
@@ -62,7 +97,7 @@ Ending a chat calls `sendMessage` on the messaging adapter, from the **human** t
 from:    <the dashboard identity>
 to:      [<member>]
 subject: Chat with <human> — <YYYY-MM-DD HH:MM>
-body:    a preamble saying nothing was applied, then the full transcript
+body:    a preamble saying the transcript is the record, then the full transcript
 ```
 
 The whole transcript goes in the body. The master store is already one markdown file per message with no size rule (`teamos/docs/messages.md`), and a body that pointed at some other file would be a reference the adapter doesn't know about — the retention sweep that prunes unreferenced messages would happily orphan it. One message, one copy, and the member's next cycle reads it through `list_inbox` / `read_message` like any other mail. Cost: a very long chat makes a very long next-cycle prompt.
@@ -71,7 +106,7 @@ The human sees it in their `sent.json`, and the conversation shows up in the das
 
 Two ways nothing is filed: a chat with no turns, and **Discard** (`?persist=0`), which drops the session without writing.
 
-**This one append is a read-modify-write**, like every other mailbox operation: it reads `inbox.json`, appends an id, writes it back. A cycle archiving a message in the same few milliseconds can lose one of the two edits. The window is small and the fix is not local to chat — it is atomic writes in the adapters. Until then this is the single race chat accepts, and it accepts exactly one.
+**This append is a read-modify-write**, like every other mailbox operation: it reads `inbox.json`, appends an id, writes it back. `_appendToMailbox` now creates the directory before the read, so nothing is awaited between reading the list and writing it back; see **Two Instances, One Member**.
 
 ## Which Account Pays
 
@@ -95,7 +130,26 @@ The default shipped config is `{ "agent": "claude", "env": {} }` — chat bills 
 
 The chat pane shows whether a scheduled cycle is in flight for the member. There is no runner-side registry to ask and chat deliberately opens no channel to the runner, so `detectMidCycle` reads a side effect instead: `runAgent` writes `<member>.<priority>.<ts>.prompt.md` next to the cycle log before spawning and unlinks it in a `finally`. Present and recent (< 1 hour) means "a cycle is running"; older means a runner was killed without cleaning up.
 
-This is an indicator for the human, not a lock. **Nothing branches on it** — chat starts, turns and files exactly the same either way. Chat's own logs live in `team/.logs/chat/` so they can never be mistaken for a cycle.
+This is an indicator for the human, not a lock, and it always was. **Nothing branches on it** — chat starts, turns and files exactly the same either way. It is worth reading as "the other you is awake", not as "you are waiting". The pane's copy says so. Chat's own logs live in `team/.logs/chat/` so they can never be mistaken for a cycle.
+
+### Cycle completion, and what changed
+
+The same prompt file is also the completion signal. `ChatSessions` records which of the member's cycle prompt files were live when the chat opened and polls every 5s; one that disappears means that cycle's `runAgent` reached its `finally`. Its sibling `.log` is then checked for `runAgent`'s closing line:
+
+```
+[runner] Agent exited with code <n>
+```
+
+That marker is written in the same `settle()` that resolves the run, so it means the cycle is genuinely over — a prompt file removed by hand or by a log sweep produces no marker and no event. When it fires:
+
+- a `{ kind: 'cycle', event: 'completed', exitCode, at }` event goes out on the chat's SSE stream, which is the turn stream, so a human watching a reply in progress sees it immediately. When no turn is running, the pane's 15s status poll picks it up from `session.cycleCompletions` instead.
+- the **next turn's prompt** gets a "Changed Since This Chat Opened" section listing the member's files written since the chat started.
+
+A cycle that both starts and ends between two polls produces no event. That is deliberate rather than tolerated: the banner is a courtesy, while the changed-file list — the part that actually matters — is computed from mtimes, not from these events, so it is correct regardless of whether the banner fired.
+
+**Why mtimes.** The question the next turn needs answered is "is what I said ten minutes ago still true?". Comparing each file in `team/members/<name>/` against the chat's start time answers that for one `stat` per file, with no journal to keep and nothing to keep in sync. It is coarse in both directions — a rewrite to identical bytes counts as a change, and a change irrelevant to this conversation counts too — and that is the right way to be wrong, because the remedy it prompts is a re-read, which is cheap. Content hashing would cost more and buy precision nobody needs. Only the member's own directory is walked: the team-wide files (org, memos, projects, roster) are reassembled into every turn's prompt anyway, so the instance already sees them fresh.
+
+The section is framed as a warning about the *transcript*, not about the prompt. Everything above it was rebuilt moments ago and is current; the conversation below it was not.
 
 ## HTTP Surface
 
@@ -119,7 +173,7 @@ Chat adds **no** new listener, binds nothing, and changes nothing about `auth` h
 
 **That binding is now load-bearing.** Before chat, reaching the dashboard port meant reading team state and sending messages. With chat, it means starting processes on the host. Same rule as before, higher stakes: keep it on the tailnet, and keep `trustProxy` honest about what actually sits in front of the port.
 
-Within that boundary, a chat session is still the narrowest thing that can hold a conversation: no MCP servers, no file-writing tools, and one append to one mailbox at the end.
+Within that boundary, a chat session has the same reach a cycle does. That is a widening: before, the worst a reachable dashboard could do through chat was burn tokens reading. Now it can write the member's files. The mitigation is unchanged and unglamorous — the port is not reachable.
 
 ## Failure Modes
 
@@ -130,6 +184,8 @@ Within that boundary, a chat session is still the narrowest thing that can hold 
 | Agent exits non-zero with no output | `done` with the exit code, and the pane says the member ended the turn without saying anything |
 | Client disconnects mid-turn | agent tree-killed; the human's message is kept, the partial answer is not |
 | Second chat with the same member | `409`, with the start time of the one already open |
+| A cycle for the member starts or finishes mid-chat | nothing blocks; a banner, and the next turn's prompt lists what changed |
+| Chat and cycle edit the same file | the second writer's tool call is rejected (changed since read); the instance re-reads and reconciles |
 | Second turn while one is running | `409` — one turn at a time per session |
 | Dashboard restarted mid-chat | the session is gone and unfiled; the member never hears about it |
 | Chat left open | filed automatically after 30 idle minutes |
@@ -138,6 +194,7 @@ Within that boundary, a chat session is still the narrowest thing that can hold 
 
 Not built, deliberately:
 
-- **Direct writes from chat** (adding a todo mid-conversation) need atomic writes in `tasks/file.mjs`, `messaging/file.mjs` and `state.mjs` first — write-tmp-then-rename at minimum, and a real answer for the read-modify-write window at best. Until then the transcript is the only write.
+- **A lease, lock or compare-and-swap layer.** See **Two Instances, One Member**: the built-in tools cover the files that matter, the JSON collections are cheap to make additively safe, and the residual risk is semantic — which no locking scheme addresses.
+- **Atomic writes (write-tmp-then-rename) in the adapters.** Still worth doing on its own merits — it removes the torn-file window on a crash — but it is not what makes chat safe and it was not needed to get here.
 - **Resuming a chat across a dashboard restart** would mean persisting sessions, which means a second on-disk shape for conversation state next to the one messages already have.
 - **Joining a running cycle** stays off the table for the reason at the top of this document.

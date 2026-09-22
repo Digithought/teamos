@@ -73,30 +73,31 @@ export function formatClaudeJsonLine(line) {
 	return { text, events: [] };
 }
 
-/** Tools denied to a read-only spawn — every built-in that can change the workspace. */
-const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'KillShell'];
-
 /**
  * Claude CLI agent adapter.
  * Returns { cmd, args, formatStream } for spawning.
+ *
+ * Every spawn — cycle, clerk or chat — gets the same tools. Chat used to pass
+ * `mcp: false` plus a `--disallowed-tools` list to stop a conversation racing a
+ * concurrent cycle; the CLI's own file tools already catch that (Edit needs a
+ * prior Read and fails on a changed `old_string`, Write refuses a file it has
+ * not read), so the restriction bought nothing the tools did not already give.
+ * See `teamos/docs/chat.md`.
  *
  * @param {string} instructionFile - Path to the appended system prompt
  * @param {string} _prompt - Full prompt text (unused; the CLI reads the file)
  * @param {Object} [options]
  * @param {string} [options.cwd] - Working directory; also where `.mcp.json` is looked up
- * @param {boolean} [options.mcp=true] - Load the project's MCP servers. Chat spawns
- *   pass false: the teamos MCP tools are the mutation surface, and chat must not mutate.
- * @param {boolean} [options.readOnly=false] - Deny the workspace-writing built-ins.
  * @param {string} [options.task] - The trailing prompt line; defaults to the cycle framing.
  */
-export function createClaudeAdapter(instructionFile, _prompt, { cwd, mcp = true, readOnly = false, task } = {}) {
+export function createClaudeAdapter(instructionFile, _prompt, { cwd, task } = {}) {
 	// Load the project's `.mcp.json` explicitly rather than relying on the
 	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
 	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
 	// across CLI versions — a cycle without it silently loses teamos-tools and
 	// any other project server. `--mcp-config` is variadic, so it must precede
 	// another flag rather than the trailing prompt string.
-	const mcpConfig = mcp && cwd ? join(cwd, '.mcp.json') : null;
+	const mcpConfig = cwd ? join(cwd, '.mcp.json') : null;
 	return {
 		cmd: 'claude',
 		args: [
@@ -108,7 +109,6 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd, mcp = true,
 			'stream-json',
 			'--effort',
 			'xhigh',
-			...(readOnly ? ['--disallowed-tools', WRITE_TOOLS.join(',')] : []),
 			...(mcpConfig && existsSync(mcpConfig) ? ['--mcp-config', mcpConfig] : []),
 			'--append-system-prompt-file',
 			instructionFile,

@@ -92,9 +92,14 @@ export class FileScheduleAdapter {
 		}
 	}
 
-	async _writeEvents(member, events) {
+	/**
+	 * `ensured: true` means the caller already created the directory, so the
+	 * read that produced `events` and this write are back-to-back with nothing
+	 * awaited between them — see `addEvent`.
+	 */
+	async _writeEvents(member, events, { ensured = false } = {}) {
 		const path = this._schedulePath(member);
-		await mkdir(dirname(path), { recursive: true });
+		if (!ensured) await mkdir(dirname(path), { recursive: true });
 		await writeFile(path, `${JSON.stringify({ events }, null, '\t')}\n`, 'utf-8');
 	}
 
@@ -172,7 +177,12 @@ export class FileScheduleAdapter {
 			);
 		}
 
-		const events = await this._loadNormalized(member);
+		// Additive, and two instances of one member can be adding at once (a
+		// chat beside a cycle). This file is reached only through the MCP
+		// tools, so Claude's read-before-write protection never sees it; the
+		// cheap substitute is to build the event first and create the directory
+		// first, leaving no `await` between reading the list and writing it
+		// back. See the same note in tasks/file.mjs and teamos/docs/chat.md.
 		const event = {
 			id: makeEventId(),
 			title: input.title.trim(),
@@ -185,8 +195,10 @@ export class FileScheduleAdapter {
 		if (typeof input.projectCode === 'string' && input.projectCode) {
 			event.projectCode = input.projectCode;
 		}
+		await mkdir(dirname(this._schedulePath(member)), { recursive: true });
+		const events = await this._loadNormalized(member);
 		events.push(event);
-		await this._writeEvents(member, events);
+		await this._writeEvents(member, events, { ensured: true });
 		return { id: event.id };
 	}
 

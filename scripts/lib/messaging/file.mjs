@@ -162,17 +162,37 @@ export class FileMessagingAdapter {
 		}
 	}
 
-	async _writeMailbox(member, kind, items) {
+	/**
+	 * `ensured: true` means the caller already created the directory — see
+	 * `_appendToMailbox`, which needs its read and its write adjacent.
+	 */
+	async _writeMailbox(member, kind, items, { ensured = false } = {}) {
 		const path = this._mailboxPath(member, kind);
-		await mkdir(dirname(path), { recursive: true });
+		if (!ensured) await mkdir(dirname(path), { recursive: true });
 		await writeFile(path, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
 	}
 
+	/**
+	 * Append one id to a mailbox.
+	 *
+	 * The one mailbox operation that is purely additive, and the one that two
+	 * instances of the same member genuinely race: a chat filing its transcript
+	 * while a cycle sends a message. A mailbox is a JSON list rewritten whole
+	 * and reached only through the MCP tools, so Claude's own read-before-write
+	 * checks — which do cover `state.md` and `profile.md` — never apply. The
+	 * cheap answer is the one used throughout these adapters: create the
+	 * directory first, then read and write with nothing awaited in between, so
+	 * a concurrent append is dropped only if the two land inside one tick.
+	 * Removals (archive, unarchive, delete) get no such treatment — they read
+	 * two mailboxes and write both, and closing that honestly would mean a
+	 * compare-and-swap layer this codebase deliberately does not have.
+	 */
 	async _appendToMailbox(member, kind, id) {
+		await mkdir(dirname(this._mailboxPath(member, kind)), { recursive: true });
 		const items = await this._readMailbox(member, kind);
 		if (!items.includes(id)) {
 			items.push(id);
-			await this._writeMailbox(member, kind, items);
+			await this._writeMailbox(member, kind, items, { ensured: true });
 		}
 	}
 

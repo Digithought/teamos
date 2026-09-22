@@ -16,6 +16,8 @@ async function withStubAgent(script, fn) {
 	const stub = join(dir, 'claude');
 	await writeFile(stub, `#!/usr/bin/env node\n${script}\n`, 'utf-8');
 	await chmod(stub, 0o755);
+	// The adapter only passes --mcp-config when the file is really there.
+	await writeFile(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: {} }), 'utf-8');
 	try {
 		await fn({
 			dir,
@@ -63,7 +65,7 @@ test('runAgent streams events, honours the env override, and cleans up the promp
 			env,
 			quiet: true,
 			onEvent: (event) => events.push(event),
-			agentOptions: { mcp: false, readOnly: true, task: 'say hi' },
+			agentOptions: { task: 'say hi' },
 		});
 
 		assert.equal(exitCode, 0);
@@ -74,8 +76,12 @@ test('runAgent streams events, honours the env override, and cleans up the promp
 		assert.equal(events[0].content, 'hi there');
 
 		const argv = JSON.parse(await readFile(join(dir, 'argv.json'), 'utf-8'));
-		assert.ok(argv.includes('--disallowed-tools'), 'readOnly denies the writing built-ins');
-		assert.ok(!argv.includes('--mcp-config'), 'mcp: false keeps the teamos tools out of the spawn');
+		// Every spawn gets the project's MCP servers and every built-in tool.
+		// Chat used to strip both; the file tools' own read-before-write checks
+		// make that unnecessary — see teamos/docs/chat.md.
+		assert.ok(!argv.includes('--disallowed-tools'), 'no tool is denied to a chat spawn');
+		assert.ok(argv.includes('--mcp-config'), "the project's .mcp.json is loaded explicitly");
+		assert.equal(argv[argv.indexOf('--mcp-config') + 1], join(dir, '.mcp.json'));
 		assert.equal(argv[argv.length - 1], 'say hi');
 
 		// The prompt the agent was handed is written next to the log and removed

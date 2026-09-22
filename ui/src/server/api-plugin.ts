@@ -150,13 +150,16 @@ interface ChatSessionInfo {
 	lastActiveAt: string;
 	busy: boolean;
 	transcript: ChatTranscriptEntry[];
+	/** Cycles of this member that finished while the chat was open. */
+	cycleCompletions: { at: string; exitCode: number }[];
 }
 
 /**
  * The live-chat controller (`scripts/lib/chat/session.mjs`), injected by the
  * vite config the same way the adapters are. Sessions live in this process;
- * the only thing that reaches disk is the transcript, filed through the
- * messaging adapter when a chat ends — see teamos/docs/chat.md.
+ * the agent it spawns writes to the member's files directly, and the
+ * transcript is filed through the messaging adapter when a chat ends — see
+ * teamos/docs/chat.md.
  */
 interface ChatController {
 	create(args: { member: string; human: string }): Promise<unknown>;
@@ -168,7 +171,12 @@ interface ChatController {
 		opts: { onEvent: (event: unknown) => void; signal: AbortSignal },
 	): Promise<{ exitCode: number; answer: string }>;
 	end(id: string, opts?: { persist?: boolean }): Promise<{ persisted: boolean; messageId?: string }>;
-	status(member: string): Promise<{ midCycle: boolean; since?: string; session: ChatSessionInfo | null }>;
+	status(member: string): Promise<{
+		midCycle: boolean;
+		since?: string;
+		session: ChatSessionInfo | null;
+		changedFiles: string[];
+	}>;
 }
 
 interface AuthConfig {
@@ -924,13 +932,14 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 					// ─── Chat (live conversation with a member) ──────────────
 					//
-					// Spawns an agent per turn, streams it back, and writes
-					// nothing until the chat ends — see teamos/docs/chat.md for
-					// why the session is read-everything / write-narrow. These
-					// routes make the dashboard a process-spawning surface, so
-					// they inherit the deployment rule the dashboard already
-					// relies on: the port is reachable only through the tailnet
-					// or the auth proxy in front of it.
+					// Spawns an agent per turn and streams it back. The spawn
+					// has the same tools a cycle does, so a chat can act on
+					// what it decides — see teamos/docs/chat.md for why that no
+					// longer needs a lock. These routes make the dashboard a
+					// process-spawning surface, so they inherit the deployment
+					// rule the dashboard already relies on: the port is
+					// reachable only through the tailnet or the auth proxy in
+					// front of it.
 					if (path.startsWith('/api/chat/')) {
 						if (!chat) return json(res, { error: 'Chat is not configured on this dashboard.' }, 501);
 

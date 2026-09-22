@@ -17,6 +17,9 @@ let starting = $state(false);
 let sending = $state(false);
 let error = $state<string | null>(null);
 let filed = $state<{ persisted: boolean; messageId?: string } | null>(null);
+/** Set when a scheduled cycle of this member finishes while the chat is open. */
+let cycleNote = $state<string | null>(null);
+let seenCompletions = 0;
 let paneEl = $state<HTMLDivElement | null>(null);
 let controller: AbortController | null = null;
 
@@ -31,6 +34,14 @@ async function loadStatus() {
 		if (status.session && !session) {
 			session = status.session;
 			transcript = status.session.transcript;
+			seenCompletions = status.session.cycleCompletions.length;
+		}
+		// A cycle that finished between polls: the turn stream would have
+		// carried it, but only if a turn happened to be running.
+		const completions = status.session?.cycleCompletions.length ?? 0;
+		if (completions > seenCompletions) {
+			seenCompletions = completions;
+			noteCycleFinished();
 		}
 	} catch {
 		/* the status poll is advisory — a failed poll shouldn't break the pane */
@@ -43,6 +54,10 @@ $effect(() => {
 	const timer = setInterval(loadStatus, 15000);
 	return () => clearInterval(timer);
 });
+
+function noteCycleFinished() {
+	cycleNote = `${name} just finished a scheduled cycle. Their next reply re-reads whatever it changed.`;
+}
 
 async function scrollToEnd() {
 	await tick();
@@ -57,6 +72,8 @@ async function start() {
 	try {
 		session = await api.startChat(name, identity.name);
 		transcript = session.transcript;
+		seenCompletions = session.cycleCompletions.length;
+		cycleNote = null;
 	} catch (err) {
 		error = err instanceof Error ? err.message : String(err);
 	} finally {
@@ -86,6 +103,12 @@ async function send() {
 				activity = `reading — ${event.content}`;
 			} else if (event.kind === 'thinking') {
 				if (!streaming) activity = 'thinking…';
+			} else if (event.kind === 'cycle') {
+				// Out-of-band on the turn's stream: the other instance of this
+				// member just exited. Nothing to do here — the next turn's
+				// prompt carries the list of what it touched.
+				seenCompletions += 1;
+				noteCycleFinished();
 			} else if (event.kind === 'error') {
 				error = event.message ?? 'The chat turn failed.';
 			} else if (event.kind === 'done') {
@@ -131,24 +154,39 @@ function onKeydown(e: KeyboardEvent) {
 
 <div class="chat">
 	<div class="notice">
-		<strong>Chat writes nothing.</strong>
-		This is a fresh session of {name} with their manifest, state, todos and inbox — it can read anything and change
-		nothing. When you end the chat the whole transcript lands in {name}'s inbox, and anything you agreed on happens on
-		their <em>next cycle</em>, not now.
+		<strong>Chat can act.</strong>
+		This is a fresh session of {name} with their manifest, state, todos, inbox and full toolset — the same one a cycle
+		gets. What you agree on here, they can do here. When you end the chat the whole transcript lands in {name}'s inbox
+		as the record of what was said and what is still open.
 	</div>
 
 	{#if status?.midCycle}
 		<div class="cycle-banner">
 			<span class="dot"></span>
-			{name} is mid-cycle right now{status.since ? ` (started ${new Date(status.since).toLocaleTimeString()})` : ''}.
-			Chatting doesn't interrupt or delay it — the two run side by side.
+			<span>
+				FYI: a scheduled cycle of {name} is running{status.since
+					? ` (started ${new Date(status.since).toLocaleTimeString()})`
+					: ''}. Nothing is waiting on it — this chat and that cycle are two instances of {name} working at the same
+				time, and each re-reads before it writes.
+			</span>
+		</div>
+	{/if}
+
+	{#if cycleNote}
+		<div class="cycle-note">
+			{cycleNote}
+			{#if status?.changedFiles?.length}
+				Changed since this chat opened: {status.changedFiles.join(', ')}.
+			{/if}
+			<button class="dismiss" onclick={() => (cycleNote = null)}>Dismiss</button>
 		</div>
 	{/if}
 
 	{#if filed}
 		<div class="filed">
 			{#if filed.persisted}
-				Chat filed to {name}'s inbox{filed.messageId ? ` as ${filed.messageId}` : ''}. It will be read next cycle.
+				Chat filed to {name}'s inbox{filed.messageId ? ` as ${filed.messageId}` : ''} as the record. Anything {name} did
+				during the chat is already done.
 			{:else}
 				Chat ended. Nothing was filed.
 			{/if}
@@ -161,7 +199,7 @@ function onKeydown(e: KeyboardEvent) {
 				<button class="add-btn" onclick={start} disabled={starting}>
 					{starting ? 'Starting...' : `Chat with ${name}`}
 				</button>
-				<span class="start-hint">Spawns a new session — your automated cycles keep running.</span>
+				<span class="start-hint">Spawns a second instance of {name} — scheduled cycles keep running beside it.</span>
 			{:else}
 				<span class="start-hint">Pick who you are in the nav bar before starting a chat.</span>
 			{/if}
@@ -248,6 +286,24 @@ function onKeydown(e: KeyboardEvent) {
 		border-radius: 50%;
 		background: var(--warning);
 		flex-shrink: 0;
+	}
+	.cycle-note {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.5rem 0.75rem;
+	}
+	.dismiss {
+		margin-left: auto;
+		font-size: 0.75rem;
+		color: var(--text-light);
+		text-decoration: underline;
 	}
 	.filed {
 		font-size: 0.8rem;

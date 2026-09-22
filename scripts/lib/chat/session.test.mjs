@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FileMessagingAdapter } from '../messaging/file.mjs';
-import { ChatSessions, detectMidCycle, resolveChatConfig } from './session.mjs';
+import { ChatSessions, changedFilesSince, detectMidCycle, readCycleExit, resolveChatConfig } from './session.mjs';
 
 /**
  * A team workspace plus a stub `claude` on PATH. Chat spawns the agent through
@@ -38,7 +38,17 @@ async function withChat(stubScript, fn) {
 		teamDir,
 		repoRoot: dir,
 		adapters: { messaging },
-		config: { chat: { env: { PATH: stubScript ? `${bin}:${process.env.PATH}` : bin } } },
+		config: {
+			chat: {
+				env: {
+					PATH: stubScript ? `${bin}:${process.env.PATH}` : bin,
+					// Lets a stub dump the prompt it was handed, which is the only
+					// way to assert on what a turn actually told the member.
+					TEAMOS_STUB_PROMPT_OUT: join(dir, 'prompt.txt'),
+					TEAMOS_STUB_GO: join(dir, 'go'),
+				},
+			},
+		},
 	});
 
 	try {
@@ -80,7 +90,6 @@ test('detectMidCycle reads the runner prompt file, ignoring stale and foreign on
 		await writeFile(stale, 'x', 'utf-8');
 		await rm(join(logs, 'ada.pressing.2026-01-01.prompt.md'));
 		const old = Date.now() / 1000 - 3 * 60 * 60;
-		const { utimes } = await import('node:fs/promises');
 		await utimes(stale, old, old);
 		assert.deepEqual(await detectMidCycle(teamDir, 'ada'), { midCycle: false });
 	});
@@ -229,8 +238,166 @@ test('status reports the open session and the cycle indicator together', async (
 
 		const session = await chat.create({ member: 'ada', human: 'nate' });
 		const status = await chat.status('ada');
-		assert.equal(status.midCycle, true, 'chat does not wait for the cycle, it just says so');
+		assert.equal(status.midCycle, true, 'chat runs beside the cycle; the flag is informational');
 		assert.equal(status.session.id, session.id);
 		assert.equal(status.session.busy, false);
+		assert.deepEqual(status.changedFiles, [], 'nothing has moved since the chat opened');
+	});
+});
+
+test('readCycleExit finds the runner marker, and only the runner marker', async () => {
+	await withChat(null, async ({ dir }) => {
+		const log = join(dir, 'cycle.log');
+		await writeFile(log, 'Member: ada\nsome output\n', 'utf-8');
+		assert.equal(await readCycleExit(log), null, 'a cycle still running has no marker');
+
+		await writeFile(log, 'Member: ada\n\n[runner] Agent exited with code 0\n', 'utf-8');
+		assert.equal(await readCycleExit(log), 0);
+
+		// Logs are appended to across reruns; the last marker is the live one.
+		await writeFile(
+			log,
+			'[runner] Agent exited with code 0\nmore\n[runner] Agent exited with code 3\n',
+			'utf-8',
+		);
+		assert.equal(await readCycleExit(log), 3);
+
+		assert.equal(await readCycleExit(join(dir, 'nope.log')), null);
+	});
+});
+
+test('changedFilesSince reports the member files a cycle rewrote', async () => {
+	await withChat(null, async ({ teamDir }) => {
+		const memberDir = join(teamDir, 'members', 'ada');
+		const cutoff = Date.now();
+		// profile.md was written a moment ago, within the same millisecond tick
+		// as the cutoff; age it so "before" really is before.
+		const earlier = cutoff / 1000 - 60;
+		await utimes(join(memberDir, 'profile.md'), earlier, earlier);
+		assert.deepEqual(await changedFilesSince(teamDir, 'ada', cutoff), [], 'profile.md predates the cutoff');
+
+		// mtime is the signal, so move it rather than racing the clock.
+		await writeFile(join(memberDir, 'state.md'), 'parser landed', 'utf-8');
+		const later = cutoff / 1000 + 60;
+		await utimes(join(memberDir, 'state.md'), later, later);
+
+		assert.deepEqual(await changedFilesSince(teamDir, 'ada', cutoff), ['team/members/ada/state.md']);
+		assert.deepEqual(await changedFilesSince(teamDir, 'ghost', cutoff), [], 'an unknown member is empty, not an error');
+	});
+});
+
+/** Stand a finished cycle up on disk: prompt file gone, exit marker in the log. */
+async function finishCycle(teamDir, stem, { marker = true } = {}) {
+	const logs = join(teamDir, '.logs');
+	await mkdir(logs, { recursive: true });
+	await writeFile(join(logs, `${stem}.log`), marker ? '\n[runner] Agent exited with code 0\n' : 'killed\n', 'utf-8');
+	await rm(join(logs, `${stem}.prompt.md`), { force: true });
+}
+
+test('a cycle finishing mid-chat is recorded, once, and only with the exit marker', async () => {
+	await withChat(null, async ({ chat, teamDir }) => {
+		const logs = join(teamDir, '.logs');
+		await mkdir(logs, { recursive: true });
+		await writeFile(join(logs, 'ada.today.1.prompt.md'), 'x', 'utf-8');
+
+		// The chat opens beside a cycle already in flight — no 409, no waiting.
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+		assert.equal(session.cycleCompletions.length, 0);
+
+		await chat.pollCycles();
+		assert.equal(session.cycleCompletions.length, 0, 'still running');
+
+		await finishCycle(teamDir, 'ada.today.1');
+		await chat.pollCycles();
+		assert.equal(session.cycleCompletions.length, 1);
+		assert.equal(session.cycleCompletions[0].exitCode, 0);
+
+		await chat.pollCycles();
+		assert.equal(session.cycleCompletions.length, 1, 'a completion fires once, not on every poll');
+
+		// A prompt file removed without the runner ever finishing (killed
+		// runner, log sweep) is not a completion.
+		await writeFile(join(logs, 'ada.today.2.prompt.md'), 'x', 'utf-8');
+		await chat.pollCycles();
+		await finishCycle(teamDir, 'ada.today.2', { marker: false });
+		await chat.pollCycles();
+		assert.equal(session.cycleCompletions.length, 1);
+
+		// And the status the pane polls carries it.
+		const status = await chat.status('ada');
+		assert.equal(status.session.cycleCompletions.length, 1);
+	});
+});
+
+test('a cycle finishing during a turn is pushed onto that turn stream', async () => {
+	// Holds the turn open until the test has staged the cycle completion.
+	const stub = `
+		const { existsSync, writeFileSync } = require('node:fs');
+		const promptFile = process.argv[process.argv.indexOf('--append-system-prompt-file') + 1];
+		writeFileSync(process.env.TEAMOS_STUB_PROMPT_OUT, require('node:fs').readFileSync(promptFile, 'utf-8'));
+		const tick = setInterval(() => {
+			if (!existsSync(process.env.TEAMOS_STUB_GO)) return;
+			clearInterval(tick);
+			process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'ok' }) + '\\n');
+		}, 20);
+	`;
+	await withChat(stub, async ({ chat, teamDir, dir }) => {
+		const logs = join(teamDir, '.logs');
+		await mkdir(logs, { recursive: true });
+		await writeFile(join(logs, 'ada.today.3.prompt.md'), 'x', 'utf-8');
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+
+		const events = [];
+		const turn = chat.turn(session.id, 'busy?', { onEvent: (event) => events.push(event) });
+
+		// Wait for the turn to be in flight, then finish the cycle under it.
+		for (let i = 0; i < 200 && !session.busy; i++) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(session.busy, true, 'turn is running');
+		await finishCycle(teamDir, 'ada.today.3');
+		await chat.pollCycles();
+		await writeFile(join(dir, 'go'), '', 'utf-8');
+		await turn;
+
+		const cycle = events.find((e) => e.kind === 'cycle');
+		assert.ok(cycle, 'the open chat is told its member just finished a cycle');
+		assert.equal(cycle.event, 'completed');
+		assert.equal(cycle.exitCode, 0);
+		assert.ok(cycle.at, 'stamped so the pane can show when');
+	});
+});
+
+test("the next turn's prompt names what changed since the chat opened", async () => {
+	const stub = `
+		const { readFileSync, writeFileSync } = require('node:fs');
+		const promptFile = process.argv[process.argv.indexOf('--append-system-prompt-file') + 1];
+		writeFileSync(process.env.TEAMOS_STUB_PROMPT_OUT, readFileSync(promptFile, 'utf-8'));
+		process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'rechecked' }) + '\\n');
+	`;
+	await withChat(stub, async ({ chat, teamDir, dir }) => {
+		// The fixture's files were written in this same millisecond; age them so
+		// the baseline is genuinely "before the chat opened".
+		const memberDir = join(teamDir, 'members', 'ada');
+		const earlier = Date.now() / 1000 - 60;
+		await utimes(join(memberDir, 'profile.md'), earlier, earlier);
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+
+		await chat.turn(session.id, 'first', {});
+		assert.doesNotMatch(
+			await readFile(join(dir, 'prompt.txt'), 'utf-8'),
+			/## Changed Since This Chat Opened/,
+			'nothing has moved yet',
+		);
+
+		// A cycle rewrites state.md underneath the conversation.
+		const stateFile = join(teamDir, 'members', 'ada', 'state.md');
+		await writeFile(stateFile, 'parser landed', 'utf-8');
+		const later = Date.now() / 1000 + 60;
+		await utimes(stateFile, later, later);
+
+		await chat.turn(session.id, 'second', {});
+		const prompt = await readFile(join(dir, 'prompt.txt'), 'utf-8');
+		assert.match(prompt, /## Changed Since This Chat Opened/);
+		assert.match(prompt, /team\/members\/ada\/state\.md/);
+		assert.match(prompt, /Re-read before you repeat an earlier answer/);
 	});
 });

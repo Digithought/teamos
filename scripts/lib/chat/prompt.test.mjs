@@ -39,10 +39,39 @@ test('buildChatPrompt carries the member context but not the cycle framing', asy
 		assert.match(prompt, /## Chat Rules/);
 		assert.match(prompt, /_Nothing said yet/, 'empty transcript is spelled out');
 
+		// A chat instance has the same tools a cycle does, so it is told about
+		// them in the same words.
+		assert.match(prompt, /## Agent Tools/);
+		assert.match(prompt, /\*\*add_todo\*\*/);
+
 		// The things a cycle prompt has that a chat must not.
-		assert.doesNotMatch(prompt, /## Agent Tools/, 'a chat session is given no MCP tools to call');
 		assert.doesNotMatch(prompt, /Execute a cycle/);
 		assert.doesNotMatch(prompt, /## Cycle Rules/);
+
+		// Nothing has moved, so no staleness warning is manufactured.
+		assert.doesNotMatch(prompt, /## Changed Since This Chat Opened/);
+	});
+});
+
+test('buildChatPrompt names the files a concurrent cycle changed', async () => {
+	await withTeam(async (dir) => {
+		const messaging = new FileMessagingAdapter(dir);
+		const prompt = await buildChatPrompt(
+			{ name: 'ada' },
+			dir,
+			{ messaging },
+			{
+				human: 'nate',
+				transcript: [{ role: 'member', text: 'the parser todo is still open', at: '2026-09-22T10:00:00.000Z' }],
+				changedFiles: ['team/members/ada/state.md', 'team/members/ada/todo.json'],
+			},
+		);
+		assert.match(prompt, /## Changed Since This Chat Opened/);
+		assert.match(prompt, /`team\/members\/ada\/state\.md`/);
+		assert.match(prompt, /`team\/members\/ada\/todo\.json`/);
+		// The warning is about the transcript, not about the sections above it.
+		assert.match(prompt, /rebuilt just now, so they are current/);
+		assert.match(prompt, /Another instance of you/);
 	});
 });
 
@@ -85,7 +114,8 @@ test('buildTranscriptMessage files the whole conversation from the human', () =>
 	assert.equal(message.subject, 'Chat with nate — 2026-09-22 10:00');
 	assert.match(message.body, /bump the parser todo to pressing/);
 	assert.match(message.body, /will do next cycle/);
-	assert.match(message.body, /nothing in it has been applied/i, 'the next cycle is told it owns the actions');
+	assert.match(message.body, /may already be done/i, 'the next cycle is told the chat could act');
+	assert.doesNotMatch(message.body, /no write access/i);
 });
 
 test('renderTranscript labels each turn with the speaker', () => {

@@ -102,23 +102,33 @@ export interface ChatSession {
 	/** True while a turn's agent is still running. */
 	busy: boolean;
 	transcript: ChatTranscriptEntry[];
+	/** Cycles of this member that finished while the chat was open. */
+	cycleCompletions: { at: string; exitCode: number }[];
 }
 
-/** Whether a scheduled cycle is in flight for the member, and any open chat. */
+/**
+ * Whether a scheduled cycle is in flight for the member, and any open chat.
+ * `midCycle` is informational only — a chat runs beside a cycle, not after it.
+ */
 export interface ChatStatus {
 	midCycle: boolean;
 	since?: string;
 	session: ChatSession | null;
+	/** Member files written since the chat opened (mtime), if a chat is open. */
+	changedFiles: string[];
 }
 
 /** One stream event from a chat turn. `text` is the member speaking. */
 export interface ChatEvent {
-	kind: 'text' | 'tool' | 'thinking' | 'result' | 'done' | 'error';
+	/** `cycle` is out-of-band: a scheduled cycle of this member just finished. */
+	kind: 'text' | 'tool' | 'thinking' | 'result' | 'done' | 'error' | 'cycle';
 	content?: string;
 	detail?: string;
 	message?: string;
 	exitCode?: number;
 	answer?: string;
+	event?: string;
+	at?: string;
 }
 
 export interface MessagingInfo {

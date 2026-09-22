@@ -748,9 +748,9 @@ adding nothing to the agent-facing contract.
 
 ### Chat with a member
 
-A member's **Chat** tab holds a live conversation with that member. Starting a chat spawns a fresh agent with the same context a cycle gets — profile, state, todos, schedule, inbox — minus the "do a unit of work now" framing. It does **not** attach to a running cycle, and it does not defer one: scheduled cycles keep their cadence while a chat is open, and the pane shows a banner when one is in flight.
+A member's **Chat** tab holds a live conversation with that member. Starting a chat spawns a fresh agent with the same context and the same tools a cycle gets — profile, state, todos, schedule, inbox, MCP servers — minus the "do a unit of work now" framing. It does **not** attach to a running cycle, and it does not defer one: scheduled cycles keep their cadence while a chat is open, and the pane's mid-cycle banner is informational, not a wait.
 
-Chat is read-everything, write-narrow. The session can read anything and writes exactly one thing: when you end the chat, the whole transcript is filed as a message to the member's inbox. Anything you agree on therefore happens on the member's **next cycle**, not immediately — the file adapters have no locking, so a chat that wrote directly would silently clobber a concurrent cycle. `teamos/docs/chat.md` has the full design, the account configuration, and the failure modes.
+A chat instance can act on what the conversation decides. Two instances of one member writing at once is safe enough without a lock: Claude's file tools already reject a write to a file that changed since it was read, which covers `state.md` and `profile.md`, and the JSON collections re-read immediately before every additive write. When a cycle of that member finishes mid-chat the pane says so, and the next turn's prompt lists what changed so the member re-reads instead of answering from a stale picture. Ending a chat still files the whole transcript to the member's inbox — as the record, not as a work queue. `teamos/docs/chat.md` has the full design, the residual (semantic) risk, the account configuration, and the failure modes.
 
 Because chat spawns agent processes, the dashboard's binding is now load-bearing: keep the port on a tailnet or behind the auth proxy, never on a public interface. See **Authentication** below and `teamos/docs/auth.md`.
 
