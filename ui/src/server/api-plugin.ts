@@ -955,7 +955,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							// The client going away is the common case (tab closed,
 							// navigated off mid-answer). Abort tree-kills the agent
 							// rather than leaving it to bill out the idle timeout.
-							req.on('close', () => controller.abort());
+							// It is the *response* socket closing that reports this —
+							// an aborted request does not always emit 'close' on req.
+							// Firing again after a normal end is a no-op.
+							const clientGone = () => controller.abort();
+							req.on('close', clientGone);
+							res.on('close', clientGone);
 							const send = sse(res);
 							try {
 								const { exitCode, answer } = await chat.turn(id, text, {
