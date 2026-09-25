@@ -31,9 +31,9 @@ import { PRIORITY_ORDER } from '../scheduler.mjs';
  * true. That is the whole point: a runner that has been down for six hours is
  * one wake, not one wake per cycle forever.
  *
- * The acknowledged signature advances only after a cycle exits 0 — same
- * at-least-once discipline as the commit-trigger cursor. A failed or killed
- * cycle re-fires the same transition next pass.
+ * The acknowledged signature advances only after a cycle exits 0, and only to
+ * the observation that cycle's prompt showed. A failed or killed cycle
+ * re-fires the same transition next pass.
  *
  * Watches carry no command of their own. Agents can add and remove their own
  * watches over MCP, so a watch that carried a shell string would be an agent
@@ -434,6 +434,7 @@ export class FileWatchesAdapter {
 				reason: watch.reason,
 				fires: watch.fires,
 				status: obs.latest.status,
+				signature: obs.latest.signature,
 				previousStatus: obs.status ?? null,
 				exitCode: obs.latest.exitCode,
 				output: obs.latest.output,
@@ -453,27 +454,30 @@ export class FileWatchesAdapter {
 	}
 
 	/**
-	 * Advance the acknowledged signature for everything the member just saw.
-	 * Called only after a cycle exits 0 — a failed cycle leaves the transition
-	 * pending so it fires again next pass.
+	 * Advance the acknowledged signature to what the member was shown —
+	 * `delivered` is the `pendingObservations` snapshot the cycle prompt was
+	 * built from, not whatever is latest now. A poll that lands while the cycle
+	 * runs stays pending and reaches the next prompt instead of being
+	 * acknowledged unseen. Called only after a cycle exits 0 — a failed cycle
+	 * leaves the transition pending so it fires again next pass.
 	 */
-	async acknowledgeObservations(member, now = new Date()) {
+	async acknowledgeObservations(member, delivered, now = new Date()) {
+		if (!Array.isArray(delivered) || delivered.length === 0) return;
 		const state = await this._loadNormalized(member);
-		const pending = await this.pendingObservations(member, now);
-		if (pending.length === 0) return;
-		const pendingIds = new Set(pending.map((p) => p.watchId));
-		for (const watch of state.items) {
-			if (!pendingIds.has(watch.id)) continue;
-			const obs = state.observed[watch.id];
-			if (!obs?.latest) continue;
-			state.observed[watch.id] = {
-				signature: obs.latest.signature,
-				status: obs.latest.status,
-				since: obs.latest.observedAt,
+		let mutated = false;
+		for (const shown of delivered) {
+			const obs = state.observed[shown.watchId];
+			if (!obs) continue; // watch removed mid-cycle
+			state.observed[shown.watchId] = {
+				signature: shown.signature,
+				status: shown.status,
+				since: shown.observedAt,
 				lastFiredAt: now.toISOString(),
 				latest: obs.latest,
 			};
+			mutated = true;
 		}
+		if (!mutated) return;
 		await this._writeObserved(member, state.observed);
 	}
 

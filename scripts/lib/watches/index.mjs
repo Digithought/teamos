@@ -29,6 +29,7 @@
  * @property {string} [reason]
  * @property {'nonEmptyOutput'|'exitCode'|'outputChanged'} fires
  * @property {'hit'|'clear'|'changed'|'error'} status
+ * @property {string} signature          — what `acknowledgeObservations` records as seen
  * @property {string|null} previousStatus — the status the member was last woken with
  * @property {number|null} exitCode
  * @property {string} output             — stdout (or stderr when stdout was empty), clipped
@@ -46,7 +47,7 @@
  * @property {(member: string, now?: Date) => Promise<void>} poll
  * @property {(member: string, now?: Date) => Promise<WatchObservation[]>} pendingObservations
  * @property {(member: string, priority: string) => Promise<boolean>} hasPendingObservations
- * @property {(member: string, now?: Date) => Promise<void>} acknowledgeObservations
+ * @property {(member: string, delivered: WatchObservation[], now?: Date) => Promise<void>} acknowledgeObservations — `delivered` is the snapshot the prompt showed
  */
 
 import { FileWatchesAdapter } from './file.mjs';

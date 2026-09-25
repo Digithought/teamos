@@ -163,13 +163,19 @@ function formatWatchObservationForPrompt(obs) {
 	return lines.join('\n');
 }
 
+/** Returns the section text plus the observations it shows — the set a clean exit acknowledges. */
 async function buildWatchesSection(member, watchesAdapter) {
-	if (!watchesAdapter) return null;
+	if (!watchesAdapter) return { text: null, delivered: [] };
 	const observations = await watchesAdapter.pendingObservations(member).catch(() => []);
-	if (observations.length === 0) return null;
-	return observations.map(formatWatchObservationForPrompt).join('\n');
+	if (observations.length === 0) return { text: null, delivered: [] };
+	return { text: observations.map(formatWatchObservationForPrompt).join('\n'), delivered: observations };
 }
 
+/**
+ * Returns `{ prompt, delivered }`. `delivered.watches` is exactly what the
+ * prompt showed; the runner acknowledges that set on a clean exit, never a
+ * fresh read that could include something observed mid-cycle.
+ */
 export async function buildCyclePrompt(member, priority, teamDir, adapters = {}) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
@@ -257,14 +263,14 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		);
 	}
 
-	if (watchesSection) {
+	if (watchesSection.text) {
 		parts.push(
 			'',
 			'## Watches Fired',
 			'',
 			'A probe you watch changed state. These are host-side conditions — no message, todo, event or commit reports them. Handle them as part of this cycle; they are acknowledged only when this cycle succeeds.',
 			'',
-			watchesSection,
+			watchesSection.text,
 		);
 	}
 
@@ -284,7 +290,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		`Execute a cycle for **${member.name}** at priority level **${priority}**.`,
 	);
 
-	return parts.join('\n');
+	return { prompt: parts.join('\n'), delivered: { watches: watchesSection.delivered } };
 }
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
@@ -362,7 +368,7 @@ export async function runCycle({
 		// the same "now" the agent saw — events that become due mid-cycle wait
 		// for the next pass instead of being silently advanced.
 		const cycleStart = new Date();
-		const prompt = await buildCyclePrompt(member, priority, teamDir, adapters);
+		const { prompt, delivered } = await buildCyclePrompt(member, priority, teamDir, adapters);
 		const mcpContext =
 			adapters.messaging || adapters.tasks || adapters.schedule || adapters.triggers || adapters.watches
 				? {
@@ -396,7 +402,7 @@ export async function runCycle({
 			// once found, is durable until the agent calls clear_trigger_matches —
 			// see triggers/file.mjs.
 			if (adapters.watches) {
-				await adapters.watches.acknowledgeObservations(member.name).catch((err) => {
+				await adapters.watches.acknowledgeObservations(member.name, delivered.watches).catch((err) => {
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}

@@ -116,7 +116,7 @@ test('a transition fires once and stays quiet while the condition holds', async 
 		assert.match(pending[0].output, /down/);
 
 		// Cycle succeeded — acknowledge, and the still-true condition is silent.
-		await adapter.acknowledgeObservations('alice');
+		await adapter.acknowledgeObservations('alice', pending);
 		await repoll(adapter, 'alice');
 		assert.deepEqual(await adapter.pendingObservations('alice'), []);
 
@@ -187,6 +187,33 @@ test('fires: outputChanged fires on any change in output', async () => {
 	});
 });
 
+test('a transition observed mid-cycle is not acknowledged by that cycle — it reaches the next prompt', async () => {
+	// 2026-09-25: a cycle started 05:24:26, the watch fired at 05:25:50, and the
+	// clean exit acknowledged whatever was latest — the member never saw it.
+	await withAdapter(PROBES, async (adapter) => {
+		await adapter.addWatch('alice', { probe: 'quiet', priority: 'pressing', cooldownMinutes: 0 });
+		await adapter.poll('alice'); // baseline: clear
+
+		const delivered = await adapter.pendingObservations('alice'); // prompt built: nothing fired
+		adapter.probes.get('quiet').args = PROBES.noisy.args;
+		await repoll(adapter, 'alice'); // fires while the cycle runs
+		await adapter.acknowledgeObservations('alice', delivered); // cycle exits 0
+
+		const next = await adapter.pendingObservations('alice');
+		assert.equal(next.length, 1);
+		assert.equal(next[0].status, 'hit');
+
+		// Shown "hit", then it recovers mid-cycle: the recovery is still news.
+		adapter.probes.get('quiet').args = PROBES.quiet.args;
+		await repoll(adapter, 'alice');
+		await adapter.acknowledgeObservations('alice', next);
+		const after = await adapter.pendingObservations('alice');
+		assert.equal(after.length, 1);
+		assert.equal(after[0].status, 'clear');
+		assert.equal(after[0].previousStatus, 'hit');
+	});
+});
+
 test('a probe that cannot run reports distinctly from one that reported nothing', async () => {
 	await withAdapter(PROBES, async (adapter) => {
 		await adapter.addWatch('alice', { probe: 'quiet', priority: 'today', cooldownMinutes: 0 });
@@ -200,7 +227,7 @@ test('a probe that cannot run reports distinctly from one that reported nothing'
 		assert.ok(pending[0].error);
 
 		// The same failure is not a new transition.
-		await adapter.acknowledgeObservations('alice');
+		await adapter.acknowledgeObservations('alice', pending);
 		await repoll(adapter, 'alice');
 		assert.deepEqual(await adapter.pendingObservations('alice'), []);
 	});
@@ -224,8 +251,9 @@ test('cooldown suppresses a re-fire, and a flap inside it resolves to nothing', 
 
 		adapter.probes.get('quiet').args = PROBES.noisy.args;
 		await repoll(adapter, 'alice', new Date('2026-04-23T12:01:00.000Z'));
-		assert.equal((await adapter.pendingObservations('alice')).length, 1);
-		await adapter.acknowledgeObservations('alice', new Date('2026-04-23T12:01:00.000Z'));
+		const fired = await adapter.pendingObservations('alice');
+		assert.equal(fired.length, 1);
+		await adapter.acknowledgeObservations('alice', fired, new Date('2026-04-23T12:01:00.000Z'));
 
 		// Flaps back 2 minutes later — inside the cooldown, so nothing fires.
 		adapter.probes.get('quiet').args = PROBES.quiet.args;
