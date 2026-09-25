@@ -24,6 +24,8 @@
  *   --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)
  *   --push               Push to remote after each commit (git sync)
  *   --no-commit          Skip automatic sync after each cycle
+ *   --[no-]leftover-check  Resume a member's session to resolve uncommitted changes it left
+ *                        (default: on with --no-commit, where nothing else would commit them)
  *   --no-clerk           Skip clerk agent after each pass
  *   --clerk-only         Run only the clerk agent, then exit
  *   --weight <pri:n>     Priority weight for fair scheduling (repeatable)
@@ -113,6 +115,7 @@ function printHelp() {
 		'  --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)',
 		'  --push               Push to remote after each commit',
 		'  --no-commit          Skip automatic sync after each cycle',
+		'  --[no-]leftover-check  Resume a member to resolve uncommitted changes it left (default: on with --no-commit)',
 		'  --no-clerk           Skip clerk agent after each pass',
 		'  --clerk-only         Run only the clerk agent, then exit',
 		'  --weight <pri:n>     Priority weight for fair scheduling (repeatable)',
@@ -144,6 +147,7 @@ function parseArgs(argv) {
 		remotePullMs: DEFAULT_REMOTE_PULL_MS,
 		push: false,
 		noCommit: false,
+		leftoverCheck: undefined, // resolved after parsing: defaults to noCommit
 		noClerk: false,
 		clerkOnly: false,
 		dryRun: false,
@@ -213,6 +217,12 @@ function parseArgs(argv) {
 			case '--no-commit':
 				opts.noCommit = true;
 				break;
+			case '--leftover-check':
+				opts.leftoverCheck = true;
+				break;
+			case '--no-leftover-check':
+				opts.leftoverCheck = false;
+				break;
 			case '--no-clerk':
 				opts.noClerk = true;
 				break;
@@ -279,6 +289,9 @@ function parseArgs(argv) {
 		console.error(`Unknown priority: "${opts.priority}". Valid: ${PRIORITY_ORDER.join(', ')}`);
 		process.exit(1);
 	}
+
+	// With sync on, the post-pass commit picks up whatever a member left; without it, nothing does.
+	opts.leftoverCheck ??= opts.noCommit;
 
 	return opts;
 }

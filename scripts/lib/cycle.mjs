@@ -1,7 +1,8 @@
-import { writeFile } from 'node:fs/promises';
+import { appendFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent } from './agents/index.mjs';
+import { agentSupportsResume, runAgent } from './agents/index.mjs';
+import { buildCleanupPrompt, leftoversSince, snapshotDirty } from './leftovers.mjs';
 import { PRIORITY_ORDER, normalizeVruntimes, pickNextPriority, rotateAfter } from './scheduler.mjs';
 import {
 	buildLogPath,
@@ -295,6 +296,40 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
 
+/**
+ * After a clean cycle, find what the member left uncommitted (see leftovers.mjs) and resume its
+ * session once to commit, stash or revert it.  Whatever survives that is logged, not retried: a
+ * member that can't clean up in one turn needs a person, not a loop.  Never throws — the cycle
+ * already succeeded.
+ */
+async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId }) {
+	try {
+		const left = leftoversSince(treeBefore, snapshotDirty(repoRoot, teamDir));
+		if (left.length === 0) return;
+		const list = left.map((l) => `${l.status} ${l.path}`).join(', ');
+		console.log(`[runner] ${member.name} left ${left.length} uncommitted change(s): ${list}`);
+		if (!sessionId || !agentSupportsResume(opts.agent)) {
+			console.warn(`[runner] Cannot resume ${member.name}'s session to clean up; leaving them for a person.`);
+			return;
+		}
+		console.log(`[runner] Resuming ${member.name}'s session to resolve them.`);
+		await appendFile(currentLog, `\n[runner] Leftover check: resuming session ${sessionId} for ${left.length} path(s)\n`);
+		const code = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			resume: { sessionId, message: buildCleanupPrompt(left) },
+		});
+		const still = leftoversSince(treeBefore, snapshotDirty(repoRoot, teamDir));
+		if (still.length > 0) {
+			console.warn(
+				`[runner] ${member.name} still left ${still.length} change(s) after cleanup (exit ${code}): ${still.map((l) => l.path).join(', ')}`,
+			);
+		} else {
+			console.log(`[runner] ${member.name} resolved its leftovers.`);
+		}
+	} catch (err) {
+		console.error(`[runner] Leftover check failed for ${member.name}: ${err.message}`);
+	}
+}
+
 export async function runCycle({
 	membersWithWork,
 	priority,
@@ -381,7 +416,16 @@ export async function runCycle({
 						watchesAdapterName: opts.watches,
 					}
 				: undefined;
-		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext);
+		const treeBefore = opts.leftoverCheck ? snapshotDirty(repoRoot, teamDir) : null;
+		let sessionId = null;
+		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			onSession: (id) => {
+				sessionId ??= id;
+			},
+		});
+		if (exitCode === 0 && treeBefore) {
+			await resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId });
+		}
 
 		if (exitCode !== 0) {
 			failureState.consecutive++;

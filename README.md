@@ -223,12 +223,26 @@ node teamos/scripts/run.mjs --no-commit
 | `--interval <min>` | `120` | Minutes between passes |
 | `--push` | — | Push to remote after each commit (git sync) |
 | `--no-commit` | — | Skip automatic sync after each cycle |
+| `--[no-]leftover-check` | on with `--no-commit` | After a clean cycle, resume the member's session once to commit, stash or revert uncommitted changes it left in the checkout |
 | `--no-clerk` | — | Skip clerk agent after each pass |
 | `--clerk-only` | — | Run only the clerk agent, then exit |
 | `--weight <pri:n>` | `pressing:8, today:4, thisWeek:2, later:1` | Priority weight for fair scheduling (repeatable) |
 | `--cadence <pri:dur>` | `pressing:0h, today:4h, thisWeek:1d, later:3d` | Min time between serving a priority (repeatable) |
 | `--budget <pri:n>` | — | Optional max member cycles at a priority per pass (repeatable) |
 | `--dry-run` | — | List members with work, don't invoke agent |
+
+### Member identity and leftovers
+
+Each cycle's commits are authored as `<Member> (teamos)`; the committer stays whoever runs the
+runner. Set `TEAMOS_GIT_AUTHOR_EMAIL` (e.g. `{member}@example.com`, lowercased name) for
+per-member addresses; unset, the runner's own email is kept.
+
+Members share one checkout, and a cycle ends when the agent stops — background jobs and plans to
+"finish next cycle" don't survive it. With the leftover check on, the runner snapshots the working
+tree (outside `team/`) before each cycle; if a clean cycle added or changed anything uncommitted,
+it resumes that member's session once with the list and asks it to commit, stash or revert each
+path. Whatever is still left is logged for a person. Sessions therefore persist (Claude Code prunes
+them after `cleanupPeriodDays`).
 
 ### Loop Mode (Default)
 

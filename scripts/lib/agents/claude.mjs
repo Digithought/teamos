@@ -11,7 +11,7 @@ export function formatClaudeJsonLine(line) {
 		const obj = JSON.parse(line);
 		if (obj.type === 'system') {
 			if (obj.subtype === 'init') {
-				return { text: `[session ${obj.session_id ?? '?'}]\n` };
+				return { text: `[session ${obj.session_id ?? '?'}]\n`, sessionId: obj.session_id };
 			}
 			// thinking_tokens (and any future progress-only system event):
 			// collapse to a single dot so the log shows a thinking heartbeat
@@ -66,9 +66,10 @@ export function formatClaudeJsonLine(line) {
 
 /**
  * Claude CLI agent adapter.
- * Returns { cmd, args, formatStream } for spawning.
+ * Returns { cmd, args, formatStream } for spawning.  With `resume`, continues that session with
+ * `resume.message` instead of starting a cycle (the runner's leftover check uses this).
  */
-export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
+export function createClaudeAdapter(instructionFile, _prompt, { cwd, resume } = {}) {
 	// Load the project's `.mcp.json` explicitly rather than relying on the
 	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
 	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
@@ -82,7 +83,9 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
 			'-p',
 			'--dangerously-skip-permissions',
 			'--verbose',
-			'--no-session-persistence',
+			// Sessions persist so the runner can resume one; Claude Code prunes them after
+			// cleanupPeriodDays (30 by default).
+			...(resume ? ['--resume', resume.sessionId] : []),
 			'--output-format',
 			'stream-json',
 			'--effort',
@@ -90,7 +93,7 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd } = {}) {
 			...(mcpConfig && existsSync(mcpConfig) ? ['--mcp-config', mcpConfig] : []),
 			'--append-system-prompt-file',
 			instructionFile,
-			'Execute the member cycle as described in the appended system prompt.',
+			resume ? resume.message : 'Execute the member cycle as described in the appended system prompt.',
 		],
 		formatStream: formatClaudeJsonLine,
 	};

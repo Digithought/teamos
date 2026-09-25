@@ -46,6 +46,28 @@ const agents = {
 	auggie: createAuggieAdapter,
 };
 
+/** Adapters that can continue a finished session (`options.resume` in runAgent). */
+const RESUMABLE = new Set(['claude']);
+
+/** Whether `agentName` can resume a session. */
+export function agentSupportsResume(agentName) {
+	return RESUMABLE.has(agentName);
+}
+
+/**
+ * Git author for a member's commits, so history says which member made each one.  The
+ * committer stays whoever runs the runner.  TEAMOS_GIT_AUTHOR_EMAIL may give a per-member
+ * address with `{member}` (lowercased name) in it; otherwise the runner's own email is kept,
+ * so hosts that match commits to accounts by email still credit the human who runs the team.
+ */
+export function gitAuthorEnv(memberName, env = process.env) {
+	if (!memberName) return {};
+	const out = { GIT_AUTHOR_NAME: `${memberName} (teamos)` };
+	const template = env.TEAMOS_GIT_AUTHOR_EMAIL;
+	if (template) out.GIT_AUTHOR_EMAIL = template.replaceAll('{member}', memberName.toLowerCase());
+	return out;
+}
+
 /** Get list of available agent names. */
 export function getAvailableAgents() {
 	return Object.keys(agents);
@@ -60,6 +82,7 @@ function buildMcpEnv(mcpContext) {
 	if (!mcpContext) return process.env;
 	return {
 		...process.env,
+		...gitAuthorEnv(mcpContext.memberName),
 		TEAMOS_TEAM_DIR: mcpContext.teamDir,
 		TEAMOS_MEMBER_NAME: mcpContext.memberName,
 		TEAMOS_MESSAGING_ADAPTER: mcpContext.messagingAdapterName || 'file',
@@ -79,8 +102,12 @@ function buildMcpEnv(mcpContext) {
  * @param {Object} [mcpContext] - Optional MCP context for messaging tools
  * @param {string} [mcpContext.teamDir] - Path to team/ directory
  * @param {string} [mcpContext.memberName] - Member name for this cycle
+ * @param {Object} [options]
+ * @param {{ sessionId: string, message: string }} [options.resume] - continue a session instead
+ *   of starting a cycle (only for agentSupportsResume agents; `prompt` is still the system prompt)
+ * @param {(sessionId: string) => void} [options.onSession] - told the session id once known
  */
-export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
+export async function runAgent(agentName, prompt, cwd, logFile, mcpContext, { resume, onSession } = {}) {
 	const adapter = agents[agentName];
 	if (!adapter) {
 		console.error(`Unknown agent: ${agentName}. Available: ${Object.keys(agents).join(', ')}`);
@@ -90,7 +117,8 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 	const instructionFile = logFile.replace(/\.log$/, '.prompt.md');
 	await writeFile(instructionFile, prompt, 'utf-8');
 
-	const adapterResult = adapter(instructionFile, prompt, { cwd });
+	if (resume && !agentSupportsResume(agentName)) throw new Error(`Agent ${agentName} cannot resume a session`);
+	const adapterResult = adapter(instructionFile, prompt, { cwd, resume });
 	const logStream = createWriteStream(logFile, { flags: 'a' });
 	const { cmd, args, shellCmd, formatStream } = adapterResult;
 
@@ -141,6 +169,7 @@ export async function runAgent(agentName, prompt, cwd, logFile, mcpContext) {
 					return;
 				}
 				const result = formatStream(line);
+				if (result.sessionId) onSession?.(result.sessionId);
 				if (result.text) writeOut(result.text);
 				if (result.done) {
 					resultExitCode = result.exitCode ?? 0;
