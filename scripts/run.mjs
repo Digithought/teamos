@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runAgent } from './lib/agents/index.mjs';
 import { loadConfig, loadDotEnv, resolveEnvVars } from './lib/config.mjs';
+import { watchCodeVersion } from './lib/code-version.mjs';
 import { runCycle, runPass } from './lib/cycle.mjs';
 import { buildClerkPrompt, runMaintenance } from './lib/maintenance.mjs';
 import { createMessagingAdapter } from './lib/messaging/index.mjs';
@@ -485,11 +486,19 @@ async function main() {
 
 	if (opts.loop) {
 		let passNum = 0;
+		const codeWatch = watchCodeVersion(TEAMOS_ROOT);
 
 		while (true) {
 			if (await checkStop(teamDir)) {
 				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
+			}
+			// Between passes is the one point no member is mid-cycle; restart here onto new code.
+			const moved = codeWatch?.changed();
+			if (moved) {
+				console.log(`\n[runner] teamos moved ${moved.from} → ${moved.to} — exiting for a restart onto the new code.`);
+				await saveSchedulerState(logsDir, schedulerState);
+				process.exit(codeWatch.exitCode);
 			}
 			if ((await waitWhilePaused(teamDir)) === 'stop') {
 				console.log('\n[runner] Stop file detected — exiting loop.');
