@@ -119,6 +119,10 @@ async function buildScheduleSections(member, scheduleAdapter) {
 function formatCommitMatchForPrompt(match) {
 	const lines = [];
 	lines.push(`- \`${match.shortHash}\` **${match.subject}**  _by ${match.author}_  (priority: ${match.priority})`);
+	lines.push(
+		`    hash: ${match.hash}  matched triggers: ${match.matchedTriggerIds.join(', ')}` +
+			`  — call \`clear_trigger_matches\` once reviewed, or it will keep reappearing`,
+	);
 	if (match.files.length > 0) {
 		const shown = match.files.slice(0, 10);
 		for (const f of shown) lines.push(`    - ${f}`);
@@ -358,9 +362,6 @@ export async function runCycle({
 		// the same "now" the agent saw — events that become due mid-cycle wait
 		// for the next pass instead of being silently advanced.
 		const cycleStart = new Date();
-		// Snapshot the HEAD the agent sees so commit triggers fired during this
-		// cycle's execution don't get silently acknowledged.
-		const headAtStart = adapters.triggers ? await adapters.triggers.currentHead(member.name).catch(() => null) : null;
 		const prompt = await buildCyclePrompt(member, priority, teamDir, adapters);
 		const mcpContext =
 			adapters.messaging || adapters.tasks || adapters.schedule || adapters.triggers || adapters.watches
@@ -390,11 +391,10 @@ export async function runCycle({
 					console.error(`[runner] acknowledgeDue failed for ${member.name}: ${err.message}`);
 				});
 			}
-			if (adapters.triggers && headAtStart) {
-				await adapters.triggers.acknowledgeHead(member.name, headAtStart).catch((err) => {
-					console.error(`[runner] triggers.acknowledgeHead failed for ${member.name}: ${err.message}`);
-				});
-			}
+			// Commit triggers need no post-cycle acknowledgement: pendingMatches
+			// advances the scan cursor eagerly (before the agent runs) and a match,
+			// once found, is durable until the agent calls clear_trigger_matches —
+			// see triggers/file.mjs.
 			if (adapters.watches) {
 				await adapters.watches.acknowledgeObservations(member.name).catch((err) => {
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);

@@ -463,9 +463,9 @@ Legacy `schedule.json` files (missing ids, using the old `recurring: true` flag 
 
 | Adapter | Flag | Description |
 |---|---|---|
-| `file` | `--triggers file` | Per-member commit subscriptions at `team/members/<name>/triggers.json`. The adapter runs `git log <cursor>..HEAD --no-merges` in the host repo and matches each commit against every trigger's filters (path globs, author, commit-message regex). Matching commits inject into the next cycle prompt at the trigger's priority. Cursor advances to HEAD-at-cycle-start on successful cycle completion (at-least-once semantics). |
+| `file` | `--triggers file` | Per-member commit subscriptions at `team/members/<name>/triggers.json`, scan state + durable match ledger at `team/.logs/triggers/<name>.json`. The adapter runs `git log <cursor>..HEAD --no-merges` in the host repo and matches each commit against every trigger's filters (path globs, author, commit-message regex). A match, once found, is recorded in the ledger and injected into every cycle prompt at the trigger's priority until the agent calls `clear_trigger_matches` — the scan cursor itself advances eagerly on each scan, independent of cycle outcome. |
 
-All adapters implement the stable MCP contract documented in `teamos/docs/triggers.md`: `list_triggers`, `add_trigger`, `update_trigger`, `remove_trigger`. A future GitHub / GitLab webhook adapter can drop in without changing the agent contract — the contract treats ids as opaque strings and exposes no repo-specific machinery.
+All adapters implement the stable MCP contract documented in `teamos/docs/triggers.md`: `list_triggers`, `add_trigger`, `update_trigger`, `remove_trigger`, `clear_trigger_matches`. A future GitHub / GitLab webhook adapter can drop in without changing the agent contract — the contract treats ids as opaque strings and exposes no repo-specific machinery.
 
 ### Watches Adapters
 

@@ -453,6 +453,22 @@ const BASE_TOOLS = [
 		},
 	},
 	{
+		name: 'clear_trigger_matches',
+		description:
+			'Mark commit-trigger matches as handled so they stop reappearing in your cycle prompt. A match is durable — it keeps showing every cycle until you clear it, independent of whether you acted on it, the same as an unarchived inbox message. Pass `triggerId` to clear everything currently pending for that trigger (the usual case: you just finished reviewing its whole fired batch); pass `hashes` to clear specific commits outright, for every trigger that matched them; pass both to clear only that trigger\'s reference on those specific commits.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				triggerId: { type: 'string', description: 'Clear this trigger\'s share of its matches.' },
+				hashes: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'Clear these specific commit hashes (full or short). Combine with triggerId to scope to just that trigger.',
+				},
+			},
+		},
+	},
+	{
 		name: 'list_watches',
 		description:
 			'List every watch on your subscription list, each with the probe it references and its current acknowledged state. A watch wakes you when a named host-side probe CHANGES result — not while the condition merely stays true. The cycle prompt already lists any watch that fired; call this to audit your subscriptions and to see which probes are registered.',
@@ -645,6 +661,12 @@ async function handleToolCall(name, args) {
 			const { id, member: _m, ...patch } = args;
 			await triggers.updateTrigger(resolveMember(args), id, patch);
 			return textResult(`Updated ${id}`);
+		}
+
+		case 'clear_trigger_matches': {
+			const { triggerId, hashes } = args;
+			const result = await triggers.clearMatches(resolveMember(args), { triggerId, hashes });
+			return textResult(result);
 		}
 
 		case 'remove_trigger': {

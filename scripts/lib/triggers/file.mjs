@@ -7,21 +7,42 @@ import { PRIORITY_ORDER } from '../scheduler.mjs';
 /**
  * File-backed commit-triggers adapter.
  *
- * Per-member state at team/members/<name>/triggers.json:
+ * Subscriptions at team/members/<name>/triggers.json:
+ *   { "items": [ CommitTrigger, ... ] }
+ *
+ * Scan state at team/.logs/triggers/<name>.json:
  *   {
- *     "cursor": "<SHA the member has been notified through>",
- *     "items": [ CommitTrigger, ... ]
+ *     "cursor": "<SHA scanned through — NOT the same as "seen by the member">",
+ *     "matches": [ CommitMatch, ... ]  // durable until explicitly cleared
  *   }
  *
- * Triggers subscribe the member to git commits in the host repo. On each pass
- * the runner scans <cursor>..HEAD for commits that match any trigger's filters
- * (paths / author / message) and injects them into the member's cycle prompt
- * as wake reasons. The cursor advances to HEAD-at-cycle-start on successful
- * cycle completion (at-least-once semantics — a failed cycle re-fires).
+ * Triggers subscribe the member to git commits in the host repo. On each call
+ * to `pendingMatches`, the adapter scans <cursor>..HEAD for commits matching
+ * any trigger's filters and appends newly discovered ones to the match
+ * ledger, then advances `cursor` past them. The cursor's only job is "which
+ * commits have been checked against the filters" — advancing it costs
+ * nothing, because a match, once found, is durably recorded before the
+ * cursor moves past its commit.
  *
- * First-time initialization: if triggers.json exists with items but no cursor,
- * the cursor is set to the current HEAD without replaying history. Agents who
- * add a trigger start seeing commits from that point forward.
+ * The two halves are split because they change at completely different
+ * rates and need different durability. Subscriptions are hand-reviewable and
+ * change when a member decides to watch something; the cursor advances on
+ * essentially every scan (including ones that happen during work-detection,
+ * well before any cycle runs). `team/` is git-synced, so keeping the cursor
+ * there would mean a commit every scan. `team/.logs/` is already the
+ * directory teamos gitignores for exactly this kind of runner-managed churn.
+ *
+ * A match is delivered — shown in a cycle prompt — every time it is still in
+ * the ledger, not just the one time it first appears. It stays in the ledger
+ * until a `clear_trigger_matches` call explicitly removes it, the same
+ * "must be actively cleared" contract inbox messages already have. This is
+ * deliberate: a match that was shown during a cycle whose actual work went
+ * elsewhere (an inbox reply, an unrelated todo) must not silently vanish —
+ * see the trigger-firing data-loss incident this replaced (2026-09-25).
+ *
+ * First-time initialization: if a member has items but no ledger cursor yet,
+ * the cursor is anchored at the current HEAD without replaying history —
+ * adding a trigger does not backfill a week of matches.
  */
 
 const execFileAsync = promisify(execFile);
@@ -117,55 +138,160 @@ function normalizeTrigger(entry) {
 	return out;
 }
 
+/** Highest-priority (lowest PRIORITY_ORDER index) trigger among these ids, given the current item list. */
+function bestPriorityOf(triggerIds, items) {
+	let best = null;
+	for (const id of triggerIds) {
+		const trigger = items.find((i) => i.id === id);
+		if (!trigger) continue;
+		const idx = PRIORITY_ORDER.indexOf(trigger.priority);
+		const bestIdx = best == null ? Number.POSITIVE_INFINITY : PRIORITY_ORDER.indexOf(best);
+		if (idx < bestIdx) best = trigger.priority;
+	}
+	return best;
+}
+
+/** Evaluate every trigger's filters against every commit; returns one CommitMatch per matching commit. */
+function computeMatches(commits, items, member, matchedAt) {
+	const matches = [];
+	for (const commit of commits) {
+		const matchedIds = [];
+		for (const trigger of items) {
+			const compiled = compilePaths(trigger.paths);
+			// Default: skip commits authored by the member themselves. Triggers
+			// override by setting `author` or explicitly matching themselves.
+			const effectiveAuthorNot = trigger.authorNot ?? (trigger.author ? null : member);
+			if (effectiveAuthorNot && (commit.author === effectiveAuthorNot || commit.email === effectiveAuthorNot)) continue;
+			if (!matchesAuthor(trigger, commit.author, commit.email)) continue;
+			if (!matchesPaths(compiled, commit.files)) continue;
+			if (!matchesSubject(trigger, commit.subject)) continue;
+			matchedIds.push(trigger.id);
+		}
+		if (matchedIds.length === 0) continue;
+		matches.push({
+			hash: commit.hash,
+			shortHash: commit.hash.slice(0, 8),
+			author: commit.author,
+			email: commit.email,
+			subject: commit.subject,
+			files: commit.files,
+			matchedTriggerIds: matchedIds,
+			priority: bestPriorityOf(matchedIds, items),
+			matchedAt,
+		});
+	}
+	return matches;
+}
+
 export class FileTriggersAdapter {
 	constructor(teamDir, repoRoot) {
 		this.teamDir = teamDir;
 		this.repoRoot = repoRoot;
-		// Per-member memo of the last match scan, keyed on HEAD SHA. Avoids
-		// running `git log` 4× per priority × N members inside a single pass.
-		this._matchCache = new Map(); // member → { head, matches }
+		// Per-member memo of the HEAD we've already scanned up to this pass.
+		// Avoids running `git log` 4× per priority × N members inside a single
+		// pass — the ledger itself (not this cache) is what makes a match durable.
+		this._scannedTo = new Map(); // member → head SHA
 	}
 
 	_path(member) {
 		return join(this.teamDir, 'members', member, 'triggers.json');
 	}
 
-	async _readRaw(member) {
+	/** Scan cursor + durable match ledger — runner-managed, gitignored, churns freely. */
+	_ledgerPath(member) {
+		return join(this.teamDir, '.logs', 'triggers', `${member}.json`);
+	}
+
+	async _readItemsRaw(member) {
 		try {
 			const raw = await readFile(this._path(member), 'utf-8');
 			const data = JSON.parse(raw);
 			return {
-				cursor: typeof data.cursor === 'string' ? data.cursor : null,
 				items: Array.isArray(data.items) ? data.items : [],
+				// Pre-split files carried the cursor inline — migrated in _loadNormalized.
+				legacyCursor: typeof data.cursor === 'string' ? data.cursor : null,
 			};
 		} catch {
-			return { cursor: null, items: [] };
+			return { items: [], legacyCursor: null };
 		}
 	}
 
-	async _writeRaw(member, state) {
+	async _writeItems(member, items) {
 		const path = this._path(member);
 		await mkdir(dirname(path), { recursive: true });
-		const body = { cursor: state.cursor ?? null, items: state.items ?? [] };
+		await writeFile(path, `${JSON.stringify({ items: items ?? [] }, null, '\t')}\n`, 'utf-8');
+	}
+
+	async _readLedgerRaw(member) {
+		try {
+			const raw = await readFile(this._ledgerPath(member), 'utf-8');
+			const data = JSON.parse(raw);
+			return {
+				cursor: typeof data.cursor === 'string' ? data.cursor : null,
+				matches: Array.isArray(data.matches) ? data.matches : [],
+			};
+		} catch {
+			return { cursor: null, matches: [] };
+		}
+	}
+
+	async _writeLedger(member, ledger) {
+		const path = this._ledgerPath(member);
+		await mkdir(dirname(path), { recursive: true });
+		const body = { cursor: ledger.cursor ?? null, matches: ledger.matches ?? [] };
 		await writeFile(path, `${JSON.stringify(body, null, '\t')}\n`, 'utf-8');
 	}
 
 	async _loadNormalized(member) {
-		const raw = await this._readRaw(member);
-		let mutated = false;
+		const raw = await this._readItemsRaw(member);
+		let itemsMutated = false;
 		const items = [];
 		for (const entry of raw.items) {
 			const n = normalizeTrigger(entry);
 			if (!n) {
-				mutated = true;
+				itemsMutated = true;
 				continue;
 			}
-			if (n !== entry) mutated = true;
+			if (n !== entry) itemsMutated = true;
 			items.push(n);
 		}
-		const state = { cursor: raw.cursor, items };
-		if (mutated) await this._writeRaw(member, state);
-		return state;
+
+		const ledger = await this._readLedgerRaw(member);
+		let ledgerMutated = false;
+
+		// Upgrade path: a pre-split triggers.json carried the cursor inline. Adopt
+		// it as the initial scan position rather than re-anchoring at HEAD, which
+		// would silently skip whatever range was already pending. Only applies
+		// once — after this, the ledger file is the source of truth for cursor.
+		if (raw.legacyCursor && !ledger.cursor) {
+			ledger.cursor = raw.legacyCursor;
+			ledgerMutated = true;
+			itemsMutated = true; // rewrite triggers.json without the legacy field
+		}
+
+		// Drop ledger references to triggers that no longer exist (removed via
+		// remove_trigger, or dropped above as invalid). A match with no surviving
+		// trigger id is meaningless and would otherwise linger forever.
+		const validIds = new Set(items.map((t) => t.id));
+		const keptMatches = [];
+		for (const m of ledger.matches) {
+			const remaining = (m.matchedTriggerIds ?? []).filter((id) => validIds.has(id));
+			if (remaining.length === 0) {
+				ledgerMutated = true;
+				continue;
+			}
+			if (remaining.length !== m.matchedTriggerIds.length) {
+				ledgerMutated = true;
+				keptMatches.push({ ...m, matchedTriggerIds: remaining, priority: bestPriorityOf(remaining, items) });
+			} else {
+				keptMatches.push(m);
+			}
+		}
+		ledger.matches = keptMatches;
+
+		if (itemsMutated) await this._writeItems(member, items);
+		if (ledgerMutated) await this._writeLedger(member, ledger);
+		return { items, ledger };
 	}
 
 	async listTriggers(member) {
@@ -182,11 +308,14 @@ export class FileTriggersAdapter {
 		const trigger = normalizeTrigger({ ...input, id: makeTriggerId() });
 		if (!trigger) throw new Error('add_trigger: invalid trigger');
 		state.items.push(trigger);
+		await this._writeItems(member, state.items);
 		// First trigger for this member — anchor the cursor at HEAD so we don't
 		// replay git history.
-		if (!state.cursor) state.cursor = await this._readHead();
-		await this._writeRaw(member, state);
-		this._matchCache.delete(member);
+		if (!state.ledger.cursor) {
+			state.ledger.cursor = await this._readHead();
+			await this._writeLedger(member, state.ledger);
+		}
+		this._scannedTo.delete(member);
 		return { id: trigger.id };
 	}
 
@@ -242,8 +371,8 @@ export class FileTriggersAdapter {
 			}
 		}
 		state.items[idx] = next;
-		await this._writeRaw(member, state);
-		this._matchCache.delete(member);
+		await this._writeItems(member, state.items);
+		this._scannedTo.delete(member);
 	}
 
 	async removeTrigger(member, id) {
@@ -252,12 +381,28 @@ export class FileTriggersAdapter {
 		const idx = state.items.findIndex((t) => t.id === id);
 		if (idx === -1) throw new Error(`remove_trigger: ${id} is not in ${member}'s triggers`);
 		state.items.splice(idx, 1);
-		await this._writeRaw(member, state);
-		this._matchCache.delete(member);
-	}
+		await this._writeItems(member, state.items);
 
-	async currentHead(_member) {
-		return this._readHead();
+		// Drop this trigger's share of any ledger matches immediately, rather than
+		// waiting for the next _loadNormalized cleanup pass.
+		let ledgerMutated = false;
+		const keptMatches = [];
+		for (const m of state.ledger.matches) {
+			if (!m.matchedTriggerIds.includes(id)) {
+				keptMatches.push(m);
+				continue;
+			}
+			ledgerMutated = true;
+			const remaining = m.matchedTriggerIds.filter((tid) => tid !== id);
+			if (remaining.length > 0) {
+				keptMatches.push({ ...m, matchedTriggerIds: remaining, priority: bestPriorityOf(remaining, state.items) });
+			}
+		}
+		if (ledgerMutated) {
+			state.ledger.matches = keptMatches;
+			await this._writeLedger(member, state.ledger);
+		}
+		this._scannedTo.delete(member);
 	}
 
 	async _readHead() {
@@ -272,77 +417,53 @@ export class FileTriggersAdapter {
 	}
 
 	/**
-	 * Return matching commits between <cursor>..HEAD for every trigger this
-	 * member has. The cursor is NOT advanced — call `acknowledgeHead` after a
-	 * successful cycle to advance it. Returns an empty array if the member has
-	 * no triggers, or if there are no new commits, or if git is unavailable.
+	 * Return every currently-unresolved trigger match for this member — not just
+	 * ones discovered this call. A match is durable: once found it stays in the
+	 * ledger (and keeps being returned here) until `clearMatches` removes it,
+	 * regardless of how many times pendingMatches is called or whether the cycle
+	 * that saw it succeeded. The scan cursor itself advances eagerly on every
+	 * call (cheap — checking is idempotent, and a match is written to the ledger
+	 * before the cursor moves past its commit), independent of cycle outcome.
+	 *
+	 * Returns an empty array only if the member has no triggers. If git is
+	 * momentarily unavailable, still-durable matches are returned even though no
+	 * new scan could run.
 	 */
 	async pendingMatches(member) {
 		const state = await this._loadNormalized(member);
 		if (state.items.length === 0) return [];
 
 		const head = await this._readHead();
-		if (!head) return [];
+		if (!head) return state.ledger.matches;
 
 		// First-time scan with items but no cursor — anchor at HEAD without
 		// replaying history, then return nothing this pass.
-		if (!state.cursor) {
-			state.cursor = head;
-			await this._writeRaw(member, state);
+		if (!state.ledger.cursor) {
+			state.ledger.cursor = head;
+			await this._writeLedger(member, state.ledger);
+			this._scannedTo.set(member, head);
 			return [];
 		}
 
-		if (state.cursor === head) return [];
-
-		const cached = this._matchCache.get(member);
-		if (cached && cached.head === head && cached.cursor === state.cursor) {
-			return cached.matches;
-		}
-
-		const commits = await this._gitLogBetween(state.cursor, head);
-		if (commits == null) {
-			// `git log cursor..HEAD` failed (rebased-away cursor, most likely).
-			// Reset cursor to HEAD so we stop failing on the next pass.
-			state.cursor = head;
-			await this._writeRaw(member, state);
-			this._matchCache.set(member, { head, cursor: head, matches: [] });
-			return [];
-		}
-
-		const matches = [];
-		for (const commit of commits) {
-			const matchedIds = [];
-			let bestPriority = null;
-			for (const trigger of state.items) {
-				const compiled = compilePaths(trigger.paths);
-				// Default: skip commits authored by the member themselves. Triggers
-				// override by setting `author` or explicitly matching themselves.
-				const effectiveAuthorNot = trigger.authorNot ?? (trigger.author ? null : member);
-				if (effectiveAuthorNot && (commit.author === effectiveAuthorNot || commit.email === effectiveAuthorNot))
-					continue;
-				if (!matchesAuthor(trigger, commit.author, commit.email)) continue;
-				if (!matchesPaths(compiled, commit.files)) continue;
-				if (!matchesSubject(trigger, commit.subject)) continue;
-				matchedIds.push(trigger.id);
-				const pIdx = PRIORITY_ORDER.indexOf(trigger.priority);
-				const bestIdx = bestPriority == null ? Number.POSITIVE_INFINITY : PRIORITY_ORDER.indexOf(bestPriority);
-				if (pIdx < bestIdx) bestPriority = trigger.priority;
+		if (this._scannedTo.get(member) !== head && state.ledger.cursor !== head) {
+			const commits = await this._gitLogBetween(state.ledger.cursor, head);
+			if (commits == null) {
+				// `git log cursor..HEAD` failed (rebased-away cursor, most likely).
+				// Reset cursor to HEAD so we stop failing on the next pass. Deliberate:
+				// forcing a replay after a branch rewrite would likely produce noise.
+				state.ledger.cursor = head;
+			} else {
+				const known = new Set(state.ledger.matches.map((m) => m.hash));
+				const newMatches = computeMatches(commits, state.items, member, new Date().toISOString());
+				for (const m of newMatches) {
+					if (!known.has(m.hash)) state.ledger.matches.push(m);
+				}
+				state.ledger.cursor = head;
 			}
-			if (matchedIds.length === 0) continue;
-			matches.push({
-				hash: commit.hash,
-				shortHash: commit.hash.slice(0, 8),
-				author: commit.author,
-				email: commit.email,
-				subject: commit.subject,
-				files: commit.files,
-				matchedTriggerIds: matchedIds,
-				priority: bestPriority,
-			});
+			await this._writeLedger(member, state.ledger);
 		}
-
-		this._matchCache.set(member, { head, cursor: state.cursor, matches });
-		return matches;
+		this._scannedTo.set(member, head);
+		return state.ledger.matches;
 	}
 
 	async hasPendingMatches(member, priority) {
@@ -352,14 +473,56 @@ export class FileTriggersAdapter {
 		return matches.some((m) => PRIORITY_ORDER.indexOf(m.priority) <= ceiling);
 	}
 
-	async acknowledgeHead(member, head) {
-		if (!head) return;
+	/**
+	 * Explicitly resolve matches so they stop appearing. Two independent
+	 * selectors, combinable:
+	 *   - `triggerId` — clear this trigger's share of every match it currently
+	 *     has (a match still shows if a DIFFERENT trigger the caller didn't name
+	 *     also matched it). The common case: a cycle disposes of one trigger's
+	 *     whole fired batch as a single review.
+	 *   - `hashes` — clear these exact commits outright, for every trigger that
+	 *     matched them, regardless of triggerId.
+	 * Passing both scopes to just that trigger's reference on those hashes.
+	 * At least one is required. Returns how many match records were touched
+	 * (removed entirely, or had this trigger's id dropped from them).
+	 */
+	async clearMatches(member, { triggerId, hashes } = {}) {
+		const hasHashes = Array.isArray(hashes) && hashes.length > 0;
+		const hasTrigger = typeof triggerId === 'string' && triggerId.length > 0;
+		if (!hasHashes && !hasTrigger) {
+			throw new Error('clear_trigger_matches: pass `triggerId`, `hashes`, or both');
+		}
 		const state = await this._loadNormalized(member);
-		if (state.items.length === 0 && !state.cursor) return;
-		if (state.cursor === head) return;
-		state.cursor = head;
-		await this._writeRaw(member, state);
-		this._matchCache.delete(member);
+		if (hasTrigger && !state.items.some((t) => t.id === triggerId)) {
+			throw new Error(`clear_trigger_matches: ${triggerId} is not in ${member}'s triggers`);
+		}
+		const targetHashes = hasHashes ? new Set(hashes) : null;
+
+		let cleared = 0;
+		const next = [];
+		for (const m of state.ledger.matches) {
+			const hashSelected = !targetHashes || targetHashes.has(m.hash) || targetHashes.has(m.shortHash);
+			if (!hashSelected) {
+				next.push(m);
+				continue;
+			}
+			if (!hasTrigger) {
+				cleared++;
+				continue; // no triggerId given — drop this hash entirely
+			}
+			if (!m.matchedTriggerIds.includes(triggerId)) {
+				next.push(m);
+				continue;
+			}
+			cleared++;
+			const remaining = m.matchedTriggerIds.filter((id) => id !== triggerId);
+			if (remaining.length > 0) {
+				next.push({ ...m, matchedTriggerIds: remaining, priority: bestPriorityOf(remaining, state.items) });
+			}
+		}
+		state.ledger.matches = next;
+		await this._writeLedger(member, state.ledger);
+		return { cleared };
 	}
 
 	/**
