@@ -266,8 +266,11 @@ export class FileTriggersAdapter {
 		if (raw.legacyCursor && !ledger.cursor) {
 			ledger.cursor = raw.legacyCursor;
 			ledgerMutated = true;
-			itemsMutated = true; // rewrite triggers.json without the legacy field
 		}
+		// Rewrite triggers.json without the legacy field — also when the ledger
+		// already exists, since a pre-split MCP server still running mid-upgrade
+		// writes `cursor` back inline on its next mutation.
+		if (raw.legacyCursor) itemsMutated = true;
 
 		// Drop ledger references to triggers that no longer exist (removed via
 		// remove_trigger, or dropped above as invalid). A match with no surviving
@@ -307,11 +310,14 @@ export class FileTriggersAdapter {
 		const state = await this._loadNormalized(member);
 		const trigger = normalizeTrigger({ ...input, id: makeTriggerId() });
 		if (!trigger) throw new Error('add_trigger: invalid trigger');
+		const wasEmpty = state.items.length === 0;
 		state.items.push(trigger);
 		await this._writeItems(member, state.items);
 		// First trigger for this member — anchor the cursor at HEAD so we don't
-		// replay git history.
-		if (!state.ledger.cursor) {
+		// replay git history. That includes a member whose last trigger was
+		// removed a while ago: pendingMatches stops scanning at zero triggers,
+		// so the old cursor is stale and would backfill everything since.
+		if (!state.ledger.cursor || wasEmpty) {
 			state.ledger.cursor = await this._readHead();
 			await this._writeLedger(member, state.ledger);
 		}
@@ -487,6 +493,14 @@ export class FileTriggersAdapter {
 	 * (removed entirely, or had this trigger's id dropped from them).
 	 */
 	async clearMatches(member, { triggerId, hashes } = {}) {
+		// A malformed selector must not silently widen: `hashes: "abc"` next to a
+		// triggerId would otherwise clear that trigger's whole batch.
+		if (triggerId !== undefined && typeof triggerId !== 'string') {
+			throw new Error('clear_trigger_matches: triggerId must be a string');
+		}
+		if (hashes !== undefined && !(Array.isArray(hashes) && hashes.every((h) => typeof h === 'string'))) {
+			throw new Error('clear_trigger_matches: hashes must be an array of strings');
+		}
 		const hasHashes = Array.isArray(hashes) && hashes.length > 0;
 		const hasTrigger = typeof triggerId === 'string' && triggerId.length > 0;
 		if (!hasHashes && !hasTrigger) {

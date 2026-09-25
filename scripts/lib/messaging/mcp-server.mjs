@@ -49,6 +49,11 @@ function resolveMember(args) {
 				'Missing member identity: pass `member: "<name>"` in the tool call or set TEAMOS_MEMBER_NAME in the environment.',
 		};
 	}
+	// The name becomes a path segment in every adapter (members/<name>/…,
+	// .logs/<kind>/<name>.json) — reject anything that could walk out of it.
+	if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+		throw { code: -32602, message: `Invalid member name: ${JSON.stringify(name)}` };
+	}
 	return name;
 }
 
