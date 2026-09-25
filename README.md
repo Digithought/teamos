@@ -227,12 +227,26 @@ node teamos/scripts/run.mjs --no-commit
 | `--interval <min>` | `120` | Minutes between passes |
 | `--push` | — | Push to remote after each commit (git sync) |
 | `--no-commit` | — | Skip automatic sync after each cycle |
+| `--[no-]leftover-check` | on with `--no-commit` | After a clean cycle, resume the member's session once to commit, stash or revert uncommitted changes it left in the checkout |
 | `--no-clerk` | — | Skip clerk agent after each pass |
 | `--clerk-only` | — | Run only the clerk agent, then exit |
 | `--weight <pri:n>` | `pressing:8, today:4, thisWeek:2, later:1` | Priority weight for fair scheduling (repeatable) |
 | `--cadence <pri:dur>` | `pressing:0h, today:4h, thisWeek:1d, later:3d` | Min time between serving a priority (repeatable) |
 | `--budget <pri:n>` | — | Optional max member cycles at a priority per pass (repeatable) |
 | `--dry-run` | — | List members with work, don't invoke agent |
+
+### Member identity and leftovers
+
+Each cycle's commits are authored as `<Member> (teamos)`; the committer stays whoever runs the
+runner. Set `TEAMOS_GIT_AUTHOR_EMAIL` (e.g. `{member}@example.com`, lowercased name) for
+per-member addresses; unset, the runner's own email is kept.
+
+Members share one checkout, and a cycle ends when the agent stops — background jobs and plans to
+"finish next cycle" don't survive it. With the leftover check on, the runner snapshots the working
+tree (outside `team/`) before each cycle; if a clean cycle added or changed anything uncommitted,
+it resumes that member's session once with the list and asks it to commit, stash or revert each
+path. Whatever is still left is logged for a person. Sessions therefore persist (Claude Code prunes
+them after `cleanupPeriodDays`).
 
 ### Loop Mode (Default)
 
@@ -467,9 +481,9 @@ Legacy `schedule.json` files (missing ids, using the old `recurring: true` flag 
 
 | Adapter | Flag | Description |
 |---|---|---|
-| `file` | `--triggers file` | Per-member commit subscriptions at `team/members/<name>/triggers.json`. The adapter runs `git log <cursor>..HEAD --no-merges` in the host repo and matches each commit against every trigger's filters (path globs, author, commit-message regex). Matching commits inject into the next cycle prompt at the trigger's priority. Cursor advances to HEAD-at-cycle-start on successful cycle completion (at-least-once semantics). |
+| `file` | `--triggers file` | Per-member commit subscriptions at `team/members/<name>/triggers.json`, scan state + durable match ledger at `team/.logs/triggers/<name>.json`. The adapter runs `git log <cursor>..HEAD --no-merges` in the host repo and matches each commit against every trigger's filters (path globs, author, commit-message regex). A match, once found, is recorded in the ledger and injected into every cycle prompt at the trigger's priority until the agent calls `clear_trigger_matches` — the scan cursor itself advances eagerly on each scan, independent of cycle outcome. |
 
-All adapters implement the stable MCP contract documented in `teamos/docs/triggers.md`: `list_triggers`, `add_trigger`, `update_trigger`, `remove_trigger`. A future GitHub / GitLab webhook adapter can drop in without changing the agent contract — the contract treats ids as opaque strings and exposes no repo-specific machinery.
+All adapters implement the stable MCP contract documented in `teamos/docs/triggers.md`: `list_triggers`, `add_trigger`, `update_trigger`, `remove_trigger`, `clear_trigger_matches`. A future GitHub / GitLab webhook adapter can drop in without changing the agent contract — the contract treats ids as opaque strings and exposes no repo-specific machinery.
 
 ### Watches Adapters
 

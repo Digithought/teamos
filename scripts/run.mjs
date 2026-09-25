@@ -24,6 +24,8 @@
  *   --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)
  *   --push               Push to remote after each commit (git sync)
  *   --no-commit          Skip automatic sync after each cycle
+ *   --[no-]leftover-check  Resume a member's session to resolve uncommitted changes it left
+ *                        (default: on with --no-commit, where nothing else would commit them)
  *   --no-clerk           Skip clerk agent after each pass
  *   --clerk-only         Run only the clerk agent, then exit
  *   --weight <pri:n>     Priority weight for fair scheduling (repeatable)
@@ -47,6 +49,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runAgent } from './lib/agents/index.mjs';
 import { loadConfig, loadDotEnv, resolveEnvVars } from './lib/config.mjs';
+import { watchCodeVersion } from './lib/code-version.mjs';
 import { runCycle, runPass } from './lib/cycle.mjs';
 import { buildClerkPrompt, runMaintenance } from './lib/maintenance.mjs';
 import { createMessagingAdapter } from './lib/messaging/index.mjs';
@@ -112,6 +115,7 @@ function printHelp() {
 		'  --remote-pull-interval <min>  Minutes between idle git pulls (default: 5, 0 disables)',
 		'  --push               Push to remote after each commit',
 		'  --no-commit          Skip automatic sync after each cycle',
+		'  --[no-]leftover-check  Resume a member to resolve uncommitted changes it left (default: on with --no-commit)',
 		'  --no-clerk           Skip clerk agent after each pass',
 		'  --clerk-only         Run only the clerk agent, then exit',
 		'  --weight <pri:n>     Priority weight for fair scheduling (repeatable)',
@@ -143,6 +147,7 @@ function parseArgs(argv) {
 		remotePullMs: DEFAULT_REMOTE_PULL_MS,
 		push: false,
 		noCommit: false,
+		leftoverCheck: undefined, // resolved after parsing: defaults to noCommit
 		noClerk: false,
 		clerkOnly: false,
 		dryRun: false,
@@ -212,6 +217,12 @@ function parseArgs(argv) {
 			case '--no-commit':
 				opts.noCommit = true;
 				break;
+			case '--leftover-check':
+				opts.leftoverCheck = true;
+				break;
+			case '--no-leftover-check':
+				opts.leftoverCheck = false;
+				break;
 			case '--no-clerk':
 				opts.noClerk = true;
 				break;
@@ -278,6 +289,9 @@ function parseArgs(argv) {
 		console.error(`Unknown priority: "${opts.priority}". Valid: ${PRIORITY_ORDER.join(', ')}`);
 		process.exit(1);
 	}
+
+	// With sync on, the post-pass commit picks up whatever a member left; without it, nothing does.
+	opts.leftoverCheck ??= opts.noCommit;
 
 	return opts;
 }
@@ -485,11 +499,19 @@ async function main() {
 
 	if (opts.loop) {
 		let passNum = 0;
+		const codeWatch = watchCodeVersion(TEAMOS_ROOT);
 
 		while (true) {
 			if (await checkStop(teamDir)) {
 				console.log('\n[runner] Stop file detected — exiting loop.');
 				break;
+			}
+			// Between passes is the one point no member is mid-cycle; restart here onto new code.
+			const moved = codeWatch?.changed();
+			if (moved) {
+				console.log(`\n[runner] teamos moved ${moved.from} → ${moved.to} — exiting for a restart onto the new code.`);
+				await saveSchedulerState(logsDir, schedulerState);
+				process.exit(codeWatch.exitCode);
 			}
 			if ((await waitWhilePaused(teamDir)) === 'stop') {
 				console.log('\n[runner] Stop file detected — exiting loop.');

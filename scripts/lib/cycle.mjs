@@ -1,7 +1,8 @@
-import { writeFile } from 'node:fs/promises';
+import { appendFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent } from './agents/index.mjs';
+import { agentSupportsResume, runAgent } from './agents/index.mjs';
+import { buildCleanupPrompt, leftoversSince, readClaims, snapshotDirty, withoutClaimed } from './leftovers.mjs';
 import { PRIORITY_ORDER, normalizeVruntimes, pickNextPriority, rotateAfter } from './scheduler.mjs';
 import {
 	buildLogPath,
@@ -119,6 +120,10 @@ export async function buildScheduleSections(member, scheduleAdapter) {
 function formatCommitMatchForPrompt(match) {
 	const lines = [];
 	lines.push(`- \`${match.shortHash}\` **${match.subject}**  _by ${match.author}_  (priority: ${match.priority})`);
+	lines.push(
+		`    hash: ${match.hash}  matched triggers: ${match.matchedTriggerIds.join(', ')}` +
+			`  — call \`clear_trigger_matches\` once reviewed, or it will keep reappearing`,
+	);
 	if (match.files.length > 0) {
 		const shown = match.files.slice(0, 10);
 		for (const f of shown) lines.push(`    - ${f}`);
@@ -159,13 +164,19 @@ function formatWatchObservationForPrompt(obs) {
 	return lines.join('\n');
 }
 
+/** Returns the section text plus the observations it shows — the set a clean exit acknowledges. */
 async function buildWatchesSection(member, watchesAdapter) {
-	if (!watchesAdapter) return null;
+	if (!watchesAdapter) return { text: null, delivered: [] };
 	const observations = await watchesAdapter.pendingObservations(member).catch(() => []);
-	if (observations.length === 0) return null;
-	return observations.map(formatWatchObservationForPrompt).join('\n');
+	if (observations.length === 0) return { text: null, delivered: [] };
+	return { text: observations.map(formatWatchObservationForPrompt).join('\n'), delivered: observations };
 }
 
+/**
+ * Returns `{ prompt, delivered }`. `delivered.watches` is exactly what the
+ * prompt showed; the runner acknowledges that set on a clean exit, never a
+ * fresh read that could include something observed mid-cycle.
+ */
 export async function buildCyclePrompt(member, priority, teamDir, adapters = {}) {
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'cycle.md');
@@ -253,14 +264,14 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		);
 	}
 
-	if (watchesSection) {
+	if (watchesSection.text) {
 		parts.push(
 			'',
 			'## Watches Fired',
 			'',
 			'A probe you watch changed state. These are host-side conditions — no message, todo, event or commit reports them. Handle them as part of this cycle; they are acknowledged only when this cycle succeeds.',
 			'',
-			watchesSection,
+			watchesSection.text,
 		);
 	}
 
@@ -280,10 +291,47 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		`Execute a cycle for **${member.name}** at priority level **${priority}**.`,
 	);
 
-	return parts.join('\n');
+	return { prompt: parts.join('\n'), delivered: { watches: watchesSection.delivered } };
 }
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
+
+/**
+ * After a clean cycle, find what the member left uncommitted (see leftovers.mjs) and resume its
+ * session once to commit, stash or revert it.  Whatever survives that is logged, not retried: a
+ * member that can't clean up in one turn needs a person, not a loop.  Never throws — the cycle
+ * already succeeded.
+ */
+async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId }) {
+	try {
+		// Paths a dashboard chat changed during the cycle are the chat's to resolve, not this member's.
+		const after = snapshotDirty(repoRoot, teamDir);
+		const left = withoutClaimed(leftoversSince(treeBefore, after), await readClaims(teamDir), after);
+		if (left.length === 0) return;
+		const list = left.map((l) => `${l.status} ${l.path}`).join(', ');
+		console.log(`[runner] ${member.name} left ${left.length} uncommitted change(s): ${list}`);
+		if (!sessionId || !agentSupportsResume(opts.agent)) {
+			console.warn(`[runner] Cannot resume ${member.name}'s session to clean up; leaving them for a person.`);
+			return;
+		}
+		console.log(`[runner] Resuming ${member.name}'s session to resolve them.`);
+		await appendFile(currentLog, `\n[runner] Leftover check: resuming session ${sessionId} for ${left.length} path(s)\n`);
+		const code = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			resume: { sessionId, message: buildCleanupPrompt(left) },
+		});
+		const afterCleanup = snapshotDirty(repoRoot, teamDir);
+		const still = withoutClaimed(leftoversSince(treeBefore, afterCleanup), await readClaims(teamDir), afterCleanup);
+		if (still.length > 0) {
+			console.warn(
+				`[runner] ${member.name} still left ${still.length} change(s) after cleanup (exit ${code}): ${still.map((l) => l.path).join(', ')}`,
+			);
+		} else {
+			console.log(`[runner] ${member.name} resolved its leftovers.`);
+		}
+	} catch (err) {
+		console.error(`[runner] Leftover check failed for ${member.name}: ${err.message}`);
+	}
+}
 
 export async function runCycle({
 	membersWithWork,
@@ -358,10 +406,7 @@ export async function runCycle({
 		// the same "now" the agent saw — events that become due mid-cycle wait
 		// for the next pass instead of being silently advanced.
 		const cycleStart = new Date();
-		// Snapshot the HEAD the agent sees so commit triggers fired during this
-		// cycle's execution don't get silently acknowledged.
-		const headAtStart = adapters.triggers ? await adapters.triggers.currentHead(member.name).catch(() => null) : null;
-		const prompt = await buildCyclePrompt(member, priority, teamDir, adapters);
+		const { prompt, delivered } = await buildCyclePrompt(member, priority, teamDir, adapters);
 		const mcpContext =
 			adapters.messaging || adapters.tasks || adapters.schedule || adapters.triggers || adapters.watches
 				? {
@@ -374,7 +419,16 @@ export async function runCycle({
 						watchesAdapterName: opts.watches,
 					}
 				: undefined;
-		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext);
+		const treeBefore = opts.leftoverCheck ? snapshotDirty(repoRoot, teamDir) : null;
+		let sessionId = null;
+		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			onSession: (id) => {
+				sessionId ??= id;
+			},
+		});
+		if (exitCode === 0 && treeBefore) {
+			await resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId });
+		}
 
 		if (exitCode !== 0) {
 			failureState.consecutive++;
@@ -390,13 +444,12 @@ export async function runCycle({
 					console.error(`[runner] acknowledgeDue failed for ${member.name}: ${err.message}`);
 				});
 			}
-			if (adapters.triggers && headAtStart) {
-				await adapters.triggers.acknowledgeHead(member.name, headAtStart).catch((err) => {
-					console.error(`[runner] triggers.acknowledgeHead failed for ${member.name}: ${err.message}`);
-				});
-			}
+			// Commit triggers need no post-cycle acknowledgement: pendingMatches
+			// advances the scan cursor eagerly (before the agent runs) and a match,
+			// once found, is durable until the agent calls clear_trigger_matches —
+			// see triggers/file.mjs.
 			if (adapters.watches) {
-				await adapters.watches.acknowledgeObservations(member.name).catch((err) => {
+				await adapters.watches.acknowledgeObservations(member.name, delivered.watches).catch((err) => {
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}

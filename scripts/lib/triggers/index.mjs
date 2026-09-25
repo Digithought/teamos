@@ -19,6 +19,7 @@
  * @property {string[]} files            — files that changed in the commit
  * @property {string[]} matchedTriggerIds
  * @property {'pressing'|'today'|'thisWeek'|'later'} priority — highest priority across matched triggers
+ * @property {string} matchedAt          — ISO timestamp of when this match was first recorded
  */
 
 /**
@@ -27,10 +28,9 @@
  * @property {(member: string, input: Omit<CommitTrigger, 'id'>) => Promise<{ id: string }>} addTrigger
  * @property {(member: string, id: string, patch: Partial<Omit<CommitTrigger, 'id'>>) => Promise<void>} updateTrigger
  * @property {(member: string, id: string) => Promise<void>} removeTrigger
- * @property {(member: string) => Promise<CommitMatch[]>} pendingMatches
+ * @property {(member: string) => Promise<CommitMatch[]>} pendingMatches — every currently-unresolved match, durable until cleared
  * @property {(member: string, priority: string) => Promise<boolean>} hasPendingMatches
- * @property {(member: string) => Promise<string | null>} currentHead
- * @property {(member: string, head: string) => Promise<void>} acknowledgeHead
+ * @property {(member: string, selector: { triggerId?: string, hashes?: string[] }) => Promise<{ cleared: number }>} clearMatches
  */
 
 import { FileTriggersAdapter } from './file.mjs';

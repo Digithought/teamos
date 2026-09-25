@@ -1,6 +1,7 @@
 import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runAgent } from '../agents/index.mjs';
+import { buildCleanupPrompt, heldClaims, leftoversSince, readClaims, recordClaims, releaseClaims, snapshotDirty } from '../leftovers.mjs';
 import { buildChatPrompt, buildTranscriptMessage } from './prompt.mjs';
 
 /** A chat left open this long with no turn is ended (and filed) on the next request. */
@@ -24,6 +25,9 @@ function chatError(status, message) {
 	err.status = status;
 	return err;
 }
+
+/** Who holds a chat's claims on the checkout (leftovers.mjs). */
+const claimOwner = (session) => `chat:${session.member}:${session.id}`;
 
 function makeSessionId() {
 	const iso = new Date().toISOString().replace(/:/g, '-');
@@ -408,6 +412,9 @@ export class ChatSessions {
 		// browser, so the cycle watcher's events ride out on it.
 		session.listeners.add(collect);
 		let exitCode = 1;
+		// What this turn changes in the checkout is the chat's: claimed, so the runner doesn't hand
+		// it to a cycle running meanwhile, and resolved when the chat ends (see end()).
+		const treeBefore = snapshotDirty(this.repoRoot, this.teamDir);
 		try {
 			exitCode = await runAgent(
 				this.chatConfig.agent,
@@ -427,6 +434,12 @@ export class ChatSessions {
 				},
 			);
 		} finally {
+			if (treeBefore) {
+				const after = snapshotDirty(this.repoRoot, this.teamDir);
+				await recordClaims(this.teamDir, claimOwner(session), leftoversSince(treeBefore, after), after).catch((err) => {
+					console.error(`[chat] could not record ${session.member}'s changes: ${err.message}`);
+				});
+			}
 			session.listeners.delete(collect);
 			session.busy = false;
 			session.abort = null;
@@ -454,6 +467,10 @@ export class ChatSessions {
 		this.sessions.delete(id);
 		this._syncWatcher();
 		if (session.abort) session.abort();
+		// In the background: a cleanup turn takes minutes, and closing the chat must not wait on it.
+		this._resolveChatLeftovers(session).catch((err) => {
+			console.error(`[chat] leftover cleanup for ${session.member} failed: ${err.message}`);
+		});
 		if (!persist || session.transcript.length === 0 || !this.adapters.messaging) {
 			return { persisted: false };
 		}
@@ -469,6 +486,40 @@ export class ChatSessions {
 	}
 
 	/** File and drop sessions the human walked away from. Runs on session create/status. */
+	/**
+	 * A chat that changed the checkout and left it uncommitted gets one more turn, told what it
+	 * left, to commit, stash or revert it — the same rule the runner applies to a cycle. The chat
+	 * is the member, but nothing else will come back for these: the next cycle doesn't know them.
+	 * Claims are released afterwards either way; whatever is still left is logged for a person.
+	 */
+	async _resolveChatLeftovers(session) {
+		const owner = claimOwner(session);
+		try {
+			const held = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
+			if (held.length === 0) return;
+			console.log(`[chat] ${session.member}'s chat left ${held.length} uncommitted change(s); asking it to resolve them.`);
+			const prompt = await buildChatPrompt({ name: session.member, title: session.title }, this.teamDir, this.adapters, {
+				human: session.human,
+				transcript: session.transcript,
+				changedFiles: [],
+			});
+			await runAgent(
+				this.chatConfig.agent,
+				prompt,
+				this.repoRoot,
+				session.logFile ?? join(this.teamDir, '.logs', 'chat', `${session.member}.${session.id}.log`),
+				{ ...this.mcpContext, memberName: session.member },
+				{ agentOptions: { task: buildCleanupPrompt(held, { ended: 'chat' }) }, env: this.chatConfig.env, quiet: true },
+			);
+			const still = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
+			if (still.length > 0) {
+				console.warn(`[chat] ${session.member}'s chat still left: ${still.map((l) => l.path).join(', ')}`);
+			}
+		} finally {
+			await releaseClaims(this.teamDir, owner);
+		}
+	}
+
 	async sweepIdle() {
 		const cutoff = Date.now() - IDLE_SESSION_MS;
 		for (const session of [...this.sessions.values()]) {

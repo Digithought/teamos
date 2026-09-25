@@ -71,6 +71,22 @@ Each turn:
 
 Every turn re-sends the whole conversation, because every turn is a new process. A long chat costs more per turn than a short one — end a chat when it is done rather than leaving it open all afternoon.
 
+## Leaving the Checkout Clean
+
+A chat edits the same checkout the cycles do, often while one is running. The runner's leftover
+check (`scripts/lib/leftovers.mjs`) resumes a member whose cycle left uncommitted changes. Without
+help it would blame a concurrent chat's edits on whichever member's cycle was running.
+
+So every turn snapshots the working tree before and after, and **claims** what it changed in
+`team/.logs/leftover-claims.json`. A claim records the path and the signature the chat left it
+with. The runner leaves claimed paths out of a cycle's leftovers for as long as they still carry
+that signature. Once anyone changes such a path again, it's theirs.
+
+When a chat ends, by the human or by the idle sweep, it gets one more turn in the background. That
+turn is told which claimed paths are still uncommitted and asked to commit, stash or revert each
+one, the same rule a cycle follows. The claims are then released, and anything still left is
+logged. Attribution is best-effort: a cycle edit that lands during a chat turn reads as the chat's.
+
 ## Prompt Assembly
 
 `scripts/lib/chat/prompt.mjs` reuses the cycle prompt's own section builders (`buildInboxSection`, `buildTodoSection`, `buildScheduleSections` in `scripts/lib/cycle.mjs`), so a member never sees a different picture of itself in chat than in a cycle:
