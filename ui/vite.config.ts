@@ -21,6 +21,7 @@ export default defineConfig(async () => {
 	);
 	const { createTasksAdapter } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/tasks/index.mjs')).href);
 	const { ChatSessions } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/chat/session.mjs')).href);
+	const { createLogReader } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/logs.mjs')).href);
 
 	loadDotEnv(projectRoot);
 	const config = resolveEnvVars(await loadConfig(projectRoot));
@@ -51,6 +52,7 @@ export default defineConfig(async () => {
 				scheduleAdapterName,
 				auth: config.auth,
 				chat,
+				logs: createLogReader(teamDir),
 			}),
 		],
 		server: {

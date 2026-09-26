@@ -38,6 +38,7 @@ teamos/
 │       ├── work-detection.mjs   # Member loading, work scanning, system-event injection
 │       ├── cycle.mjs            # Cycle/pass execution, prompt building
 │       ├── maintenance.mjs      # Housekeeping, clerk invocation, efficiency
+│       ├── logs.mjs             # Read-only log listing/reading for the dashboard's Logs tab
 │       ├── agents/
 │       │   ├── index.mjs        # Registry + common invocation (spawn, timeout, logging)
 │       │   ├── claude.mjs       # Claude CLI adapter + stream parser
@@ -715,7 +716,7 @@ Agents always see a local filesystem. The sync adapter handles durability *aroun
 
 ## Web Dashboard
 
-TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos, and sending messages.
+TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos and agent logs, and sending messages.
 
 ### Running the Dashboard
 
@@ -767,6 +768,14 @@ A member's **Chat** tab holds a live conversation with that member. Starting a c
 A chat instance can act on what the conversation decides. Two instances of one member writing at once is safe enough without a lock: Claude's file tools already reject a write to a file that changed since it was read, which covers `state.md` and `profile.md`, and the JSON collections re-read immediately before every additive write. When a cycle of that member finishes mid-chat the pane says so, and the next turn's prompt lists what changed so the member re-reads instead of answering from a stale picture. Ending a chat still files the whole transcript to the member's inbox — as the record, not as a work queue. `teamos/docs/chat.md` has the full design, the residual (semantic) risk, the account configuration, and the failure modes.
 
 Because chat spawns agent processes, the dashboard's binding is now load-bearing: keep the port on a tailnet or behind the auth proxy, never on a public interface. See **Authentication** below and `teamos/docs/auth.md`.
+
+### Logs view
+
+A member's **Logs** tab reads that member's agent logs from `team/.logs/` — every cycle (`<Member>.<priority>.<ts>.log`) and every dashboard chat (`.logs/chat/<Member>.<session>.log`), newest first. Each row shows when it started, the priority (or `chat`), agent time and cost summed from the `[RESULT …]` lines, size, and how it ended: `exit N` from the runner's closing line, `running` while the cycle's `.prompt.md` sibling exists and the log is still growing, or `no exit` for a run whose runner was killed before it could write one. Clerk and maintenance logs belong to no member and are not listed.
+
+Opening a log shows its last 128 KB, with **Load earlier** paging back through the rest. `[ASSISTANT]` prose, tool calls and their output, and the closing result and exit lines are styled apart, and runs of thinking dots fold into one `thinking ×N` marker. A running log is followed live: the pane polls for the bytes appended since its last read every few seconds and stays pinned to the bottom unless you have scrolled up.
+
+The endpoints are read-only — `GET /api/members/:name/logs` and `GET /api/members/:name/logs/:file` (`?tail=N`, `?from=A&to=B`, or `?from=A` to follow) — and strict about names: the member and file must each be a single segment matching the log naming pattern, and the resolved path must be a regular file inside `.logs/`, so neither a crafted name nor a symlink reaches anything else. See `teamos/scripts/lib/logs.mjs`.
 
 ### Identity ("Me")
 

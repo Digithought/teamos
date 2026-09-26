@@ -13,6 +13,7 @@ import type {
 	Thread,
 	TicketCounts,
 } from './types.js';
+import type { LogChunk, LogEntry } from './logs.js';
 
 async function failure(res: Response): Promise<Error> {
 	let detail = '';
@@ -238,6 +239,21 @@ export const api = {
 		delJson<{ persisted: boolean; messageId?: string; wrappingUp?: boolean }>(
 			`/api/chat/sessions/${encodeURIComponent(id)}${persist ? '' : '?persist=0'}`,
 		),
+	/** A member's cycle and chat logs, newest first. */
+	logs: (member: string) => get<LogEntry[]>(`/api/members/${encodeURIComponent(member)}/logs`),
+	/**
+	 * Part of one log: the last `tail` bytes by default, a `from`–`to` byte range
+	 * to page back, or `from` alone to follow a running log from where the last
+	 * read stopped.
+	 */
+	log: (member: string, name: string, range: { tail?: number; from?: number; to?: number } = {}) => {
+		const q = new URLSearchParams();
+		for (const [key, value] of Object.entries(range)) if (value !== undefined) q.set(key, String(value));
+		const qs = q.toString();
+		return get<LogChunk>(
+			`/api/members/${encodeURIComponent(member)}/logs/${encodeURIComponent(name)}${qs ? `?${qs}` : ''}`,
+		);
+	},
 	messagingInfo: () => get<MessagingInfo>('/api/messaging/info'),
 	me: () => get<MeInfo>('/api/me'),
 };

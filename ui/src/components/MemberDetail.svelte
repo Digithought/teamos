@@ -5,12 +5,13 @@ import { router } from '../lib/router.svelte.js';
 import type { MailboxCounts, MemberDetail, TodoItem } from '../lib/types.js';
 import Mailbox from './Mailbox.svelte';
 import MemberChat from './MemberChat.svelte';
+import MemberLogs from './MemberLogs.svelte';
 
 const { name }: { name: string } = $props();
 
 let detail = $state<MemberDetail | null>(null);
 let loading = $state(true);
-let tab = $state<'messages' | 'chat' | 'todos' | 'state' | 'schedule'>('messages');
+let tab = $state<'messages' | 'chat' | 'todos' | 'state' | 'schedule' | 'logs'>('messages');
 /** Reported up by <Mailbox> so the tab badge doesn't need a second fetch of the same mailboxes. */
 let mailCounts = $state<MailboxCounts | null>(null);
 
@@ -279,6 +280,7 @@ async function deleteMember() {
 		<button class="tab" class:active={tab === 'schedule'} onclick={() => tab = 'schedule'}>
 			Schedule {#if detail.schedule.events.length > 0}<span class="badge">{detail.schedule.events.length}</span>{/if}
 		</button>
+		<button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
 	</div>
 
 	<div class="tab-content">
@@ -287,6 +289,9 @@ async function deleteMember() {
 
 		{:else if tab === 'chat'}
 			<MemberChat {name} />
+
+		{:else if tab === 'logs'}
+			<MemberLogs {name} />
 
 		{:else if tab === 'todos'}
 			<div class="add-form">

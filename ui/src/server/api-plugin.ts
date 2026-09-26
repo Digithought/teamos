@@ -179,6 +179,44 @@ interface ChatController {
 	}>;
 }
 
+interface LogEntry {
+	name: string;
+	kind: 'cycle' | 'chat';
+	priority: string | null;
+	startedAt: string;
+	updatedAt: string;
+	size: number;
+	running: boolean;
+	status: 'running' | 'ok' | 'failed' | 'interrupted';
+	exitCode: number | null;
+	durationSec: number | null;
+	costUsd: number | null;
+	runs: number;
+}
+
+interface LogChunk {
+	name: string;
+	kind: 'cycle' | 'chat';
+	size: number;
+	from: number;
+	to: number;
+	text: string;
+	running: boolean;
+	exitCode: number | null;
+	status: LogEntry['status'];
+}
+
+/**
+ * Read-only view of a member's agent logs in `team/.logs/`
+ * (`scripts/lib/logs.mjs`), injected by the vite config like the adapters.
+ * It validates every member and log name itself and throws errors carrying
+ * the HTTP status to answer with.
+ */
+interface LogReader {
+	list(member: string): Promise<LogEntry[]>;
+	read(member: string, name: string, opts: { tail?: number; from?: number; to?: number }): Promise<LogChunk>;
+}
+
 interface AuthConfig {
 	/** If false, identity headers are ignored — the dashboard trusts its own localStorage selection. */
 	trustProxy?: boolean;
@@ -197,6 +235,7 @@ interface ApiOptions {
 	scheduleAdapterName: string;
 	auth?: AuthConfig;
 	chat?: ChatController;
+	logs?: LogReader;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200) {
@@ -354,7 +393,7 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 }
 
 export function teamosApi(opts: ApiOptions): Plugin {
-	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter, chat } = opts;
+	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter, chat, logs } = opts;
 	const siblingPort = opts.siblingPort ?? 3004;
 	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
@@ -1047,6 +1086,34 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return json(res, await buildThreads(decodeURIComponent(match[1])));
 					}
 
+					// ─── Agent logs (read-only) ──────────────────────────────
+					//
+					// The reader checks both names against strict patterns and
+					// confirms the resolved path is a plain file inside .logs/ —
+					// see scripts/lib/logs.mjs.
+					match = path.match(/^\/api\/members\/([^/]+)\/logs$/);
+					if (match && method === 'GET') {
+						if (!logs) return json(res, { error: 'Logs are not configured on this dashboard.' }, 501);
+						return json(res, await logs.list(decodeURIComponent(match[1])));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/logs\/([^/]+)$/);
+					if (match && method === 'GET') {
+						if (!logs) return json(res, { error: 'Logs are not configured on this dashboard.' }, 501);
+						const num = (key: string) => {
+							const raw = url.searchParams.get(key);
+							return raw === null || raw === '' ? undefined : Number(raw);
+						};
+						return json(
+							res,
+							await logs.read(decodeURIComponent(match[1]), decodeURIComponent(match[2]), {
+								tail: num('tail'),
+								from: num('from'),
+								to: num('to'),
+							}),
+						);
+					}
+
 					match = path.match(/^\/api\/members\/([^/]+)\/inbox$/);
 					if (match && method === 'GET') {
 						return json(res, await messagingAdapter.listInbox(decodeURIComponent(match[1])));
@@ -1145,9 +1212,13 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 					json(res, { error: 'Not found' }, 404);
 				} catch (err: any) {
-					console.error('[teamos-api]', err);
-					// Chat errors carry the status they mean (404 unknown member,
-					// 409 a chat already open); everything else is a 500.
+					// A 4xx is the client's mistake (a bad log name probing for
+					// a way out of .logs/, say) — one line, not a stack.
+					if (err.status && err.status < 500) console.warn('[teamos-api]', method, path, err.status, err.message);
+					else console.error('[teamos-api]', err);
+					// Chat and log errors carry the status they mean (404 unknown
+					// member or log, 409 a chat already open, 400 a bad log name);
+					// everything else is a 500.
 					if (res.headersSent) res.end();
 					else json(res, { error: err.message }, err.status ?? 500);
 				}
