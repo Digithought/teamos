@@ -1,8 +1,8 @@
 import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runAgent } from '../agents/index.mjs';
-import { buildCleanupPrompt, heldClaims, leftoversSince, readClaims, recordClaims, releaseClaims, snapshotDirty } from '../leftovers.mjs';
-import { buildChatPrompt, buildTranscriptMessage } from './prompt.mjs';
+import { heldClaims, leftoversSince, readClaims, recordClaims, releaseClaims, snapshotDirty } from '../leftovers.mjs';
+import { buildChatPrompt, buildDiscardCleanupPrompt, buildTranscriptMessage, buildWrapUpPrompt } from './prompt.mjs';
 
 /** A chat left open this long with no turn is ended (and filed) on the next request. */
 const IDLE_SESSION_MS = 30 * 60 * 1000;
@@ -203,6 +203,8 @@ export class ChatSessions {
 		};
 		/** @type {Map<string, Object>} */
 		this.sessions = new Map();
+		/** Background wrap-up turns of ended chats (see end()). */
+		this.wrapUps = new Set();
 		this.cycleTimer = null;
 	}
 
@@ -456,24 +458,28 @@ export class ChatSessions {
 	}
 
 	/**
-	 * End a session and file the transcript as a message from the human to the
-	 * member, so it lands in the record like any other mail. The chat instance
-	 * may already have acted on everything said here — the transcript is the
-	 * account of the conversation, not the queue of what to do about it.
-	 * An empty chat writes nothing.
+	 * End a session. A chat is a session of the member, so it ends like one: a last turn wraps up
+	 * into the member's state and todos and resolves what it left uncommitted (see _wrapUp). That
+	 * turn runs in the background, because it takes minutes and closing the chat must not wait.
+	 *
+	 * The transcript is filed as the record — a message from the human, archived straight away
+	 * rather than left in the inbox, so the member's next cycle isn't woken to re-read a
+	 * conversation it already absorbed. `persist: false` discards the chat: nothing is recorded,
+	 * but edits it made to the checkout are still resolved. An empty chat does nothing.
 	 */
 	async end(id, { persist = true } = {}) {
 		const session = this.get(id);
 		this.sessions.delete(id);
 		this._syncWatcher();
 		if (session.abort) session.abort();
-		// In the background: a cleanup turn takes minutes, and closing the chat must not wait on it.
-		this._resolveChatLeftovers(session).catch((err) => {
-			console.error(`[chat] leftover cleanup for ${session.member} failed: ${err.message}`);
-		});
-		if (!persist || session.transcript.length === 0 || !this.adapters.messaging) {
-			return { persisted: false };
-		}
+		if (session.transcript.length === 0) return { persisted: false, wrappingUp: false };
+
+		const wrapUp = this._wrapUp(session, { discard: !persist })
+			.catch((err) => console.error(`[chat] wrap-up for ${session.member} failed: ${err.message}`))
+			.finally(() => this.wrapUps.delete(wrapUp));
+		this.wrapUps.add(wrapUp);
+
+		if (!persist || !this.adapters.messaging) return { persisted: false, wrappingUp: true };
 		const message = buildTranscriptMessage({
 			member: session.member,
 			human: session.human,
@@ -482,22 +488,29 @@ export class ChatSessions {
 			endedAt: new Date().toISOString(),
 		});
 		const { id: messageId } = await this.adapters.messaging.sendMessage(message);
-		return { persisted: true, messageId };
+		await this.adapters.messaging.archiveMessage(session.member, messageId);
+		return { persisted: true, messageId, wrappingUp: true };
 	}
 
-	/** File and drop sessions the human walked away from. Runs on session create/status. */
+	/** Resolves once every background wrap-up has finished (tests, shutdown). */
+	async settled() {
+		await Promise.all([...this.wrapUps]);
+	}
+
 	/**
-	 * A chat that changed the checkout and left it uncommitted gets one more turn, told what it
-	 * left, to commit, stash or revert it — the same rule the runner applies to a cycle. The chat
-	 * is the member, but nothing else will come back for these: the next cycle doesn't know them.
-	 * Claims are released afterwards either way; whatever is still left is logged for a person.
+	 * The chat's last turn. A kept chat records what was decided into state and todos, keeps its
+	 * promises, and resolves the checkout paths it still claims; a discarded one only resolves
+	 * the paths, and only runs if there are any. Claims are released afterwards either way, and
+	 * whatever is still uncommitted is logged for a person.
 	 */
-	async _resolveChatLeftovers(session) {
+	async _wrapUp(session, { discard }) {
 		const owner = claimOwner(session);
 		try {
 			const held = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
-			if (held.length === 0) return;
-			console.log(`[chat] ${session.member}'s chat left ${held.length} uncommitted change(s); asking it to resolve them.`);
+			if (discard && held.length === 0) return;
+			const task = discard
+				? buildDiscardCleanupPrompt({ human: session.human, leftovers: held })
+				: buildWrapUpPrompt({ human: session.human, leftovers: held });
 			const prompt = await buildChatPrompt({ name: session.member, title: session.title }, this.teamDir, this.adapters, {
 				human: session.human,
 				transcript: session.transcript,
@@ -509,7 +522,7 @@ export class ChatSessions {
 				this.repoRoot,
 				session.logFile ?? join(this.teamDir, '.logs', 'chat', `${session.member}.${session.id}.log`),
 				{ ...this.mcpContext, memberName: session.member },
-				{ agentOptions: { task: buildCleanupPrompt(held, { ended: 'chat' }) }, env: this.chatConfig.env, quiet: true },
+				{ agentOptions: { task }, env: this.chatConfig.env, quiet: true },
 			);
 			const still = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
 			if (still.length > 0) {

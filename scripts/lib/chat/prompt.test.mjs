@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FileMessagingAdapter } from '../messaging/file.mjs';
-import { buildChatPrompt, buildTranscriptMessage, renderTranscript } from './prompt.mjs';
+import { buildChatPrompt, buildTranscriptMessage, buildWrapUpPrompt, renderTranscript } from './prompt.mjs';
 
 async function withTeam(fn) {
 	const dir = await mkdtemp(join(tmpdir(), 'teamos-chat-'));
@@ -114,11 +114,24 @@ test('buildTranscriptMessage files the whole conversation from the human', () =>
 	assert.equal(message.subject, 'Chat with nate — 2026-09-22 10:00');
 	assert.match(message.body, /bump the parser todo to pressing/);
 	assert.match(message.body, /will do next cycle/);
-	assert.match(message.body, /may already be done/i, 'the next cycle is told the chat could act');
+	assert.match(message.body, /archived record/i, 'a reader is told this is the record, not a request');
+	assert.match(message.body, /wrapped up into your state and todos/i);
 	assert.doesNotMatch(message.body, /no write access/i);
 });
 
 test('renderTranscript labels each turn with the speaker', () => {
 	const lines = renderTranscript([{ role: 'member', text: 'hi', at: 'T' }], { human: 'nate', member: 'ada' });
 	assert.deepEqual(lines, ['### ada — T', '', 'hi', '']);
+});
+
+test('buildWrapUpPrompt asks for a cycle-style wrap-up and lists leftovers only when there are some', () => {
+	const plain = buildWrapUpPrompt({ human: 'nate' });
+	assert.match(plain, /nate has ended the chat/);
+	assert.match(plain, /state\.md/);
+	assert.match(plain, /archived as a record, not sent to your inbox/);
+	assert.doesNotMatch(plain, /uncommitted/);
+
+	const withLeft = buildWrapUpPrompt({ human: 'nate', leftovers: [{ path: 'src/a.ts', status: ' M' }] });
+	assert.match(withLeft, /uncommitted in the shared checkout/);
+	assert.match(withLeft, / M src\/a\.ts/);
 });

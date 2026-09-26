@@ -158,11 +158,49 @@ export function renderTranscript(transcript, { human, member }) {
  * had the same tools a cycle has, so anything agreed may already be done — the
  * next cycle reads this to know what was said and to finish what was left.
  */
+/**
+ * The last turn of a chat: wrap up the way a cycle does. The transcript is archived, not
+ * delivered, so what this turn writes into state and todos is all the next cycle will know.
+ * `leftovers` are checkout paths this chat changed and hasn't committed (leftovers.mjs claims).
+ */
+export function buildWrapUpPrompt({ human, leftovers = [] }) {
+	const lines = [
+		`[TeamOS] ${human} has ended the chat. Wrap up the way you would at the end of a cycle, then stop:`,
+		'- `state.md`: record what was decided or learned that your future self needs. Re-read it first and append; keep it concise.',
+		'- Todos: add what was agreed and is still open; update or complete what this chat settled.',
+		'- Anything you said you would do or send: do it now, or make it a todo.',
+	];
+	if (leftovers.length > 0) {
+		lines.push(
+			'- You left these uncommitted in the shared checkout. Commit what is finished and verified, `git stash push -u -m "<member>: <what and why>" -- <paths>` what is worth keeping (and note the stash in a todo), revert the rest. Touch only these paths:',
+			...leftovers.map((l) => `    ${l.status} ${l.path}`),
+		);
+	}
+	lines.push(
+		'',
+		'The transcript is archived as a record, not sent to your inbox: your next cycle will know only what you put in your state and todos now. Do not start new work. Finish with one line saying what you recorded.',
+	);
+	return lines.join('\n');
+}
+
+/**
+ * The cleanup-only last turn of a discarded chat: nothing is recorded, but edits it made to
+ * the checkout still need an owner.
+ */
+export function buildDiscardCleanupPrompt({ human, leftovers }) {
+	return [
+		`[TeamOS] ${human} has ended and discarded the chat — record nothing from it in your state or todos.`,
+		'You did leave these uncommitted in the shared checkout; revert them unless they are finished work worth committing, and touch nothing else:',
+		...leftovers.map((l) => `    ${l.status} ${l.path}`),
+		'Finish with one line saying what you did.',
+	].join('\n');
+}
+
 export function buildTranscriptMessage({ member, human, transcript, startedAt, endedAt }) {
 	const body = [
 		`Chat session with **${human}** on the dashboard, ${startedAt} → ${endedAt}.`,
 		'',
-		'This is the record of the conversation. The instance you were in it had your full toolset, so some of what was agreed may already be done — the transcript says which. Anything it left for later is yours to finish **this cycle**, and re-read the files before you trust what either of you said about them.',
+		'This is the archived record of the conversation, not a request: the chat instance had your full toolset, and its last turn wrapped up into your state and todos. Re-read the files before you trust what either of you said about them.',
 		'',
 		'---',
 		'',

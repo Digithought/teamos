@@ -16,7 +16,7 @@ let draft = $state('');
 let starting = $state(false);
 let sending = $state(false);
 let error = $state<string | null>(null);
-let filed = $state<{ persisted: boolean; messageId?: string } | null>(null);
+let filed = $state<{ persisted: boolean; messageId?: string; wrappingUp?: boolean } | null>(null);
 /** Set when a scheduled cycle of this member finishes while the chat is open. */
 let cycleNote = $state<string | null>(null);
 let seenCompletions = 0;
@@ -156,8 +156,8 @@ function onKeydown(e: KeyboardEvent) {
 	<div class="notice">
 		<strong>Chat can act.</strong>
 		This is a fresh session of {name} with their manifest, state, todos, inbox and full toolset — the same one a cycle
-		gets. What you agree on here, they can do here. When you end the chat the whole transcript lands in {name}'s inbox
-		as the record of what was said and what is still open.
+		gets. What you agree on here, they can do here. When you end the chat, {name} wraps up as at the end of a cycle,
+		recording decisions and open items in their state and todos, and the transcript is archived as the record.
 	</div>
 
 	{#if status?.midCycle}
@@ -185,8 +185,10 @@ function onKeydown(e: KeyboardEvent) {
 	{#if filed}
 		<div class="filed">
 			{#if filed.persisted}
-				Chat filed to {name}'s inbox{filed.messageId ? ` as ${filed.messageId}` : ''} as the record. Anything {name} did
-				during the chat is already done.
+				Chat ended. {name} is wrapping up in the background: recording what was decided into their state and todos.
+				The transcript is archived{filed.messageId ? ` as ${filed.messageId}` : ''}.
+			{:else if filed.wrappingUp}
+				Chat discarded. Nothing is recorded; {name} will revert any edits it left in the checkout.
 			{:else}
 				Chat ended. Nothing was filed.
 			{/if}

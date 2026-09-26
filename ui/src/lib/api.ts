@@ -233,9 +233,9 @@ export const api = {
 	chatStatus: (member: string) => get<ChatStatus>(`/api/chat/status?member=${encodeURIComponent(member)}`),
 	startChat: (member: string, human: string) => post<ChatSession>('/api/chat/sessions', { member, human }),
 	chatTurn,
-	/** End a chat; the transcript is filed to the member's inbox unless `persist` is false. */
+	/** End a chat: the member wraps up into state and todos, and the transcript is archived unless `persist` is false. */
 	endChat: (id: string, persist = true) =>
-		delJson<{ persisted: boolean; messageId?: string }>(
+		delJson<{ persisted: boolean; messageId?: string; wrappingUp?: boolean }>(
 			`/api/chat/sessions/${encodeURIComponent(id)}${persist ? '' : '?persist=0'}`,
 		),
 	messagingInfo: () => get<MessagingInfo>('/api/messaging/info'),

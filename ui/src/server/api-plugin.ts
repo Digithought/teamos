@@ -170,7 +170,7 @@ interface ChatController {
 		text: string,
 		opts: { onEvent: (event: unknown) => void; signal: AbortSignal },
 	): Promise<{ exitCode: number; answer: string }>;
-	end(id: string, opts?: { persist?: boolean }): Promise<{ persisted: boolean; messageId?: string }>;
+	end(id: string, opts?: { persist?: boolean }): Promise<{ persisted: boolean; messageId?: string; wrappingUp?: boolean }>;
 	status(member: string): Promise<{
 		midCycle: boolean;
 		since?: string;

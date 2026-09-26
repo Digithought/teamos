@@ -2,7 +2,7 @@
 
 TeamOS members run in cycles. Between cycles a member is not running at all — its identity is entirely the files on disk. That makes "talk to a member right now" awkward: until chat, the only way to reach one was to drop a message in its inbox and wait hours for the next cycle to pick it up.
 
-**Chat** closes that gap from the dashboard. Starting a chat spawns a fresh agent holding the member's manifest, state, todos, schedule and inbox — the same context a cycle prompt assembles, and the same tools — minus the instruction to go do work. Every turn spawns a new agent; the transcript carried in the prompt is the session's memory. A chat instance can act on what the conversation decides, there and then. When the chat ends, the whole conversation is filed as a message in the member's inbox as the record of what was said.
+**Chat** closes that gap from the dashboard. Starting a chat spawns a fresh agent holding the member's manifest, state, todos, schedule and inbox — the same context a cycle prompt assembles, and the same tools — minus the instruction to go do work. Every turn spawns a new agent; the transcript carried in the prompt is the session's memory. A chat instance can act on what the conversation decides, there and then. When the chat ends, a last wrap-up turn records what was decided in the member's state and todos, as a cycle would, and the conversation is archived as the record.
 
 Chat is a dashboard feature, not an adapter. It adds nothing to the MCP surface and nothing to the runner.
 
@@ -12,7 +12,7 @@ Chat is a dashboard feature, not an adapter. It adds nothing to the MCP surface 
 - **Chat neither defers nor blocks scheduled cycles.** The runner keeps its cadence while a chat is open; chat asks it for nothing and tells it nothing. A chat may open, run and finish entirely inside a cycle of the same member. There is no lease, no lock and no pause — see **Two Instances, One Member** below for why none is needed and what is left uncovered.
 - **Same context, same tools.** A chat spawn gets the project's MCP servers and the built-in file tools exactly as a cycle does. A member that cannot act has to narrate its intentions to its next self, which is a worse failure mode than the race it was avoiding.
 - **One chat per member.** A second concurrent chat with the same member is rejected with 409. Two chats would mean two transcripts of one member diverging in parallel, two agents billing the account, and no merge story for either. Note the asymmetry: chat-beside-cycle is allowed, chat-beside-chat is not — a cycle and a chat have different jobs and different records, two chats have the same job and two records.
-- **The transcript is the record, not the mechanism.** A finished chat is still filed to the member's inbox in full. It is how the conversation enters the member's history and how the next cycle picks up loose ends — not the path by which anything gets done.
+- **A chat ends like a cycle.** Its last turn writes what was decided into state and todos. The transcript is archived as the record, not delivered, so the next cycle isn't spent re-reading a conversation the member already had.
 - **The dashboard is the trust boundary.** These routes spawn processes. They add no listener and no auth of their own; they inherit the dashboard's. See **Security** below.
 
 ## Two Instances, One Member
@@ -57,7 +57,7 @@ None of this is enforcement. It is the honest position: the structural races are
 POST /api/chat/sessions          → session created in the dashboard process (nothing on disk)
 POST /api/chat/sessions/:id/turn → spawn agent, stream reply, append both turns to the transcript
    … repeat …
-DELETE /api/chat/sessions/:id    → send the transcript to the member's inbox, drop the session
+DELETE /api/chat/sessions/:id    → start the wrap-up turn, archive the transcript as the record, drop the session
 ```
 
 A session is a transcript plus at most one running agent. It lives in the dashboard process's memory: restart the dashboard and open chats are gone, unfiled. Sessions idle for **30 minutes** are ended and filed on the next chat request, so a human who walks away mid-conversation still leaves the member something to read.
@@ -82,10 +82,9 @@ So every turn snapshots the working tree before and after, and **claims** what i
 with. The runner leaves claimed paths out of a cycle's leftovers for as long as they still carry
 that signature. Once anyone changes such a path again, it's theirs.
 
-When a chat ends, by the human or by the idle sweep, it gets one more turn in the background. That
-turn is told which claimed paths are still uncommitted and asked to commit, stash or revert each
-one, the same rule a cycle follows. The claims are then released, and anything still left is
-logged. Attribution is best-effort: a cycle edit that lands during a chat turn reads as the chat's.
+When a chat ends, its wrap-up turn (see **Ending a Chat**) is told which claimed paths are still
+uncommitted and asked to commit, stash or revert each one, the same rule a cycle follows. The
+claims are then released, and anything still left is logged. Attribution is best-effort: a cycle edit that lands during a chat turn reads as the chat's.
 
 ## Prompt Assembly
 
@@ -105,24 +104,40 @@ logged. Attribution is best-effort: a cycle edit that lands during a chat turn r
 
 `agent-rules/chat.md` is the chat counterpart of `agent-rules/cycle.md`. It tells the member it is a *second instance* of itself, that another instance may be working right now, to re-read before writing, to prefer appending over rewriting, and to treat a rejected write as the other instance rather than as something to force through.
 
-## Transcript Persistence
+## Ending a Chat
 
-Ending a chat calls `sendMessage` on the messaging adapter, from the **human** to the **member**:
+A chat is a session of the member, so it ends like one. Ending it (by the human, or by the idle
+sweep) starts a **wrap-up turn** in the background: the same prompt as any turn, with the task
+"wrap up the way you would at the end of a cycle". That means recording what was decided in
+`state.md`, adding or updating todos for what's still open, and doing, or making a todo of,
+anything promised. If the chat still claims uncommitted paths in the checkout (see **Leaving the
+Checkout Clean**), the same turn lists them to commit, stash or revert. Its output goes to the
+chat's log. The dashboard doesn't wait for it.
+
+An earlier design delivered the transcript to the member's inbox instead. That was the wrong
+mechanism. The member had already absorbed the conversation, and a message from the human would
+cost another cycle to re-read what it already knew, and to act on whatever the chat left undone.
+The wrap-up turn does that work while the context is still loaded.
+
+## Transcript Record
+
+The transcript is still filed as the record, as a message from the **human** to the **member**:
 
 ```
 from:    <the dashboard identity>
 to:      [<member>]
 subject: Chat with <human> — <YYYY-MM-DD HH:MM>
-body:    a preamble saying the transcript is the record, then the full transcript
+body:    a preamble saying this is the archived record, then the full transcript
 ```
 
-The whole transcript goes in the body. The master store is already one markdown file per message with no size rule (`teamos/docs/messages.md`), and a body that pointed at some other file would be a reference the adapter doesn't know about — the retention sweep that prunes unreferenced messages would happily orphan it. One message, one copy, and the member's next cycle reads it through `list_inbox` / `read_message` like any other mail. Cost: a very long chat makes a very long next-cycle prompt.
+The member's copy is **archived at once** (`archiveMessage`), so it never wakes a cycle. The human
+sees it in `sent.json`, and the conversation appears in the dashboard's threaded Messages view.
+The whole transcript goes in the body. The master store is one markdown file per message, and a
+body that pointed at another file would be a reference the retention sweep doesn't know about.
 
-The human sees it in their `sent.json`, and the conversation shows up in the dashboard's threaded Messages view. It is an ordinary message, not a side channel.
-
-Two ways nothing is filed: a chat with no turns, and **Discard** (`?persist=0`), which drops the session without writing.
-
-**This append is a read-modify-write**, like every other mailbox operation: it reads `inbox.json`, appends an id, writes it back. `_appendToMailbox` now creates the directory before the read, so nothing is awaited between reading the list and writing it back; see **Two Instances, One Member**.
+Two ways nothing is filed: a chat with no turns, and **Discard** (`?persist=0`). A discarded chat
+records nothing in the member's state either, but if it left uncommitted edits in the checkout, its
+last turn is asked to revert them, or to commit them if they're finished work.
 
 ## Which Account Pays
 

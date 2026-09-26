@@ -181,40 +181,56 @@ test('a spawn failure surfaces as an error, not a silent empty reply', async () 
 	});
 });
 
-test('ending a chat files the transcript to the member inbox', async () => {
-	await withChat(null, async ({ chat, messaging }) => {
+/** A stub agent that writes the trailing prompt argument (the turn's task) where the test can read it. */
+const TASK_STUB = `
+	const fs = require('node:fs');
+	fs.appendFileSync(process.env.TEAMOS_STUB_PROMPT_OUT, process.argv.at(-1) + '\\n---\\n');
+	const say = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
+	say({ type: 'result', is_error: false, result: 'recorded' });
+`;
+
+test('ending a chat wraps up like a cycle and archives the transcript instead of mailing it', async () => {
+	await withChat(TASK_STUB, async ({ chat, messaging, dir }) => {
 		const session = await chat.create({ member: 'ada', human: 'nate' });
-		session.transcript.push({ role: 'human', text: 'raise the parser todo', at: new Date().toISOString() });
-		session.transcript.push({ role: 'member', text: 'noted for next cycle', at: new Date().toISOString() });
+		await chat.turn(session.id, 'raise the parser todo');
 
-		const { persisted, messageId } = await chat.end(session.id);
+		const { persisted, messageId, wrappingUp } = await chat.end(session.id);
 		assert.equal(persisted, true);
+		assert.equal(wrappingUp, true);
 
-		const inbox = await messaging.listInbox('ada');
-		assert.equal(inbox.length, 1);
-		assert.equal(inbox[0].id, messageId);
-		assert.equal(inbox[0].from, 'nate');
-
+		// Not in the inbox — the next cycle must not be woken to re-read its own conversation.
+		assert.equal((await messaging.listInbox('ada')).length, 0);
+		const archived = await messaging.listArchives('ada');
+		assert.deepEqual(archived.map((m) => m.id), [messageId]);
 		const message = await messaging.readMessage(messageId);
 		assert.match(message.body, /raise the parser todo/);
-		assert.match(message.body, /noted for next cycle/);
+		assert.match(message.body, /archived record/);
 
-		// The sender sees it too — it is an ordinary message, not a side channel.
-		assert.equal((await messaging.listSent('nate')).length, 1);
+		await chat.settled();
+		const tasks = (await readFile(join(dir, 'prompt.txt'), 'utf-8')).split('\n---\n');
+		const wrap = tasks.at(-2);
+		assert.match(wrap, /nate has ended the chat\. Wrap up/);
+		assert.match(wrap, /state\.md/);
+		assert.doesNotMatch(wrap, /uncommitted/, 'no leftovers section when the chat changed nothing');
 	});
 });
 
-test('an empty chat and a discarded chat write nothing', async () => {
-	await withChat(null, async ({ chat, messaging }) => {
+test('an empty chat does nothing; a discarded chat records nothing and runs no wrap-up without leftovers', async () => {
+	await withChat(TASK_STUB, async ({ chat, messaging, dir }) => {
 		const empty = await chat.create({ member: 'ada', human: 'nate' });
-		assert.deepEqual(await chat.end(empty.id), { persisted: false });
+		assert.deepEqual(await chat.end(empty.id), { persisted: false, wrappingUp: false });
+		assert.throws(() => chat.get(empty.id), (err) => err.status === 404);
 
 		const discarded = await chat.create({ member: 'ada', human: 'nate' });
-		discarded.transcript.push({ role: 'human', text: 'never mind', at: new Date().toISOString() });
-		assert.deepEqual(await chat.end(discarded.id, { persist: false }), { persisted: false });
+		await chat.turn(discarded.id, 'never mind');
+		assert.deepEqual(await chat.end(discarded.id, { persist: false }), { persisted: false, wrappingUp: true });
+		await chat.settled();
 
 		assert.equal((await messaging.listInbox('ada')).length, 0);
-		assert.throws(() => chat.get(empty.id), (err) => err.status === 404);
+		assert.equal((await messaging.listArchives('ada')).length, 0);
+		// Only the one real turn reached the agent; the discard found nothing to clean up.
+		const tasks = (await readFile(join(dir, 'prompt.txt'), 'utf-8')).split('\n---\n').filter(Boolean);
+		assert.equal(tasks.length, 1);
 	});
 });
 
@@ -226,7 +242,8 @@ test('an abandoned session is swept and filed', async () => {
 
 		const status = await chat.status('ada');
 		assert.equal(status.session, null, 'the stale session is gone');
-		assert.equal((await messaging.listInbox('ada')).length, 1, 'and its transcript was filed, not dropped');
+		assert.equal((await messaging.listArchives('ada')).length, 1, 'and its transcript was filed, not dropped');
+		await chat.settled(); // its wrap-up has no agent to run here; it must fail quietly
 	});
 });
 
