@@ -358,7 +358,7 @@ function onKeydown(e: KeyboardEvent) {
 			<span class="session-meta">
 				Chatting as <strong>{session.human}</strong> since {new Date(session.startedAt).toLocaleTimeString()}
 			</span>
-			<button class="end-btn" onclick={() => end(true)} disabled={sending}>End &amp; file to inbox</button>
+			<button class="end-btn" onclick={() => end(true)} disabled={sending}>End chat</button>
 			<button class="discard-btn" onclick={() => end(false)} disabled={sending}>Discard</button>
 		</div>
 	{/if}
