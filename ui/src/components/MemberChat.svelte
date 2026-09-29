@@ -1,8 +1,8 @@
 <script lang="ts">
 import { tick } from 'svelte';
-import { api } from '../lib/api.js';
+import { ApiError, api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
-import type { ChatSession, ChatStatus, ChatTranscriptEntry } from '../lib/types.js';
+import type { ChatGone, ChatSession, ChatStatus, ChatTranscriptEntry } from '../lib/types.js';
 
 const { name }: { name: string } = $props();
 
@@ -22,20 +22,43 @@ let cycleNote = $state<string | null>(null);
 let seenCompletions = 0;
 let paneEl = $state<HTMLDivElement | null>(null);
 let controller: AbortController | null = null;
+/**
+ * Set when this tab's chat ended under it: swept, ended in another tab, or lost. `session`
+ * and the transcript stay as they were, so the conversation stays on screen and can be
+ * continued.
+ */
+let gone = $state<ChatGone | null>(null);
+/** The draft is a message that failed to send because the chat had gone; Continue sends it. */
+let resend = $state(false);
+/** A different chat with this member, open elsewhere, while this tab's has gone. */
+let otherOpen = $state<ChatSession | null>(null);
 
 const canChat = $derived(!!identity.name);
+const breaks = $derived(session?.breaks ?? []);
+
+function adopt(next: ChatSession) {
+	session = next;
+	transcript = next.transcript;
+	seenCompletions = next.cycleCompletions.length;
+	gone = null;
+	otherOpen = null;
+}
 
 async function loadStatus() {
 	try {
-		status = await api.chatStatus(name);
+		// Naming the tab's chat makes this poll its heartbeat: the server
+		// ends only chats no tab is polling (or that have sat quiet for hours).
+		status = await api.chatStatus(name, session?.id);
+		if (session && status.gone) {
+			// Ended under this tab. Keep the conversation and say what happened.
+			gone = status.gone;
+			otherOpen = status.session;
+			return;
+		}
 		// A session opened in another tab (or left behind by a reload) is the
 		// same conversation — adopt it rather than offering a second chat the
 		// server would reject.
-		if (status.session && !session) {
-			session = status.session;
-			transcript = status.session.transcript;
-			seenCompletions = status.session.cycleCompletions.length;
-		}
+		if (status.session && !session) adopt(status.session);
 		// A cycle that finished between polls: the turn stream would have
 		// carried it, but only if a turn happened to be running.
 		const completions = status.session?.cycleCompletions.length ?? 0;
@@ -44,7 +67,7 @@ async function loadStatus() {
 			noteCycleFinished();
 		}
 	} catch {
-		/* the status poll is advisory — a failed poll shouldn't break the pane */
+		/* the status poll is advisory — a failed poll (a restarting dashboard) shouldn't break the pane */
 	}
 }
 
@@ -52,8 +75,99 @@ $effect(() => {
 	name;
 	loadStatus();
 	const timer = setInterval(loadStatus, 15000);
-	return () => clearInterval(timer);
+	// A tab coming back to the front catches up at once rather than on the next tick.
+	const onVisible = () => {
+		if (document.visibilityState === 'visible') loadStatus();
+	};
+	document.addEventListener('visibilitychange', onVisible);
+	return () => {
+		clearInterval(timer);
+		document.removeEventListener('visibilitychange', onVisible);
+	};
 });
+
+function minutes(n: number): string {
+	if (n < 60) return `${n} minute${n === 1 ? '' : 's'}`;
+	const h = Math.floor(n / 60);
+	const m = n % 60;
+	return `${h} hour${h === 1 ? '' : 's'}${m ? ` ${m} min` : ''}`;
+}
+
+/** One plain line on what happened to the chat, from what the server knows. */
+function goneText(g: ChatGone): string {
+	if (g.reason === 'unknown') {
+		return `This chat is no longer open, and the dashboard has no record of it (it may have been lost in a restart). Nothing from it has been wrapped up.`;
+	}
+	let what: string;
+	if (g.reason === 'idle' && g.idle?.kind === 'unwatched') {
+		what = `This chat ended after ${minutes(g.idle.minutes)} idle with no dashboard tab open on it`;
+	} else if (g.reason === 'idle') {
+		what = `This chat ended after ${minutes(g.idle?.minutes ?? 0)} with no messages`;
+	} else if (g.reason === 'discarded') {
+		return 'This chat was discarded from another tab; nothing from it was recorded.';
+	} else {
+		what = 'This chat was ended from another tab';
+	}
+	const wrap =
+		g.wrapUp === 'running'
+			? `${name} is wrapping it up`
+			: g.wrapUp === 'done'
+				? `${name} wrapped it up`
+				: g.wrapUp === 'failed'
+					? `${name}'s wrap-up failed (see the chat log)`
+					: g.wrapUp === 'interrupted'
+						? `${name}'s wrap-up was cut off by a dashboard restart and may not have finished`
+						: '';
+	const archived = g.messageId ? `the transcript was archived as ${g.messageId}` : '';
+	const tail = [wrap, archived].filter(Boolean).join(' and ');
+	return `${what}${tail ? `; ${tail}` : ''}.`;
+}
+
+/** The chat ended before `text` could be sent: take it back out of the pane and into the composer. */
+function returnUnsent(text: string, info: ChatGone) {
+	const last = transcript.at(-1);
+	if (last?.role === 'human' && last.text === text) transcript = transcript.slice(0, -1);
+	draft = draft.trim() ? `${text}\n\n${draft}` : text;
+	resend = true;
+	gone = info;
+	error = null;
+}
+
+/**
+ * Carry the conversation on in a new chat. The server seeds it with the earlier transcript
+ * (from its record, or from this tab's copy if it has none) and marks where it resumed, so
+ * the member picks up the thread and records only what is new when this one ends.
+ */
+async function continueChat(send_ = resend) {
+	if (!gone || !identity.name) return;
+	starting = true;
+	error = null;
+	try {
+		const next = await api.startChat(name, identity.name, { continueFrom: gone.id, transcript });
+		adopt(next);
+		cycleNote = null;
+		filed = null;
+		const again = send_ && !!draft.trim();
+		resend = false;
+		if (again) await send();
+	} catch (err) {
+		error = err instanceof Error ? err.message : String(err);
+		// Someone opened a new chat meanwhile: the notice offers that one instead.
+		if (err instanceof ApiError && err.status === 409) await loadStatus();
+	} finally {
+		starting = false;
+	}
+}
+
+/** Leave the ended chat behind: back to the start button. */
+function closeGone() {
+	gone = null;
+	resend = false;
+	otherOpen = null;
+	session = null;
+	transcript = [];
+	void loadStatus();
+}
 
 function noteCycleFinished() {
 	cycleNote = `${name} just finished a scheduled cycle. Their next reply re-reads whatever it changed.`;
@@ -84,6 +198,7 @@ async function start() {
 async function send() {
 	const text = draft.trim();
 	if (!session || !text || sending) return;
+	if (gone) return continueChat(true);
 	sending = true;
 	error = null;
 	streaming = '';
@@ -109,6 +224,8 @@ async function send() {
 				// prompt carries the list of what it touched.
 				seenCompletions += 1;
 				noteCycleFinished();
+			} else if (event.kind === 'error' && event.gone) {
+				returnUnsent(text, event.gone);
 			} else if (event.kind === 'error') {
 				error = event.message ?? 'The chat turn failed.';
 			} else if (event.kind === 'done') {
@@ -118,8 +235,10 @@ async function send() {
 			}
 		}
 	} catch (err) {
-		// An abort is the human pressing Stop; anything else is worth showing.
-		if (!controller.signal.aborted) error = err instanceof Error ? err.message : String(err);
+		// An abort is the human pressing Stop; a chat that ended under us gets the
+		// message back in the composer and a Continue; anything else is worth showing.
+		if (err instanceof ApiError && err.gone) returnUnsent(text, err.gone);
+		else if (!controller.signal.aborted) error = err instanceof Error ? err.message : String(err);
 	} finally {
 		streaming = '';
 		activity = '';
@@ -140,6 +259,11 @@ async function end(persist = true) {
 	try {
 		filed = await api.endChat(id, persist);
 	} catch (err) {
+		// Already ended elsewhere: say how, and keep the conversation.
+		if (err instanceof ApiError && err.gone) {
+			gone = err.gone;
+			return;
+		}
 		error = err instanceof Error ? err.message : String(err);
 	}
 	session = null;
@@ -195,7 +319,7 @@ function onKeydown(e: KeyboardEvent) {
 		</div>
 	{/if}
 
-	{#if !session}
+	{#if !session && !gone}
 		<div class="start">
 			{#if canChat}
 				<button class="add-btn" onclick={start} disabled={starting}>
@@ -206,7 +330,30 @@ function onKeydown(e: KeyboardEvent) {
 				<span class="start-hint">Pick who you are in the nav bar before starting a chat.</span>
 			{/if}
 		</div>
-	{:else}
+	{:else if gone}
+		<div class="gone" role="status">
+			<span class="gone-text">
+				{goneText(gone)}
+				{#if otherOpen}
+					Another chat with {name} is open now (started {new Date(otherOpen.startedAt).toLocaleTimeString()}).
+				{:else}
+					Continue starts a new chat carrying this conversation, so {name} picks up where you left off{resend
+						? ', and sends your unsent message'
+						: ''}.
+				{/if}
+			</span>
+			<span class="gone-actions">
+				{#if otherOpen}
+					<button class="add-btn" onclick={() => otherOpen && adopt(otherOpen)}>Open that chat</button>
+				{:else}
+					<button class="add-btn" onclick={() => continueChat()} disabled={starting || !canChat}>
+						{starting ? 'Continuing...' : resend ? 'Continue & send' : 'Continue'}
+					</button>
+				{/if}
+				<button class="end-btn" onclick={closeGone} disabled={starting}>Close</button>
+			</span>
+		</div>
+	{:else if session}
 		<div class="session-bar">
 			<span class="session-meta">
 				Chatting as <strong>{session.human}</strong> since {new Date(session.startedAt).toLocaleTimeString()}
@@ -214,16 +361,24 @@ function onKeydown(e: KeyboardEvent) {
 			<button class="end-btn" onclick={() => end(true)} disabled={sending}>End &amp; file to inbox</button>
 			<button class="discard-btn" onclick={() => end(false)} disabled={sending}>Discard</button>
 		</div>
+	{/if}
 
+	{#if session}
 		<div class="pane" bind:this={paneEl}>
 			{#if transcript.length === 0 && !streaming}
 				<div class="empty">Say something to {name}</div>
 			{/if}
 			{#each transcript as entry, i (i)}
+				{#each breaks.filter((b) => b.index === i) as b (b.at)}
+					{@render resumed(b)}
+				{/each}
 				<div class="turn" class:member={entry.role === 'member'}>
 					<div class="turn-who">{entry.role === 'human' ? session.human : name}</div>
 					<pre class="turn-text">{entry.text}</pre>
 				</div>
+			{/each}
+			{#each breaks.filter((b) => b.index >= transcript.length && transcript.length > 0) as b (b.at)}
+				{@render resumed(b)}
 			{/each}
 			{#if streaming}
 				<div class="turn member">
@@ -247,16 +402,30 @@ function onKeydown(e: KeyboardEvent) {
 				placeholder={`Message ${name}... (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to send)`}
 				bind:value={draft}
 				onkeydown={onKeydown}
-				disabled={sending}
+				disabled={sending || starting}
 			></textarea>
 			{#if sending}
 				<button class="cancel-btn" onclick={stop}>Stop</button>
+			{:else if gone && otherOpen}
+				<!-- The draft is kept; it goes to whichever chat the human opens. -->
+				<button class="add-btn" disabled>Send</button>
 			{:else}
-				<button class="add-btn" onclick={send} disabled={!draft.trim()}>Send</button>
+				<button class="add-btn" onclick={send} disabled={!draft.trim() || starting || (!!gone && !canChat)}>
+					{gone ? 'Continue & send' : 'Send'}
+				</button>
 			{/if}
 		</div>
 	{/if}
 </div>
+
+{#snippet resumed(b: { at: string; wrappedUp: boolean })}
+	<div class="resumed">
+		Continued {new Date(b.at).toLocaleString()} —
+		{b.wrappedUp
+			? `${name} had already wrapped up everything above`
+			: `nothing above had been wrapped up yet; ${name} records it when this chat ends`}
+	</div>
+{/snippet}
 
 <style>
 	.chat { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -313,6 +482,29 @@ function onKeydown(e: KeyboardEvent) {
 		background: var(--success-subtle);
 		border-radius: var(--radius);
 		padding: 0.5rem 0.75rem;
+	}
+	.gone {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+		font-size: 0.8rem;
+		line-height: 1.6;
+		color: var(--text);
+		background: var(--warning-subtle);
+		border: 1px solid var(--warning);
+		border-radius: var(--radius);
+		padding: 0.5rem 0.75rem;
+	}
+	.gone-text { flex: 1; min-width: 16rem; }
+	.gone-actions { display: flex; gap: 0.5rem; }
+	.resumed {
+		font-size: 0.75rem;
+		color: var(--text-light);
+		font-style: italic;
+		text-align: center;
+		border-top: 1px dashed var(--border);
+		padding-top: 0.5rem;
 	}
 	.start { display: flex; align-items: center; gap: 0.75rem; }
 	.start-hint { font-size: 0.8rem; color: var(--text-muted); }

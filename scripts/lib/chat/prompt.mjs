@@ -27,6 +27,7 @@ const TEAMOS_ROOT = join(__dirname, '..', '..', '..');
  * @param {Object} opts
  * @param {string} opts.human - Name of the human on the other end
  * @param {Array<{ role: 'human'|'member', text: string, at: string }>} [opts.transcript]
+ * @param {Array<{ index: number, at: string, wrappedUp: boolean }>} [opts.breaks] - Where a continued chat resumed
  * @param {string[]} [opts.changedFiles] - Member files written since the chat opened
  */
 export async function buildChatPrompt(member, teamDir, adapters = {}, opts = {}) {
@@ -99,7 +100,9 @@ export async function buildChatPrompt(member, teamDir, adapters = {}, opts = {})
 	parts.push('', '## Chat Rules', '', rules);
 	parts.push(...buildChangedFilesSection(opts.changedFiles ?? []));
 	parts.push('', '## Conversation So Far', '');
-	parts.push(...renderTranscript(opts.transcript ?? [], { human: opts.human, member: member.name }));
+	parts.push(
+		...renderTranscript(opts.transcript ?? [], { human: opts.human, member: member.name, breaks: opts.breaks ?? [] }),
+	);
 
 	parts.push(
 		'',
@@ -138,38 +141,58 @@ function buildChangedFilesSection(changedFiles) {
  * Render a transcript as markdown. Used both for the prompt's "Conversation So
  * Far" section and for the message body the chat is persisted as, so the
  * member's next cycle reads the conversation in the shape it was held in.
+ *
+ * `breaks` mark where a continued chat picked up an earlier one (see
+ * ChatSessions.create). A break after a wrap-up tells the member everything
+ * above it is already recorded; one without (the session was lost, or the
+ * earlier part discarded) says it isn't. `from` skips entries an earlier
+ * archived record already holds.
  */
-export function renderTranscript(transcript, { human, member }) {
+export function renderTranscript(transcript, { human, member, breaks = [], from = 0 }) {
 	if (transcript.length === 0) return ['_Nothing said yet — this is the first turn._'];
 	const lines = [];
-	for (const entry of transcript) {
+	transcript.forEach((entry, i) => {
+		if (i < from) return;
+		for (const b of breaks) if (b.index === i && i > from) lines.push(breakLine(b, human), '');
 		lines.push(`### ${entry.role === 'human' ? human : member} — ${entry.at}`, '', entry.text.trim(), '');
-	}
+	});
+	for (const b of breaks) if (b.index >= transcript.length) lines.push(breakLine(b, human), '');
 	return lines;
 }
 
+function breakLine(b, human) {
+	return b.wrappedUp
+		? `_— The chat ended here and was wrapped up into your state and todos. ${human} continued it at ${b.at}; everything above this line is already recorded. —_`
+		: `_— The chat stopped here without a wrap-up. ${human} continued it at ${b.at}; nothing above this line (back to any earlier mark) has been recorded yet. —_`;
+}
+
 /**
- * The message a finished chat is filed as. The whole transcript goes in the
- * body: the master store is already one markdown file per message with no size
- * rule, and a reference to a file the messaging adapter doesn't know about
- * would be dropped by the retention sweep described in teamos/docs/messages.md.
- *
- * This is the record of the conversation, not a work queue. The chat instance
- * had the same tools a cycle has, so anything agreed may already be done — the
- * next cycle reads this to know what was said and to finish what was left.
+ * How much of a transcript an earlier wrap-up already recorded: everything
+ * before the last break that followed one.
  */
+export function recordedThrough(breaks = []) {
+	return breaks.reduce((n, b) => (b.wrappedUp && b.index > n ? b.index : n), 0);
+}
+
 /**
  * The last turn of a chat: wrap up the way a cycle does. The transcript is archived, not
  * delivered, so what this turn writes into state and todos is all the next cycle will know.
  * `leftovers` are checkout paths this chat changed and hasn't committed (leftovers.mjs claims).
  */
-export function buildWrapUpPrompt({ human, leftovers = [] }) {
+export function buildWrapUpPrompt({ human, leftovers = [], continued = false }) {
 	const lines = [
 		`[TeamOS] ${human} has ended the chat. Wrap up the way you would at the end of a cycle, then stop:`,
+	];
+	if (continued) {
+		lines.push(
+			'- This chat continued one you already wrapped up. Everything above the marked line in the conversation is recorded; record only what was said after it.',
+		);
+	}
+	lines.push(
 		'- `state.md`: record what was decided or learned that your future self needs. Re-read it first and append; keep it concise.',
 		'- Todos: add what was agreed and is still open; update or complete what this chat settled.',
 		'- Anything you said you would do or send: do it now, or make it a todo.',
-	];
+	);
 	if (leftovers.length > 0) {
 		lines.push(
 			'- You left these uncommitted in the shared checkout. Commit what is finished and verified, `git stash push -u -m "<member>: <what and why>" -- <paths>` what is worth keeping (and note the stash in a todo), revert the rest. Touch only these paths:',
@@ -196,15 +219,30 @@ export function buildDiscardCleanupPrompt({ human, leftovers }) {
 	].join('\n');
 }
 
-export function buildTranscriptMessage({ member, human, transcript, startedAt, endedAt }) {
+/**
+ * The message a finished chat is filed as. The whole transcript goes in the
+ * body: the master store is already one markdown file per message with no size
+ * rule, and a reference to a file the messaging adapter doesn't know about
+ * would be dropped by the retention sweep described in teamos/docs/messages.md.
+ *
+ * This is the record of the conversation, not a work queue. The chat instance
+ * had the same tools a cycle has, so anything agreed may already be done — the
+ * next cycle reads this to know what was said and to finish what was left.
+ *
+ * A continued chat archives only what an earlier record doesn't already hold,
+ * as a reply to that record so the two read as one thread in Messages.
+ */
+export function buildTranscriptMessage({ member, human, transcript, startedAt, endedAt, breaks = [], replyTo }) {
+	const from = replyTo ? recordedThrough(breaks) : 0;
 	const body = [
 		`Chat session with **${human}** on the dashboard, ${startedAt} → ${endedAt}.`,
 		'',
 		'This is the archived record of the conversation, not a request: the chat instance had your full toolset, and its last turn wrapped up into your state and todos. Re-read the files before you trust what either of you said about them.',
+		...(from > 0 ? ['', `It continues the chat archived as ${replyTo}; only what was said after that is here.`] : []),
 		'',
 		'---',
 		'',
-		...renderTranscript(transcript, { human, member }),
+		...renderTranscript(transcript, { human, member, breaks, from }),
 	].join('\n');
 
 	return {
@@ -212,5 +250,6 @@ export function buildTranscriptMessage({ member, human, transcript, startedAt, e
 		to: [member],
 		subject: `Chat with ${human} — ${new Date(startedAt).toISOString().slice(0, 16).replace('T', ' ')}`,
 		body,
+		...(replyTo ? { replyTo } : {}),
 	};
 }

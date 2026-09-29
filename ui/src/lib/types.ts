@@ -102,8 +102,38 @@ export interface ChatSession {
 	/** True while a turn's agent is still running. */
 	busy: boolean;
 	transcript: ChatTranscriptEntry[];
+	/**
+	 * Where this chat continued an earlier one: a divider before `transcript[index]`.
+	 * `wrappedUp` means everything above it is already recorded in the member's state.
+	 */
+	breaks: { index: number; at: string; wrappedUp: boolean }[];
+	/** The chat this one continues, and the archived record it threads onto. */
+	continues: { id: string; messageId: string | null; at: string } | null;
 	/** Cycles of this member that finished while the chat was open. */
 	cycleCompletions: { at: string; exitCode: number }[];
+}
+
+/**
+ * What happened to a chat that is no longer open. `unknown` means the dashboard has no
+ * record of it (older than a day, or lost); the browser's copy of the conversation is then
+ * all there is, and continuing seeds the new chat from it.
+ */
+export interface ChatGone {
+	id: string;
+	reason: 'idle' | 'ended' | 'discarded' | 'unknown';
+	member?: string;
+	human?: string;
+	endedAt?: string;
+	/** Set when the idle sweep ended it: which clock ran out, and minutes since the last turn. */
+	idle?: { kind: 'unwatched' | 'quiet'; minutes: number } | null;
+	/**
+	 * The wrap-up turn: still `running`, `done`, `failed`, `interrupted` (the dashboard restarted
+	 * under it), or `none` (nothing new to record).
+	 */
+	wrapUp?: 'running' | 'done' | 'failed' | 'interrupted' | 'none';
+	/** The archived transcript this ending filed, if it filed one. */
+	messageId?: string | null;
+	turns?: number;
 }
 
 /**
@@ -114,6 +144,8 @@ export interface ChatStatus {
 	midCycle: boolean;
 	since?: string;
 	session: ChatSession | null;
+	/** Set when the chat the polling tab has open is no longer open. */
+	gone: ChatGone | null;
 	/** Member files written since the chat opened (mtime), if a chat is open. */
 	changedFiles: string[];
 }
@@ -129,6 +161,8 @@ export interface ChatEvent {
 	answer?: string;
 	event?: string;
 	at?: string;
+	/** On an `error`: the chat ended before the turn could run. */
+	gone?: ChatGone;
 }
 
 export interface MessagingInfo {

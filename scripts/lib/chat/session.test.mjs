@@ -34,7 +34,9 @@ async function withChat(stubScript, fn) {
 	}
 
 	const messaging = new FileMessagingAdapter(teamDir);
-	const chat = new ChatSessions({
+	// A second controller over the same team dir is a restarted dashboard.
+	const reopen = () => new ChatSessions(options);
+	const options = {
 		teamDir,
 		repoRoot: dir,
 		adapters: { messaging },
@@ -49,10 +51,11 @@ async function withChat(stubScript, fn) {
 				},
 			},
 		},
-	});
+	};
+	const chat = reopen();
 
 	try {
-		await fn({ chat, messaging, teamDir, dir });
+		await fn({ chat, messaging, teamDir, dir, reopen });
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -219,7 +222,7 @@ test('an empty chat does nothing; a discarded chat records nothing and runs no w
 	await withChat(TASK_STUB, async ({ chat, messaging, dir }) => {
 		const empty = await chat.create({ member: 'ada', human: 'nate' });
 		assert.deepEqual(await chat.end(empty.id), { persisted: false, wrappingUp: false });
-		assert.throws(() => chat.get(empty.id), (err) => err.status === 404);
+		assert.throws(() => chat.get(empty.id), (err) => err.status === 410 && err.gone.reason === 'ended');
 
 		const discarded = await chat.create({ member: 'ada', human: 'nate' });
 		await chat.turn(discarded.id, 'never mind');
@@ -239,11 +242,200 @@ test('an abandoned session is swept and filed', async () => {
 		const session = await chat.create({ member: 'ada', human: 'nate' });
 		session.transcript.push({ role: 'human', text: 'walked away mid-chat', at: new Date().toISOString() });
 		session.lastActiveAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		session.lastSeenMs = Date.now() - 11 * 60 * 1000; // no tab has polled it: closed
 
 		const status = await chat.status('ada');
 		assert.equal(status.session, null, 'the stale session is gone');
 		assert.equal((await messaging.listArchives('ada')).length, 1, 'and its transcript was filed, not dropped');
 		await chat.settled(); // its wrap-up has no agent to run here; it must fail quietly
+	});
+});
+
+test('an open tab keeps a quiet chat alive; the sweep ends only what nobody is watching', async () => {
+	await withChat(null, async ({ chat }) => {
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+		session.transcript.push({ role: 'human', text: 'let me think', at: new Date().toISOString() });
+		// An hour since the last turn, and the pane's poll has only just missed its window.
+		session.lastActiveAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		session.lastSeenMs = Date.now() - 11 * 60 * 1000;
+
+		// The poll from the open tab is the heartbeat, and it lands before the sweep.
+		const watched = await chat.status('ada', { sessionId: session.id });
+		assert.equal(watched.session?.id, session.id, 'a watched chat survives an hour without a turn');
+		assert.equal(watched.gone, null);
+
+		// Forgotten in an open tab: the second clock ends it anyway.
+		session.lastActiveAt = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+		const quiet = await chat.status('ada', { sessionId: session.id });
+		assert.equal(quiet.session, null);
+		assert.equal(quiet.gone.reason, 'idle');
+		assert.deepEqual(quiet.gone.idle, { kind: 'quiet', minutes: 300 });
+		await chat.settled();
+	});
+});
+
+test('a gone session says what happened to it', async () => {
+	await withChat(TASK_STUB, async ({ chat }) => {
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.turn(session.id, 'raise the parser todo');
+		session.lastSeenMs = Date.now() - 45 * 60 * 1000;
+		session.lastActiveAt = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+		await chat.sweepIdle();
+
+		await assert.rejects(
+			() => chat.turn(session.id, 'still there?'),
+			(err) => {
+				assert.equal(err.status, 410);
+				assert.equal(err.gone.reason, 'idle');
+				assert.deepEqual(err.gone.idle, { kind: 'unwatched', minutes: 45 });
+				assert.equal(err.gone.member, 'ada');
+				assert.match(err.gone.messageId, /\S/, 'names the archived transcript');
+				assert.equal(err.gone.turns, 2);
+				assert.equal(err.gone.transcript, undefined, 'the record, not the conversation');
+				return true;
+			},
+		);
+		await chat.settled();
+		assert.equal(chat.gone(session.id).wrapUp, 'done');
+
+		const status = await chat.status('ada', { sessionId: session.id });
+		assert.equal(status.gone.reason, 'idle');
+
+		// An id the dashboard never saw — lost in a restart before sessions were kept.
+		await assert.rejects(
+			() => chat.turn('2020-01-01T00-00-00.000Z-abcd', 'hi'),
+			(err) => err.status === 404 && err.gone.reason === 'unknown',
+		);
+
+		const discarded = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.end(discarded.id, { persist: false });
+		assert.equal(chat.gone(discarded.id).reason, 'discarded');
+	});
+});
+
+test('continuing an ended chat carries the conversation and records only what is new', async () => {
+	const stub = `
+		const fs = require('node:fs');
+		const promptFile = process.argv[process.argv.indexOf('--append-system-prompt-file') + 1];
+		fs.appendFileSync(process.env.TEAMOS_STUB_PROMPT_OUT, fs.readFileSync(promptFile, 'utf-8') + '\\n<<TASK>>\\n' + process.argv.at(-1) + '\\n=====\\n');
+		process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'noted' }) + '\\n');
+	`;
+	await withChat(stub, async ({ chat, messaging, dir }) => {
+		const first = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.turn(first.id, 'ship the parser friday');
+		const { messageId: firstMessage } = await chat.end(first.id);
+		await chat.settled();
+
+		const next = await chat.create({ member: 'ada', human: 'nate', continueFrom: first.id });
+		assert.deepEqual(
+			next.transcript.map((t) => t.text),
+			['ship the parser friday', 'noted'],
+			'the earlier conversation is seeded from the record',
+		);
+		assert.equal(next.breaks.length, 1);
+		assert.equal(next.breaks[0].index, 2);
+		assert.equal(next.breaks[0].wrappedUp, true);
+		assert.equal(next.continues.messageId, firstMessage);
+
+		await chat.turn(next.id, 'and the lexer monday');
+		const runs = () => readFile(join(dir, 'prompt.txt'), 'utf-8').then((t) => t.split('\n=====\n').filter(Boolean));
+		const turnPrompt = (await runs()).at(-1);
+		assert.match(turnPrompt, /ship the parser friday/, 'the member sees the earlier conversation');
+		assert.match(turnPrompt, /was wrapped up into your state and todos/, 'and where it was wrapped up');
+
+		const { messageId } = await chat.end(next.id);
+		await chat.settled();
+		const wrap = (await runs()).at(-1).split('<<TASK>>')[1];
+		assert.match(wrap, /continued one you already wrapped up/);
+		assert.match(wrap, /record only what was said after it/);
+
+		const message = await messaging.readMessage(messageId);
+		assert.equal(message.replyTo, firstMessage, 'threads onto the earlier record');
+		assert.match(message.body, /and the lexer monday/);
+		assert.doesNotMatch(message.body, /ship the parser friday/, 'the earlier part is not archived twice');
+
+		// A continuation nobody spoke in has nothing new: no wrap-up, no archive.
+		const before = (await runs()).length;
+		const idle = await chat.create({ member: 'ada', human: 'nate', continueFrom: next.id });
+		assert.deepEqual(await chat.end(idle.id), { persisted: false, wrappingUp: false });
+		await chat.settled();
+		assert.equal((await runs()).length, before);
+		assert.equal((await messaging.listArchives('ada')).length, 2);
+	});
+});
+
+test('continuing a chat the dashboard lost uses the transcript the browser kept', async () => {
+	await withChat(TASK_STUB, async ({ chat, dir }) => {
+		const transcript = [
+			{ role: 'human', text: 'what about the parser?', at: '2026-01-01T10:00:00.000Z' },
+			{ role: 'member', text: 'friday', at: '2026-01-01T10:00:05.000Z' },
+		];
+		const junk = await chat.create({ member: 'ada', human: 'nate', continueFrom: 'lost', transcript: [{ role: 'root' }] });
+		assert.equal(junk.transcript.length, 0, 'a malformed transcript seeds nothing');
+		await chat.end(junk.id);
+
+		const session = await chat.create({ member: 'ada', human: 'nate', continueFrom: 'lost', transcript });
+		assert.deepEqual(session.transcript, transcript);
+		assert.equal(session.breaks[0].wrappedUp, false, 'never wrapped up, so the continuation records all of it');
+
+		await chat.turn(session.id, 'and the lexer?');
+		await chat.end(session.id);
+		await chat.settled();
+		const wrap = (await readFile(join(dir, 'prompt.txt'), 'utf-8')).split('\n---\n').filter(Boolean).at(-1);
+		assert.doesNotMatch(wrap, /continued one you already wrapped up/);
+
+		// Another member's record can't be borrowed.
+		const ended = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.end(ended.id);
+		await assert.rejects(
+			() => chat.create({ member: 'nate', human: 'nate', continueFrom: ended.id }),
+			(err) => err.status === 400,
+		);
+	});
+});
+
+test('a restarted dashboard restores open chats and remembers ended ones, without re-running a wrap-up', async () => {
+	await withChat(TASK_STUB, async ({ chat, reopen, dir, teamDir }) => {
+		const open = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.turn(open.id, 'keep this');
+		const ended = await chat.create({ member: 'nate', human: 'nate' });
+		await chat.turn(ended.id, 'and file this');
+		await chat.end(ended.id);
+		await chat.settled();
+		const runs = async () => (await readFile(join(dir, 'prompt.txt'), 'utf-8')).split('\n---\n').filter(Boolean).length;
+		const before = await runs();
+
+		const restarted = reopen();
+		const status = await restarted.status('ada', { sessionId: open.id });
+		assert.equal(status.session?.id, open.id, 'the open chat is back under its own id');
+		assert.deepEqual(
+			status.session.transcript.map((t) => t.text),
+			['keep this', 'recorded'],
+		);
+		assert.equal(status.session.busy, false);
+		await restarted.turn(open.id, 'still here');
+		assert.equal(restarted.get(open.id).transcript.length, 4);
+
+		assert.throws(() => restarted.get(ended.id), (err) => err.status === 410 && err.gone.wrapUp === 'done');
+		const continued = await restarted.create({ member: 'nate', human: 'nate', continueFrom: ended.id });
+		assert.equal(continued.breaks[0].wrappedUp, true, 'the record survives the restart');
+		await restarted.settled();
+		assert.equal(await runs(), before + 1, 'only the new turn ran — no wrap-up was started again');
+
+		// A wrap-up the dead process was still running is reported as cut off, and not re-run.
+		const file = join(teamDir, '.logs', 'chat', 'sessions', `${ended.id}.json`);
+		const saved = JSON.parse(await readFile(file, 'utf-8'));
+		await writeFile(file, JSON.stringify({ ...saved, wrapUp: 'running' }), 'utf-8');
+		const cut = reopen();
+		assert.equal((await cut.status('nate', { sessionId: ended.id })).gone.wrapUp, 'interrupted');
+		await cut.settled();
+		assert.equal(await runs(), before + 1);
+
+		// A torn file is skipped, not fatal.
+		await writeFile(join(teamDir, '.logs', 'chat', 'sessions', 'junk.json'), '{', 'utf-8');
+		const again = reopen();
+		await again.ready();
+		assert.ok(again.sessions.has(open.id));
 	});
 });
 

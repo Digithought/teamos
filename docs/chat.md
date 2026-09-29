@@ -54,13 +54,39 @@ None of this is enforcement. It is the honest position: the structural races are
 ## Session Lifecycle
 
 ```
-POST /api/chat/sessions          → session created in the dashboard process (nothing on disk)
+POST /api/chat/sessions          → session created, saved to .logs/chat/sessions/<id>.json
+GET  /api/chat/status?session=id → the open pane's 15s poll, which is also the chat's heartbeat
 POST /api/chat/sessions/:id/turn → spawn agent, stream reply, append both turns to the transcript
    … repeat …
-DELETE /api/chat/sessions/:id    → start the wrap-up turn, archive the transcript as the record, drop the session
+DELETE /api/chat/sessions/:id    → record how it ended, start the wrap-up turn, archive the transcript
 ```
 
-A session is a transcript plus at most one running agent. It lives in the dashboard process's memory: restart the dashboard and open chats are gone, unfiled. Sessions idle for **30 minutes** are ended and filed on the next chat request, so a human who walks away mid-conversation still leaves the member something to read.
+A session is a transcript plus at most one running agent. It lives in the dashboard process, and is written to `team/.logs/chat/sessions/<id>.json` after every change (write-then-rename). On startup the dashboard reads those back, so a restart, which every deploy is, no longer loses a chat: the open ones come back under their own ids, idle, and the tab carries on. A turn that was running when the process died is lost, but the human's message was saved before the spawn.
+
+### When a chat ends on its own
+
+The idle sweep runs on every chat request and on the 5s watcher tick, and ends a chat on either of two clocks:
+
+| Clock | Threshold | Why |
+|---|---|---|
+| No tab has polled it | **10 minutes** | The open pane polls status every 15s with the chat's id, and a browser throttles a hidden tab to about one poll a minute. Ten minutes of silence means the tab is closed (or the laptop asleep). |
+| No turn, tab open or not | **4 hours** | Long enough for any real pause to read or compose (a meeting, lunch). Short enough that a tab forgotten overnight is still wrapped up the same day, so the member's cycles learn what was decided and the chat's claims on the checkout don't sit for days. |
+
+So a chat someone is looking at is never swept for being quiet for a while, and one whose tab closed is wrapped up within minutes instead of waiting for someone to open a chat pane. A turn in flight is never swept.
+
+### When a tab finds its chat gone
+
+Every ending, whether by the sweep, **End** or **Discard** in any tab, leaves a record under the same id: member, reason (`idle` with which clock and how long since the last turn, `ended`, or `discarded`), when, the wrap-up's progress (`running`, `done`, `failed`, `interrupted`, `none`), and the archived message id. Records are kept for a day, on disk with the sessions. A turn or `GET`/`DELETE` on an ended chat answers **410** with that record as `gone`; an id the dashboard has no record of answers **404** with `gone: { reason: 'unknown' }`. The status poll reports the same `gone` for the id it was given.
+
+The pane never dead-ends on either. It says what happened ("This chat ended after 42 minutes idle with no dashboard tab open on it; Cy wrapped it up and the transcript was archived as …"), keeps the conversation on screen, and puts a message that failed to send back into the composer. **Continue** starts a new chat seeded with the earlier conversation and re-sends that message. If another chat with the member is open by then, the pane offers **Open that chat** instead, since the one-chat-per-member rule still holds.
+
+### Continuing a chat
+
+`POST /api/chat/sessions` with `continueFrom: <id>` starts a continuation. The new session's transcript is the earlier one's, taken from the dashboard's record, or from the `transcript` the browser sends if there is no record (a record over a day old, or lost). A **break** is marked where it resumes, noting whether the earlier part was wrapped up.
+
+The break carries through everywhere the transcript goes. The member sees it in "Conversation So Far" as a line saying everything above is already recorded (or, when the earlier chat was lost or discarded, that it isn't). The continuation's own wrap-up is told to record only what came after the mark. Its archived record holds only the new part and is filed as a reply to the earlier record, so the two read as one thread in Messages. Ending a continuation nobody spoke in does nothing. So a continued chat is wrapped up once per stretch of conversation, never twice.
+
+A record is written before the wrap-up starts. A restart can therefore cut a wrap-up off (the record then says `interrupted`), but can never start one twice: a restored ended chat is only a record.
 
 Each turn:
 
@@ -110,7 +136,8 @@ A chat is a session of the member, so it ends like one. Ending it (by the human,
 sweep) starts a **wrap-up turn** in the background: the same prompt as any turn, with the task
 "wrap up the way you would at the end of a cycle". That means recording what was decided in
 `state.md`, adding or updating todos for what's still open, and doing, or making a todo of,
-anything promised. If the chat still claims uncommitted paths in the checkout (see **Leaving the
+anything promised. A chat that continued an earlier one records only what came after the earlier
+wrap-up (see **Continuing a chat**). If the chat still claims uncommitted paths in the checkout (see **Leaving the
 Checkout Clean**), the same turn lists them to commit, stash or revert. Its output goes to the
 chat's log. The dashboard doesn't wait for it.
 
@@ -135,7 +162,9 @@ sees it in `sent.json`, and the conversation appears in the dashboard's threaded
 The whole transcript goes in the body. The master store is one markdown file per message, and a
 body that pointed at another file would be a reference the retention sweep doesn't know about.
 
-Two ways nothing is filed: a chat with no turns, and **Discard** (`?persist=0`). A discarded chat
+A continued chat files only what its earlier record doesn't hold, as a reply to that record.
+
+Two ways nothing is filed: a chat with nothing said since its last wrap-up, and **Discard** (`?persist=0`). A discarded chat
 records nothing in the member's state either, but if it left uncommitted edits in the checkout, its
 last turn is asked to revert them, or to commit them if they're finished work.
 
@@ -188,11 +217,13 @@ All dashboard-only, all under `/api/chat`. None of it is visible to agents.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/chat/status?member=<name>` | `{ midCycle, since?, session }` — drives the pane's banners; also runs the idle sweep |
-| `POST /api/chat/sessions` | `{ member, human }` → the new session. `404` unknown member, `409` a chat is already open, `400` no identity |
+| `GET /api/chat/status?member=<name>[&session=<id>]` | `{ midCycle, since?, session, gone, changedFiles }` — drives the pane's banners; `session=` is the tab's chat, which the poll keeps alive and reports `gone` if it has ended; also runs the idle sweep |
+| `POST /api/chat/sessions` | `{ member, human, continueFrom?, transcript? }` → the new session. `404` unknown member, `409` a chat is already open, `400` no identity |
 | `POST /api/chat/sessions/:id/turn` | `{ text }` → SSE stream of `{ kind: 'text' \| 'tool' \| 'thinking' \| 'result' \| 'done' \| 'error' }` |
 | `GET /api/chat/sessions/:id` | the session and its transcript (how a reloaded tab re-adopts a chat) |
 | `DELETE /api/chat/sessions/:id[?persist=0]` | end the chat; files the transcript unless `persist=0` |
+
+On an ended chat, the `:id` routes answer `410` with `{ error, gone }`; on an id the dashboard doesn't know, `404` with `gone.reason: 'unknown'`.
 
 The turn is a POST because it carries the human's text, which rules out `EventSource`; the client reads the SSE frames off the response body directly. If the client disconnects mid-stream — tab closed, navigation, Stop — the server aborts the turn and tree-kills the agent rather than leaving it running to bill out the 10-minute idle timeout.
 
@@ -218,8 +249,12 @@ Within that boundary, a chat session has the same reach a cycle does. That is a 
 | A cycle for the member starts or finishes mid-chat | nothing blocks; a banner, and the next turn's prompt lists what changed |
 | Chat and cycle edit the same file | the second writer's tool call is rejected (changed since read); the instance re-reads and reconciles |
 | Second turn while one is running | `409` — one turn at a time per session |
-| Dashboard restarted mid-chat | the session is gone and unfiled; the member never hears about it |
-| Chat left open | filed automatically after 30 idle minutes |
+| Dashboard restarted mid-chat | the chat is restored from `.logs/chat/sessions/`; a turn in flight is lost, the human's message is kept |
+| Dashboard restarted mid-wrap-up | the wrap-up is not re-run; the chat's record says `interrupted` |
+| Tab closed on an open chat | ended and filed ~10 minutes later |
+| Tab left open on a quiet chat | kept; ended and filed after 4 hours without a turn |
+| Tab sends to a chat that has ended | `410` with how it ended; the pane keeps the conversation and the message, and offers Continue |
+| Tab sends to a chat the dashboard has no record of | `404`; the pane offers Continue, seeded from its own copy of the conversation |
 
 ## Future Work
 
@@ -227,5 +262,5 @@ Not built, deliberately:
 
 - **A lease, lock or compare-and-swap layer.** See **Two Instances, One Member**: the built-in tools cover the files that matter, the JSON collections are cheap to make additively safe, and the residual risk is semantic — which no locking scheme addresses.
 - **Atomic writes (write-tmp-then-rename) in the adapters.** Still worth doing on its own merits — it removes the torn-file window on a crash — but it is not what makes chat safe and it was not needed to get here.
-- **Resuming a chat across a dashboard restart** would mean persisting sessions, which means a second on-disk shape for conversation state next to the one messages already have.
+- **A shared shape for saved chats and messages.** Saved sessions are a second on-disk shape for conversation state next to the one messages have. They live under `.logs/` because they are working state, not records: the archived message stays the record.
 - **Joining a running cycle** stays off the table for the reason at the top of this document.

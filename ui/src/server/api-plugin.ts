@@ -150,8 +150,18 @@ interface ChatSessionInfo {
 	lastActiveAt: string;
 	busy: boolean;
 	transcript: ChatTranscriptEntry[];
+	/** Where a continued chat resumed an earlier one. */
+	breaks: { index: number; at: string; wrappedUp: boolean }[];
+	continues: { id: string; messageId: string | null; at: string } | null;
 	/** Cycles of this member that finished while the chat was open. */
 	cycleCompletions: { at: string; exitCode: number }[];
+}
+
+/** What happened to a chat that is no longer open (`ChatSessions.gone`). */
+interface ChatGoneInfo {
+	id: string;
+	reason: 'idle' | 'ended' | 'discarded' | 'unknown';
+	[key: string]: unknown;
 }
 
 /**
@@ -162,7 +172,14 @@ interface ChatSessionInfo {
  * teamos/docs/chat.md.
  */
 interface ChatController {
-	create(args: { member: string; human: string }): Promise<unknown>;
+	/** Resolves once chats saved by the previous dashboard process are restored. */
+	ready(): Promise<void>;
+	create(args: {
+		member: string;
+		human: string;
+		continueFrom?: string;
+		transcript?: ChatTranscriptEntry[];
+	}): Promise<unknown>;
 	summarize(session: unknown): ChatSessionInfo;
 	get(id: string): unknown;
 	turn(
@@ -171,10 +188,14 @@ interface ChatController {
 		opts: { onEvent: (event: unknown) => void; signal: AbortSignal },
 	): Promise<{ exitCode: number; answer: string }>;
 	end(id: string, opts?: { persist?: boolean }): Promise<{ persisted: boolean; messageId?: string; wrappingUp?: boolean }>;
-	status(member: string): Promise<{
+	status(
+		member: string,
+		opts?: { sessionId?: string },
+	): Promise<{
 		midCycle: boolean;
 		since?: string;
 		session: ChatSessionInfo | null;
+		gone: ChatGoneInfo | null;
 		changedFiles: string[];
 	}>;
 }
@@ -981,16 +1002,21 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					// front of it.
 					if (path.startsWith('/api/chat/')) {
 						if (!chat) return json(res, { error: 'Chat is not configured on this dashboard.' }, 501);
+						// Chats the previous process saved come back before any route sees them.
+						await chat.ready();
 
 						if (path === '/api/chat/status' && method === 'GET') {
 							const member = url.searchParams.get('member') ?? '';
 							if (!member) return json(res, { error: 'member is required' }, 400);
-							return json(res, await chat.status(member));
+							// `session` is the chat the polling tab has open: the poll is its
+							// heartbeat, and the answer says what happened to it if it has gone.
+							const sessionId = url.searchParams.get('session') || undefined;
+							return json(res, await chat.status(member, { sessionId }));
 						}
 
 						if (path === '/api/chat/sessions' && method === 'POST') {
-							const { member, human } = JSON.parse(await readBody(req));
-							const session = await chat.create({ member, human });
+							const { member, human, continueFrom, transcript } = JSON.parse(await readBody(req));
+							const session = await chat.create({ member, human, continueFrom, transcript });
 							return json(res, chat.summarize(session), 201);
 						}
 
@@ -1017,7 +1043,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 								});
 								send({ kind: 'done', exitCode, answer });
 							} catch (err: any) {
-								send({ kind: 'error', message: err.message });
+								send({ kind: 'error', message: err.message, gone: err.gone });
 							}
 							return res.end();
 						}
@@ -1217,10 +1243,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					if (err.status && err.status < 500) console.warn('[teamos-api]', method, path, err.status, err.message);
 					else console.error('[teamos-api]', err);
 					// Chat and log errors carry the status they mean (404 unknown
-					// member or log, 409 a chat already open, 400 a bad log name);
-					// everything else is a 500.
+					// member or log, 409 a chat already open, 400 a bad log name, 410
+					// a chat that has ended); everything else is a 500. A chat that
+					// has gone says what happened to it, so the pane can offer to
+					// continue it.
 					if (res.headersSent) res.end();
-					else json(res, { error: err.message }, err.status ?? 500);
+					else json(res, { error: err.message, ...(err.gone ? { gone: err.gone } : {}) }, err.status ?? 500);
 				}
 			});
 		},

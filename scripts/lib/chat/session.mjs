@@ -1,11 +1,32 @@
-import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runAgent } from '../agents/index.mjs';
 import { heldClaims, leftoversSince, readClaims, recordClaims, releaseClaims, snapshotDirty } from '../leftovers.mjs';
-import { buildChatPrompt, buildDiscardCleanupPrompt, buildTranscriptMessage, buildWrapUpPrompt } from './prompt.mjs';
+import {
+	buildChatPrompt,
+	buildDiscardCleanupPrompt,
+	buildTranscriptMessage,
+	buildWrapUpPrompt,
+	recordedThrough,
+} from './prompt.mjs';
 
-/** A chat left open this long with no turn is ended (and filed) on the next request. */
-const IDLE_SESSION_MS = 30 * 60 * 1000;
+/**
+ * A chat no dashboard tab has looked at for this long is ended (and filed). An open pane polls
+ * status every 15s, and a browser throttles a hidden tab's timers to about once a minute, so
+ * ten minutes of silence means the tab is closed (or the laptop asleep), not just in the back.
+ */
+const UNWATCHED_SESSION_MS = 10 * 60 * 1000;
+
+/**
+ * A chat with no turn for this long is ended even with a tab open on it. Long enough for any
+ * real pause to read or compose (a meeting, lunch); short enough that a tab forgotten overnight
+ * still gets wrapped up the same day, so the member's cycles learn what was decided and the
+ * chat's claims on the checkout don't sit for days. Continue picks the thread back up.
+ */
+const IDLE_SESSION_MS = 4 * 60 * 60 * 1000;
+
+/** How long an ended chat is remembered, so a tab that comes back can be told what happened. */
+const ENDED_KEEP_MS = 24 * 60 * 60 * 1000;
 
 /** A cycle prompt file older than this is assumed orphaned by a killed runner, not in flight. */
 const STALE_CYCLE_MS = 60 * 60 * 1000;
@@ -19,12 +40,28 @@ const LOG_TAIL_BYTES = 4096;
 /** `runAgent` ends every log with this line — the one reliable "the cycle is over" marker. */
 const EXIT_MARKER = /\[runner\] Agent exited with code (-?\d+)/g;
 
-/** Error with an HTTP status the dashboard can hand straight back to the client. */
-function chatError(status, message) {
+/**
+ * Error with an HTTP status the dashboard can hand straight back to the client. `gone` rides
+ * along on a 404/410 for a session that is no longer open (see ChatSessions.gone).
+ */
+function chatError(status, message, gone) {
 	const err = new Error(message);
 	err.status = status;
+	if (gone) err.gone = gone;
 	return err;
 }
+
+/** Only a well-formed transcript from the browser is used to seed a continued chat. */
+function validTranscript(transcript) {
+	return (
+		Array.isArray(transcript) &&
+		transcript.every(
+			(t) =>
+				t && (t.role === 'human' || t.role === 'member') && typeof t.text === 'string' && typeof t.at === 'string',
+		)
+	);
+}
+
 
 /** Who holds a chat's claims on the checkout (leftovers.mjs). */
 const claimOwner = (session) => `chat:${session.member}:${session.id}`;
@@ -174,6 +211,13 @@ export async function changedFilesSince(teamDir, member, sinceMs) {
  * instance plainly that it is the second one (`agent-rules/chat.md`). What
  * this class adds is awareness — it watches for a cycle finishing and tells
  * both the human and the next turn which files moved underneath them.
+ *
+ * Open sessions are also written to `.logs/chat/sessions/<id>.json` after every change and read
+ * back on startup, so restarting the dashboard (every deploy) no longer drops a chat unfiled.
+ * An ended chat's file is rewritten as its record — why it ended, when, what it was archived
+ * as — and kept for a day, so a tab that comes back to a swept chat is told what happened and
+ * can continue it. The record is written before the wrap-up starts: a restart can lose a
+ * wrap-up in flight, but can never run one twice.
  */
 export class ChatSessions {
 	/**
@@ -203,9 +247,109 @@ export class ChatSessions {
 		};
 		/** @type {Map<string, Object>} */
 		this.sessions = new Map();
+		/** Recently ended chats by id: what a tab asking after one is told (see gone()). */
+		this.ended = new Map();
 		/** Background wrap-up turns of ended chats (see end()). */
 		this.wrapUps = new Set();
 		this.cycleTimer = null;
+		this.stateDir = join(teamDir, '.logs', 'chat', 'sessions');
+		/** Per-session write chains, so a session's file is written in the order it changed. */
+		this.writes = new Map();
+		this.restoring = null;
+	}
+
+	/** Resolves once sessions saved by an earlier dashboard process are back. Idempotent. */
+	ready() {
+		this.restoring ??= this._restore();
+		return this.restoring;
+	}
+
+	/**
+	 * Read back what the last dashboard process left in `.logs/chat/sessions/`. An open session
+	 * comes back idle, and counts as just seen so an open tab has a poll's grace to claim it; a
+	 * turn that was running when the process died is lost, but the human's side of it was saved
+	 * before the spawn. An ended one comes back as a record only — its wrap-up was started (or
+	 * lost) by the process that ended it, and is never started again here.
+	 */
+	async _restore() {
+		const entries = await readdir(this.stateDir).catch(() => []);
+		for (const entry of entries) {
+			if (!entry.endsWith('.json')) continue;
+			const file = join(this.stateDir, entry);
+			let saved;
+			try {
+				saved = JSON.parse(await readFile(file, 'utf-8'));
+				if (!saved?.id || !saved.member || !validTranscript(saved.transcript)) throw new Error('malformed');
+			} catch (err) {
+				console.warn(`[chat] ignoring saved chat ${entry}: ${err.message}`);
+				continue;
+			}
+			if (saved.endedAt) {
+				if (Date.now() - Date.parse(saved.endedAt) > ENDED_KEEP_MS) {
+					await unlink(file).catch(() => {});
+					continue;
+				}
+				// The process running its wrap-up died; say so rather than "running" forever.
+				if (saved.wrapUp === 'running') saved.wrapUp = 'interrupted';
+				this.ended.set(saved.id, saved);
+				continue;
+			}
+			if (this.find(saved.member)) continue; // two open for one member can't happen; keep the first
+			this.sessions.set(saved.id, {
+				...saved,
+				breaks: saved.breaks ?? [],
+				cycleCompletions: saved.cycleCompletions ?? [],
+				lastSeenMs: Date.now(),
+				busy: false,
+				abort: null,
+				cyclePrompts: new Set(await liveCyclePrompts(this.teamDir, saved.member)),
+				listeners: new Set(),
+			});
+		}
+		this._syncWatcher();
+	}
+
+	/**
+	 * Queue a write of `data` to the session's file. The snapshot is taken now, and writes for
+	 * one session land in order, so a turn finishing can't overwrite the record end() wrote.
+	 * Write-then-rename, so a crash mid-write leaves the previous version, not half a file.
+	 */
+	_write(id, data) {
+		const file = join(this.stateDir, `${id}.json`);
+		const text = data === null ? null : JSON.stringify(data, null, '\t');
+		const next = (this.writes.get(id) ?? Promise.resolve())
+			.then(async () => {
+				if (text === null) return unlink(file).catch(() => {});
+				await mkdir(this.stateDir, { recursive: true });
+				await writeFile(`${file}.tmp`, text, 'utf-8');
+				await rename(`${file}.tmp`, file);
+			})
+			.catch((err) => console.error(`[chat] could not save chat ${id}: ${err.message}`));
+		this.writes.set(id, next);
+		next.finally(() => {
+			if (this.writes.get(id) === next) this.writes.delete(id);
+		});
+		return next;
+	}
+
+	/** Save an open session. A session already ended is left to its record. */
+	_save(session) {
+		if (this.sessions.get(session.id) !== session) return Promise.resolve();
+		const { id, member, title, human, startedAt, startedAtMs, lastActiveAt, transcript, breaks, logFile } = session;
+		return this._write(id, {
+			id,
+			member,
+			title,
+			human,
+			startedAt,
+			startedAtMs,
+			lastActiveAt,
+			transcript,
+			breaks,
+			continues: session.continues ?? null,
+			logFile,
+			cycleCompletions: session.cycleCompletions,
+		});
 	}
 
 	/**
@@ -217,6 +361,9 @@ export class ChatSessions {
 		if (this.sessions.size > 0 && !this.cycleTimer) {
 			this.cycleTimer = setInterval(() => {
 				this.pollCycles().catch((err) => console.error(`[chat] cycle watch failed: ${err.message}`));
+				// The sweep rides the same tick, so a chat whose tab closed is wrapped up within
+				// minutes rather than whenever someone next opens a chat pane.
+				this.sweepIdle().catch((err) => console.error(`[chat] idle sweep failed: ${err.message}`));
 			}, CYCLE_POLL_MS);
 			this.cycleTimer.unref?.();
 		} else if (this.sessions.size === 0 && this.cycleTimer) {
@@ -268,6 +415,7 @@ export class ChatSessions {
 			if (exitCode === null) continue; // gone, but never finished — not a completion
 			const completion = { at: new Date().toISOString(), exitCode };
 			session.cycleCompletions.push(completion);
+			this._save(session);
 			found.push(completion);
 			this._emit(session, { kind: 'cycle', event: 'completed', exitCode, at: completion.at });
 		}
@@ -296,10 +444,37 @@ export class ChatSessions {
 		return null;
 	}
 
+	/**
+	 * An open session. One that has ended is a 410 carrying what happened to it; one this
+	 * dashboard has no record of is a 404 — it ended more than a day ago, or its state was lost.
+	 * Either way the browser still holds the conversation and can continue it.
+	 */
 	get(id) {
 		const session = this.sessions.get(id);
-		if (!session) throw chatError(404, 'Chat session not found — it may have been ended or timed out.');
-		return session;
+		if (session) return session;
+		const gone = this.gone(id);
+		if (gone.reason === 'unknown') {
+			throw chatError(404, 'This dashboard has no record of that chat — it may have been lost in a restart.', gone);
+		}
+		throw chatError(410, 'This chat has ended.', gone);
+	}
+
+	/** Mark an open session as looked at: the pane's status poll is the heartbeat. */
+	touch(id) {
+		const session = this.sessions.get(id);
+		if (session) session.lastSeenMs = Date.now();
+		return !!session;
+	}
+
+	/**
+	 * What happened to a session that is no longer open, in the shape the pane shows. The
+	 * transcript is left out; the continue path reads it from the record itself.
+	 */
+	gone(id) {
+		const record = this.ended.get(id);
+		if (!record) return { id, reason: 'unknown' };
+		const { transcript, breaks, continues, title, startedAtMs, logFile, ...rest } = record;
+		return { ...rest, turns: transcript.length };
 	}
 
 	summarize(session) {
@@ -311,6 +486,8 @@ export class ChatSessions {
 			lastActiveAt: session.lastActiveAt,
 			busy: session.busy,
 			transcript: session.transcript,
+			breaks: session.breaks,
+			continues: session.continues ?? null,
 			cycleCompletions: session.cycleCompletions,
 		};
 	}
@@ -324,14 +501,38 @@ export class ChatSessions {
 	 * A cycle already in flight is no reason to refuse — the chat opens beside
 	 * it. The prompt files live at that moment are recorded so the watcher can
 	 * tell the human when the cycle it was already running finishes.
+	 *
+	 * `continueFrom` starts the session as a continuation of one that has ended: its transcript
+	 * is carried over, so the member picks up the thread, with a break marking where it resumed.
+	 * The dashboard's own record of the earlier chat is preferred; with none (the record aged
+	 * out, or was lost) the `transcript` the browser still holds is used instead. A break after
+	 * a wrap-up tells both the member and this chat's own wrap-up that everything above it is
+	 * already recorded, so ending the continuation records only what is new.
 	 */
-	async create({ member, human }) {
+	async create({ member, human, continueFrom, transcript }) {
+		await this.ready();
 		await this.sweepIdle();
 		if (!human) throw chatError(400, 'A chat needs a human identity — pick who you are in the dashboard first.');
 		const entry = await this._lookupMember(member);
 		const existing = this.find(member);
 		if (existing) {
 			throw chatError(409, `A chat with ${member} is already open (started ${existing.startedAt}). End it first.`);
+		}
+		let seed = { transcript: [], breaks: [], continues: null };
+		if (continueFrom) {
+			if (this.sessions.has(continueFrom)) throw chatError(409, 'That chat is still open — carry on in it.');
+			const record = this.ended.get(continueFrom);
+			if (record && record.member !== member) throw chatError(400, `That chat was with ${record.member}, not ${member}.`);
+			const earlier = record?.transcript ?? (validTranscript(transcript) ? transcript : []);
+			const at = new Date().toISOString();
+			seed = {
+				transcript: [...earlier],
+				breaks:
+					earlier.length > 0
+						? [...(record?.breaks ?? []), { index: earlier.length, at, wrappedUp: record?.wrappedUp ?? false }]
+						: [],
+				continues: { id: continueFrom, messageId: record?.threadMessageId ?? null, at },
+			};
 		}
 		const session = {
 			id: makeSessionId(),
@@ -341,7 +542,12 @@ export class ChatSessions {
 			startedAt: new Date().toISOString(),
 			startedAtMs: Date.now(),
 			lastActiveAt: new Date().toISOString(),
-			transcript: [],
+			/** Last time a dashboard tab polled or used this chat; the idle sweep's first clock. */
+			lastSeenMs: Date.now(),
+			transcript: seed.transcript,
+			/** Where a continued chat resumed an earlier one (see renderTranscript). */
+			breaks: seed.breaks,
+			continues: seed.continues,
 			busy: false,
 			abort: null,
 			logFile: null,
@@ -353,6 +559,7 @@ export class ChatSessions {
 		};
 		this.sessions.set(session.id, session);
 		this._syncWatcher();
+		await this._save(session);
 		return session;
 	}
 
@@ -370,7 +577,9 @@ export class ChatSessions {
 	 * the instance which of its own earlier answers to distrust.
 	 */
 	async turn(id, text, { onEvent, signal } = {}) {
+		await this.ready();
 		const session = this.get(id);
+		session.lastSeenMs = Date.now();
 		if (session.busy) throw chatError(409, 'This chat is still working on the previous turn.');
 		const said = (text ?? '').trim();
 		if (!said) throw chatError(400, 'Nothing to send.');
@@ -384,10 +593,11 @@ export class ChatSessions {
 			{ name: session.member, title: session.title },
 			this.teamDir,
 			this.adapters,
-			{ human: session.human, transcript: session.transcript, changedFiles },
+			{ human: session.human, transcript: session.transcript, breaks: session.breaks, changedFiles },
 		);
 		session.transcript.push({ role: 'human', text: said, at: new Date().toISOString() });
 		session.lastActiveAt = new Date().toISOString();
+		await this._save(session);
 
 		if (!session.logFile) {
 			const chatLogs = join(this.teamDir, '.logs', 'chat');
@@ -446,6 +656,7 @@ export class ChatSessions {
 			session.busy = false;
 			session.abort = null;
 			session.lastActiveAt = new Date().toISOString();
+			session.lastSeenMs = Date.now();
 		}
 
 		// The final `result` event repeats the last assistant text, so it is only
@@ -454,6 +665,7 @@ export class ChatSessions {
 		if (answer) {
 			session.transcript.push({ role: 'member', text: answer, at: new Date().toISOString() });
 		}
+		await this._save(session);
 		return { exitCode, answer };
 	}
 
@@ -465,18 +677,58 @@ export class ChatSessions {
 	 * The transcript is filed as the record — a message from the human, archived straight away
 	 * rather than left in the inbox, so the member's next cycle isn't woken to re-read a
 	 * conversation it already absorbed. `persist: false` discards the chat: nothing is recorded,
-	 * but edits it made to the checkout are still resolved. An empty chat does nothing.
+	 * but edits it made to the checkout are still resolved. A chat with nothing said since its
+	 * last wrap-up (an empty one, or a continuation nobody spoke in) does nothing.
+	 *
+	 * Either way the session leaves a record in `ended` (see gone()), written before the wrap-up
+	 * starts. `idle` is set by the sweep: which clock ran out, and how long since the last turn.
 	 */
-	async end(id, { persist = true } = {}) {
+	async end(id, { persist = true, idle = null } = {}) {
+		await this.ready();
 		const session = this.get(id);
 		this.sessions.delete(id);
 		this._syncWatcher();
 		if (session.abort) session.abort();
-		if (session.transcript.length === 0) return { persisted: false, wrappingUp: false };
+
+		const fresh = session.transcript.length > recordedThrough(session.breaks);
+		const record = {
+			id,
+			member: session.member,
+			title: session.title,
+			human: session.human,
+			startedAt: session.startedAt,
+			startedAtMs: session.startedAtMs,
+			lastActiveAt: session.lastActiveAt,
+			endedAt: new Date().toISOString(),
+			reason: idle ? 'idle' : persist ? 'ended' : 'discarded',
+			idle,
+			/** Whether this ending records the chat: a continuation of it starts after a wrap-up. */
+			wrappedUp: persist && fresh,
+			wrapUp: fresh ? 'running' : 'none',
+			messageId: null,
+			/** The latest archived part of this conversation, for a continuation to reply to. */
+			threadMessageId: session.continues?.messageId ?? null,
+			transcript: session.transcript,
+			breaks: session.breaks,
+			continues: session.continues ?? null,
+			logFile: session.logFile,
+		};
+		this.ended.set(id, record);
+		await this._write(id, record);
+		if (!fresh) return { persisted: false, wrappingUp: false };
 
 		const wrapUp = this._wrapUp(session, { discard: !persist })
-			.catch((err) => console.error(`[chat] wrap-up for ${session.member} failed: ${err.message}`))
-			.finally(() => this.wrapUps.delete(wrapUp));
+			.then((ran) => {
+				record.wrapUp = ran ? 'done' : 'none';
+			})
+			.catch((err) => {
+				record.wrapUp = 'failed';
+				console.error(`[chat] wrap-up for ${session.member} failed: ${err.message}`);
+			})
+			.finally(() => {
+				this.wrapUps.delete(wrapUp);
+				this._write(id, record);
+			});
 		this.wrapUps.add(wrapUp);
 
 		if (!persist || !this.adapters.messaging) return { persisted: false, wrappingUp: true };
@@ -484,17 +736,23 @@ export class ChatSessions {
 			member: session.member,
 			human: session.human,
 			transcript: session.transcript,
+			breaks: session.breaks,
+			replyTo: session.continues?.messageId ?? undefined,
 			startedAt: session.startedAt,
-			endedAt: new Date().toISOString(),
+			endedAt: record.endedAt,
 		});
 		const { id: messageId } = await this.adapters.messaging.sendMessage(message);
 		await this.adapters.messaging.archiveMessage(session.member, messageId);
+		record.messageId = messageId;
+		record.threadMessageId = messageId;
+		await this._write(id, record);
 		return { persisted: true, messageId, wrappingUp: true };
 	}
 
 	/** Resolves once every background wrap-up has finished (tests, shutdown). */
 	async settled() {
 		await Promise.all([...this.wrapUps]);
+		await Promise.all([...this.writes.values()]);
 	}
 
 	/**
@@ -507,13 +765,18 @@ export class ChatSessions {
 		const owner = claimOwner(session);
 		try {
 			const held = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
-			if (discard && held.length === 0) return;
+			if (discard && held.length === 0) return false;
 			const task = discard
 				? buildDiscardCleanupPrompt({ human: session.human, leftovers: held })
-				: buildWrapUpPrompt({ human: session.human, leftovers: held });
+				: buildWrapUpPrompt({
+						human: session.human,
+						leftovers: held,
+						continued: recordedThrough(session.breaks) > 0,
+					});
 			const prompt = await buildChatPrompt({ name: session.member, title: session.title }, this.teamDir, this.adapters, {
 				human: session.human,
 				transcript: session.transcript,
+				breaks: session.breaks,
 				changedFiles: [],
 			});
 			await runAgent(
@@ -528,19 +791,35 @@ export class ChatSessions {
 			if (still.length > 0) {
 				console.warn(`[chat] ${session.member}'s chat still left: ${still.map((l) => l.path).join(', ')}`);
 			}
+			return true;
 		} finally {
 			await releaseClaims(this.teamDir, owner);
 		}
 	}
 
+	/**
+	 * End the chats nobody is using: no tab has polled one for UNWATCHED_SESSION_MS (closed),
+	 * or it has had no turn for IDLE_SESSION_MS (open, but forgotten). A turn in flight is never
+	 * swept. Ended records older than ENDED_KEEP_MS are dropped here too.
+	 */
 	async sweepIdle() {
-		const cutoff = Date.now() - IDLE_SESSION_MS;
+		await this.ready();
+		const now = Date.now();
 		for (const session of [...this.sessions.values()]) {
 			if (session.busy) continue;
-			if (Date.parse(session.lastActiveAt) > cutoff) continue;
-			await this.end(session.id).catch((err) => {
-				console.error(`[chat] failed to file idle session ${session.id}: ${err.message}`);
+			const quietMs = now - Date.parse(session.lastActiveAt);
+			const unwatched = now - session.lastSeenMs > UNWATCHED_SESSION_MS;
+			if (!unwatched && quietMs <= IDLE_SESSION_MS) continue;
+			if (!this.sessions.has(session.id)) continue; // a concurrent sweep got there first
+			const idle = { kind: unwatched ? 'unwatched' : 'quiet', minutes: Math.round(quietMs / 60000) };
+			await this.end(session.id, { idle }).catch((err) => {
+				if (err.status !== 410) console.error(`[chat] failed to file idle session ${session.id}: ${err.message}`);
 			});
+		}
+		for (const [id, record] of this.ended) {
+			if (now - Date.parse(record.endedAt) <= ENDED_KEEP_MS) continue;
+			this.ended.delete(id);
+			this._write(id, null);
 		}
 	}
 
@@ -549,14 +828,21 @@ export class ChatSessions {
 	 * a cycle nor holds one up. `changedFiles` and the session's
 	 * `cycleCompletions` are what tell the human the ground moved while they
 	 * were typing; the same list goes into the next turn's prompt.
+	 *
+	 * `sessionId` is the chat the asking tab has open. The poll doubles as that chat's heartbeat
+	 * (touched before the sweep, so a watched chat is never swept for being unwatched), and if
+	 * the chat has gone, `gone` says what happened to it.
 	 */
-	async status(member) {
+	async status(member, { sessionId } = {}) {
+		await this.ready();
+		if (sessionId) this.touch(sessionId);
 		await this.sweepIdle();
 		const session = this.find(member);
 		if (session) await this._pollSessionCycles(session).catch(() => {});
 		return {
 			...(await detectMidCycle(this.teamDir, member)),
 			session: session ? this.summarize(session) : null,
+			gone: sessionId && !this.sessions.has(sessionId) ? this.gone(sessionId) : null,
 			changedFiles: session ? await changedFilesSince(this.teamDir, member, session.startedAtMs) : [],
 		};
 	}

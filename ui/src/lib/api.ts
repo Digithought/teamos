@@ -1,6 +1,8 @@
 import type {
 	ChatEvent,
+	ChatGone,
 	ChatSession,
+	ChatTranscriptEntry,
 	ChatStatus,
 	MemberDetail,
 	MemberSummary,
@@ -15,11 +17,24 @@ import type {
 } from './types.js';
 import type { LogChunk, LogEntry } from './logs.js';
 
-async function failure(res: Response): Promise<Error> {
+/** A failed request, with its status and, for a chat that has ended, what happened to it. */
+export class ApiError extends Error {
+	status: number;
+	gone?: ChatGone;
+	constructor(message: string, status: number, gone?: ChatGone) {
+		super(message);
+		this.status = status;
+		this.gone = gone;
+	}
+}
+
+async function failure(res: Response): Promise<ApiError> {
 	let detail = '';
+	let gone: ChatGone | undefined;
 	try {
 		const data = await res.json();
 		if (data && typeof data.error === 'string') detail = data.error;
+		if (data?.gone) gone = data.gone;
 	} catch {
 		try {
 			detail = (await res.text()).trim();
@@ -27,7 +42,7 @@ async function failure(res: Response): Promise<Error> {
 			/* ignore */
 		}
 	}
-	return new Error(detail || `${res.status} ${res.statusText}`);
+	return new ApiError(detail || `${res.status} ${res.statusText}`, res.status, gone);
 }
 
 async function get<T>(url: string): Promise<T> {
@@ -230,9 +245,23 @@ export const api = {
 	cyclePause: () => post<{ ok: boolean }>('/api/cycle/pause', {}),
 	cycleResume: () => post<{ ok: boolean }>('/api/cycle/resume', {}),
 	cycleStatus: () => get<{ stopPending: boolean; paused: boolean }>('/api/cycle/status'),
-	/** Is a cycle in flight for this member, and is a chat already open? */
-	chatStatus: (member: string) => get<ChatStatus>(`/api/chat/status?member=${encodeURIComponent(member)}`),
-	startChat: (member: string, human: string) => post<ChatSession>('/api/chat/sessions', { member, human }),
+	/**
+	 * Is a cycle in flight for this member, and is a chat already open? `sessionId` is the chat
+	 * this tab has open: the poll keeps it alive, and reports it `gone` if it has ended.
+	 */
+	chatStatus: (member: string, sessionId?: string) =>
+		get<ChatStatus>(
+			`/api/chat/status?member=${encodeURIComponent(member)}${sessionId ? `&session=${encodeURIComponent(sessionId)}` : ''}`,
+		),
+	/**
+	 * Start a chat. `continueFrom` makes it a continuation of one that has ended; `transcript` is
+	 * this tab's copy of that conversation, used only if the dashboard has no record of it.
+	 */
+	startChat: (
+		member: string,
+		human: string,
+		continuing?: { continueFrom: string; transcript: ChatTranscriptEntry[] },
+	) => post<ChatSession>('/api/chat/sessions', { member, human, ...continuing }),
 	chatTurn,
 	/** End a chat: the member wraps up into state and todos, and the transcript is archived unless `persist` is false. */
 	endChat: (id: string, persist = true) =>
