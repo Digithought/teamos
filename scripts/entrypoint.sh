@@ -46,6 +46,11 @@ BRANCH="${TEAMOS_REPO_BRANCH:-main}"
 # Configure git identity and credentials before any clone/push.
 git config --global user.name  "${GIT_AUTHOR_NAME:-teamos-runner}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-runner@teamos.local}"
+# Backstop for GitSyncAdapter's explicit `submodule update` calls (git.mjs) —
+# not a substitute, since `submodule.recurse` isn't honored by every
+# subcommand (notably `git rebase`), but it covers other git operations that
+# do move gitlinks (checkout, merge --ff-only run by hand, etc).
+git config --global submodule.recurse true
 
 if [ -n "$GITHUB_TOKEN" ]; then
 	git config --global credential.helper store

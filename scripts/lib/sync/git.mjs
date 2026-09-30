@@ -8,7 +8,14 @@ import { execSync } from 'node:child_process';
  *   - pull(): fetch origin; fast-forward if local is behind, no-op if local is
  *     ahead, otherwise rebase local commits (with autostash) onto origin.
  *     Rebase conflicts abort cleanly and leave local state untouched so the
- *     next push surfaces the problem.
+ *     next push surfaces the problem. Both the fast-forward and the rebase
+ *     move the superproject's gitlinks forward without touching a submodule's
+ *     own checked-out content — `submodule.recurse` isn't reliably honored by
+ *     `git rebase`, and a plain `git merge --ff-only` never recurses at all —
+ *     so an explicit `git submodule update --init --recursive` follows each.
+ *     Skipping this left the index pointer correct but the physical
+ *     `teamos/` checkout stale after a pin bump, which a later broad `git add
+ *     -A` would then re-stage as an apparent pointer revert.
  *   - push(): stage + commit any changes. If pushing fails non-FF, pull once
  *     and retry. A second failure is logged and left for humans to resolve.
  *
@@ -36,6 +43,7 @@ export class GitSyncAdapter {
 			try {
 				execSync(`git merge --ff-only origin/${branch}`, { cwd: workDir, stdio: 'pipe' });
 				console.log(`[sync/git] fast-forwarded ${local.slice(0, 7)}..${remote.slice(0, 7)}`);
+				this._updateSubmodules(workDir);
 			} catch (err) {
 				console.error(`[sync/git] fast-forward failed: ${this._errText(err)}`);
 			}
@@ -48,6 +56,7 @@ export class GitSyncAdapter {
 		try {
 			execSync(`git rebase --autostash origin/${branch}`, { cwd: workDir, stdio: 'pipe' });
 			console.log(`[sync/git] rebased local commits onto origin/${branch}`);
+			this._updateSubmodules(workDir);
 		} catch (err) {
 			console.error(`[sync/git] rebase onto origin/${branch} failed: ${this._errText(err)}`);
 			try {
@@ -97,6 +106,14 @@ export class GitSyncAdapter {
 		} catch (err) {
 			console.error(`[sync/git] push failed: ${this._errText(err)}`);
 			return false;
+		}
+	}
+
+	_updateSubmodules(workDir) {
+		try {
+			execSync('git submodule update --init --recursive', { cwd: workDir, stdio: 'pipe' });
+		} catch (err) {
+			console.error(`[sync/git] submodule update failed: ${this._errText(err)}`);
 		}
 	}
 
