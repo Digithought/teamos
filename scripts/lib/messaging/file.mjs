@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pathExists } from '../util.mjs';
@@ -162,47 +163,85 @@ export class FileMessagingAdapter {
 		}
 	}
 
-	/**
-	 * `ensured: true` means the caller already created the directory — see
-	 * `_appendToMailbox`, which needs its read and its write adjacent.
-	 */
-	async _writeMailbox(member, kind, items, { ensured = false } = {}) {
-		const path = this._mailboxPath(member, kind);
-		if (!ensured) await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
-	}
-
-	/**
-	 * Append one id to a mailbox.
-	 *
-	 * The one mailbox operation that is purely additive, and the one that two
-	 * instances of the same member genuinely race: a chat filing its transcript
-	 * while a cycle sends a message. A mailbox is a JSON list rewritten whole
-	 * and reached only through the MCP tools, so Claude's own read-before-write
-	 * checks — which do cover `state.md` and `profile.md` — never apply. The
-	 * cheap answer is the one used throughout these adapters: create the
-	 * directory first, then read and write with nothing awaited in between, so
-	 * a concurrent append is dropped only if the two land inside one tick.
-	 * Removals (archive, unarchive, delete) get no such treatment — they read
-	 * two mailboxes and write both, and closing that honestly would mean a
-	 * compare-and-swap layer this codebase deliberately does not have.
-	 */
-	async _appendToMailbox(member, kind, id) {
-		await mkdir(dirname(this._mailboxPath(member, kind)), { recursive: true });
-		const items = await this._readMailbox(member, kind);
-		if (!items.includes(id)) {
-			items.push(id);
-			await this._writeMailbox(member, kind, items, { ensured: true });
+	_readMailboxSync(member, kind) {
+		try {
+			const data = JSON.parse(readFileSync(this._mailboxPath(member, kind), 'utf-8'));
+			return Array.isArray(data.items) ? data.items : [];
+		} catch {
+			return [];
 		}
 	}
 
+	/**
+	 * Replace a mailbox through a temp file and a rename, so a reader never
+	 * sees it half-written. A truncated read parses as an empty mailbox: the
+	 * dashboard showed that member's inbox as all handled for one refresh, and
+	 * a read-modify-write that caught it wrote the empty list back for good.
+	 */
+	_writeMailboxSync(member, kind, items) {
+		const path = this._mailboxPath(member, kind);
+		const tmp = `${path}.${process.pid}.tmp`;
+		writeFileSync(tmp, `${JSON.stringify({ items }, null, '\t')}\n`, 'utf-8');
+		renameSync(tmp, path);
+	}
+
+	/**
+	 * Read-modify-write a member's mailboxes as one step.
+	 *
+	 * A mailbox is a JSON list rewritten whole, and every change to one is a
+	 * read-modify-write: a delivery appends, archive and unarchive move an id
+	 * between two lists. Done with awaits between the read and the write, two
+	 * of them interleave and the second writes back what the first removed —
+	 * archive two messages at once from the dashboard and one of them lands
+	 * back in the inbox, dropped from archives. Here the reads, the change and
+	 * the writes run synchronously, so nothing in this process can interleave,
+	 * and the window against another process (a member's MCP server delivering
+	 * mail) is the few microseconds between a read and a rename. Closing that
+	 * too would mean a lock file, which this codebase deliberately does not
+	 * have.
+	 *
+	 * `change` gets the lists by kind and mutates them in place, returning the
+	 * kinds it changed; only those are written.
+	 */
+	_updateMailboxes(member, kinds, change) {
+		mkdirSync(dirname(this._mailboxPath(member, kinds[0])), { recursive: true });
+		const boxes = Object.fromEntries(kinds.map((kind) => [kind, this._readMailboxSync(member, kind)]));
+		const changed = change(boxes);
+		for (const kind of changed) this._writeMailboxSync(member, kind, boxes[kind]);
+		return changed.length > 0;
+	}
+
+	/** Append one id to a mailbox; a no-op when it is already there. */
+	async _appendToMailbox(member, kind, id) {
+		this._updateMailboxes(member, [kind], (boxes) => {
+			if (boxes[kind].includes(id)) return [];
+			boxes[kind].push(id);
+			return [kind];
+		});
+	}
+
 	async _removeFromMailbox(member, kind, id) {
-		const items = await this._readMailbox(member, kind);
-		const idx = items.indexOf(id);
-		if (idx === -1) return false;
-		items.splice(idx, 1);
-		await this._writeMailbox(member, kind, items);
-		return true;
+		return this._updateMailboxes(member, [kind], (boxes) => {
+			const idx = boxes[kind].indexOf(id);
+			if (idx === -1) return [];
+			boxes[kind].splice(idx, 1);
+			return [kind];
+		});
+	}
+
+	/** Move an id from one mailbox to another. `missing` runs when it is in neither. */
+	_moveBetweenMailboxes(member, from, to, id, missing) {
+		this._updateMailboxes(member, [from, to], (boxes) => {
+			const idx = boxes[from].indexOf(id);
+			if (idx === -1) {
+				if (boxes[to].includes(id)) return []; // already moved, no-op
+				missing();
+				return [];
+			}
+			boxes[from].splice(idx, 1);
+			if (!boxes[to].includes(id)) boxes[to].push(id);
+			return [from, to];
+		});
 	}
 
 	// ─── Core operations ───────────────────────────────────────────────────────
@@ -462,35 +501,15 @@ export class FileMessagingAdapter {
 	}
 
 	async archiveMessage(member, id) {
-		const inbox = await this._readMailbox(member, 'inbox');
-		const archives = await this._readMailbox(member, 'archives');
-
-		const idx = inbox.indexOf(id);
-		if (idx === -1) {
-			if (archives.includes(id)) return; // already archived, no-op
+		this._moveBetweenMailboxes(member, 'inbox', 'archives', id, () => {
 			throw new Error(`archiveMessage: ${id} is not in ${member}'s inbox`);
-		}
-		inbox.splice(idx, 1);
-		if (!archives.includes(id)) archives.push(id);
-
-		await this._writeMailbox(member, 'inbox', inbox);
-		await this._writeMailbox(member, 'archives', archives);
+		});
 	}
 
 	async unarchiveMessage(member, id) {
-		const inbox = await this._readMailbox(member, 'inbox');
-		const archives = await this._readMailbox(member, 'archives');
-
-		const idx = archives.indexOf(id);
-		if (idx === -1) {
-			if (inbox.includes(id)) return;
+		this._moveBetweenMailboxes(member, 'archives', 'inbox', id, () => {
 			throw new Error(`unarchiveMessage: ${id} is not in ${member}'s archives`);
-		}
-		archives.splice(idx, 1);
-		if (!inbox.includes(id)) inbox.push(id);
-
-		await this._writeMailbox(member, 'inbox', inbox);
-		await this._writeMailbox(member, 'archives', archives);
+		});
 	}
 
 	/**
@@ -498,18 +517,10 @@ export class FileMessagingAdapter {
 	 * Used by the UI for explicit "discard" actions.
 	 */
 	async deleteInboxMessage(member, id) {
-		const inbox = await this._readMailbox(member, 'inbox');
-		const idx = inbox.indexOf(id);
-		if (idx === -1) return;
-		inbox.splice(idx, 1);
-		await this._writeMailbox(member, 'inbox', inbox);
+		await this._removeFromMailbox(member, 'inbox', id);
 	}
 
 	async deleteArchivedMessage(member, id) {
-		const archives = await this._readMailbox(member, 'archives');
-		const idx = archives.indexOf(id);
-		if (idx === -1) return;
-		archives.splice(idx, 1);
-		await this._writeMailbox(member, 'archives', archives);
+		await this._removeFromMailbox(member, 'archives', id);
 	}
 }

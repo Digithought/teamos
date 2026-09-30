@@ -91,9 +91,19 @@ function treeOrder(msgs: ThreadMessage[]): ThreadMessage[] {
 
 const orderedMessages = $derived(selected ? treeOrder(selected.messages) : []);
 
+/**
+ * Bumped by every load. Archiving two messages in quick succession starts two
+ * loads, and the one that started first can answer last — painting the first
+ * archive's mailbox over the second's, so a message just archived showed back
+ * in the inbox until the next refresh. Only the newest load may apply.
+ */
+let loadSeq = 0;
+
 async function load(keepSelection = true) {
+	const seq = ++loadSeq;
 	loading = threads.length === 0;
 	const fresh = await api.threads(name);
+	if (seq !== loadSeq) return;
 	threads = fresh;
 	loading = false;
 	if (!keepSelection || !fresh.some((t) => t.id === selectedId)) {

@@ -379,3 +379,23 @@ test('supersedeMessage also enforces roster casing', async () => {
 		);
 	});
 });
+
+test('concurrent archives and a delivery all land', async () => {
+	await withAdapter(async (adapter) => {
+		const ids = [];
+		for (let i = 0; i < 6; i++) {
+			ids.push((await adapter.sendMessage({ from: 'bob', to: ['alice'], subject: `s${i}`, body: 'b' })).id);
+		}
+		// The dashboard archiving several messages at once while a member mails
+		// in: each is a read-modify-write of the same inbox.json.
+		const [, , , , { id: late }] = await Promise.all([
+			...ids.slice(0, 4).map((id) => adapter.archiveMessage('alice', id)),
+			adapter.sendMessage({ from: 'carol', to: ['alice'], subject: 'late', body: 'b' }),
+		]);
+
+		const inbox = (await adapter.listInbox('alice')).map((m) => m.id).sort();
+		const archives = (await adapter.listArchives('alice')).map((m) => m.id).sort();
+		assert.deepEqual(inbox, [...ids.slice(4), late].sort());
+		assert.deepEqual(archives, ids.slice(0, 4).sort());
+	});
+});
