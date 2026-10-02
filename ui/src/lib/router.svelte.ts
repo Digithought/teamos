@@ -20,6 +20,12 @@ class Router {
 		window.location.hash = path;
 	}
 
+	/** Rewrites the current entry without adding history or firing hashchange. */
+	replace(path: string) {
+		history.replaceState(history.state, '', `#${path}`);
+		this.hash = path;
+	}
+
 	match(pattern: string): Record<string, string> | null {
 		const pp = pattern.split('/');
 		const hp = this.path.split('/');

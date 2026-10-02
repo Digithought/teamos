@@ -14,9 +14,37 @@ const {
 
 type Filter = MailBox | 'all';
 
+/**
+ * The filter the user last clicked. This component remounts on every tab
+ * switch and every Reply round trip through compose, so state alone would
+ * drop the pick back to the default each time.
+ */
+const FILTER_KEY = 'teamos-mailbox-filter';
+const FILTERS: readonly Filter[] = ['inbox', 'sent', 'archives', 'all'];
+
+function storedFilter(): Filter | null {
+	try {
+		const v = localStorage.getItem(FILTER_KEY);
+		return FILTERS.includes(v as Filter) ? (v as Filter) : null;
+	} catch {
+		return null;
+	}
+}
+
+function pickFilter(f: Filter) {
+	filter = f;
+	try {
+		localStorage.setItem(FILTER_KEY, f);
+	} catch {
+		// Storage blocked: the pick still holds until the next remount.
+	}
+}
+
+const picked = storedFilter();
+
 let threads = $state<Thread[]>([]);
 let loading = $state(true);
-let filter = $state<Filter>('inbox');
+let filter = $state<Filter>(picked ?? 'inbox');
 let search = $state('');
 let selectedId = $state<string | null>(null);
 let expanded = $state<Set<string>>(new Set());
@@ -112,11 +140,16 @@ async function load(keepSelection = true) {
 	// Landing on an empty Inbox when there is history to read is a dead end, so
 	// the first load of a member falls back to All. A filter the user picked is
 	// never overridden.
-	if (!keepSelection && filter === 'inbox' && fresh.length > 0 && !fresh.some((t) => t.inboxCount > 0)) {
+	if (!keepSelection && !picked && filter === 'inbox' && fresh.length > 0 && !fresh.some((t) => t.inboxCount > 0)) {
 		filter = 'all';
 	}
 	const deepLink = router.query.msg;
 	if (deepLink) {
+		// A deep link is honored once, then dropped from the URL. Left in place,
+		// every later load re-applied it: archiving the thread a Reply came back
+		// to took it out of the Inbox, so the next load flipped the filter to All
+		// and re-opened that thread over whatever was selected.
+		router.replace(router.path);
 		const owner = fresh.find((t) => t.messages.some((m) => m.id === deepLink));
 		if (owner) {
 			if (!matchesFilter(owner, filter)) filter = 'all';
@@ -313,7 +346,7 @@ function roleOf(msg: ThreadMessage): string {
 				class:active={filter === key}
 				role="tab"
 				aria-selected={filter === key}
-				onclick={() => (filter = key as Filter)}
+				onclick={() => pickFilter(key as Filter)}
 			>
 				{label}
 				<span class="filter-count">{n}</span>
