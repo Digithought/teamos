@@ -373,7 +373,7 @@ The runner uses a weighted fair scheduler to allocate cycles across priorities. 
 ## Work Detection
 
 A member is given a cycle when any of these are true:
-- Their `inbox.json` has at least one id (O(1) — the runner reads the json directly)
+- Their inbox has a message at or above the current priority level — mail addressed To them counts as `pressing`, mail on which they are only Cc'd as `today` (see `teamos/docs/messages.md`)
 - They have **todo items** at or above the current priority level (checked via the tasks adapter's `hasActionableTodos` contract)
 - They have **schedule events** that are due
 - They have **commit triggers** matching new host-repo commits at or above the current priority level (checked via the triggers adapter's `hasPendingMatches` contract — see `teamos/docs/triggers.md`)

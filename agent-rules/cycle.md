@@ -46,7 +46,7 @@ Use the MCP tools below; they are the only supported way to send, read, or manag
 
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 
-**To and Cc deliver identically.** Both land in the recipient's inbox; the distinction is how the recipient perceives their involvement. Inspect `to`/`cc` on a message you received to see your role.
+**Cc ranks below To.** Both land in your inbox, but mail on which you are only Cc'd counts as `today` work: it alone never wakes you for a pressing cycle, and the prompt lists it after your To-addressed mail. Treat it as awareness — act only where you are the one who should.
 
 **Keep unfinished inbox work visible.** If you can't handle a message this cycle, leave it in your inbox — don't archive until you're done. The runner will cycle you again as long as your inbox has anything unhandled in it.
 

@@ -6,7 +6,7 @@ Only one adapter ships today: the **file adapter**, which stores messages on the
 
 ## Design Principles
 
-- **Email-like semantics** — a message has `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer. To and Cc differ only in how recipients perceive their involvement; both are delivered identically.
+- **Email-like semantics** — a message has `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer. To and Cc are delivered identically; they differ in how recipients perceive their involvement and in the priority the runner gives the message (see Work Detection).
 - **Subjects are required** on new threads. Replies auto-derive `Re: <subject>` from their parent.
 - **Threads are backward chains, not containers.** There is no thread object — a thread is simply the transitive closure of `replyTo` pointers. This matches how email works and keeps the data model flat.
 - **Single master store.** Every message lives in one file under `team/messages/`, addressed by a unique id. Per-member mailboxes are just lists of ids; content is never duplicated.
@@ -213,14 +213,14 @@ When the runner builds a cycle prompt for a member, it:
 
 1. Calls `list_inbox(member)` to get inbox summaries (already collapse-aware — superseded predecessors are hidden when the consolidated version is reachable)
 2. Calls `read_message(id)` for each entry to get the message with parent inlined
-3. Embeds those messages in the prompt under an "Inbox" section
+3. Embeds those messages in the prompt under an "Inbox" section — To-addressed mail first, then mail that only Cc's the member under its own lower-priority heading
 4. Passes the MCP tools through so the agent can call `send_message`, `supersede_message`, `archive_message`, etc. during the cycle
 
 The agent is expected to process each inbox message and then `archive_message` it if fully handled. Messages left in the inbox carry forward to the next cycle — this is the intended way to defer work ("I'll handle this later, keep it in my inbox"). Before composing a new message to a recipient set the agent has already messaged this cycle, the agent calls `list_sent({ to: [...] })` and prefers `supersede_message` over stacking another message on the same topic.
 
 ## Work Detection
 
-A member has messaging work when their inbox listing (after the supersede collapse) is non-empty. The collapse step requires reading each candidate's frontmatter, but inboxes are bounded and the cost is paid once per scheduling pass per member — not in a hot loop.
+A member has messaging work when their inbox listing (after the supersede collapse) holds a message at or above the priority being scanned. A message on which the member is in `to` is `pressing`; one on which they are only in `cc` is `today` (`CC_PRIORITY` in `scripts/lib/work-detection.mjs`), so Cc-only mail is served like a `today` todo — on that priority's weight and cadence — rather than waking the member for a pressing cycle. The collapse step requires reading each candidate's frontmatter, but inboxes are bounded and the cost is paid once per scheduling pass per member — not in a hot loop.
 
 ## Sender Semantics
 
@@ -231,7 +231,7 @@ When alice sends to `[bob]` with `cc: [carol]`:
 3. `<id>` is appended to `bob/inbox.json` and `carol/inbox.json`
 4. `<id>` is appended to `alice/sent.json`
 
-Bob and Carol both receive the message through their inbox; neither can tell from the delivery path alone whether they were in To or Cc — they must inspect the message's `to` and `cc` fields to see their role. This matches email.
+Bob and Carol both receive the message through their inbox; neither can tell from the delivery path alone whether they were in To or Cc — they must inspect the message's `to` and `cc` fields to see their role. This matches email. The runner does read the role: bob's copy is pressing work, carol's waits as `today` work.
 
 ## Dashboard View
 

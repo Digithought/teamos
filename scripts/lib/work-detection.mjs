@@ -13,11 +13,20 @@ export async function loadMembers(teamDir) {
 
 // ─── Work detection ────────────────────────────────────────────────────────────
 
+/** Priority of inbox mail that only Cc's the member — it waits like a `today` todo. */
+export const CC_PRIORITY = 'today';
+
+/** To-addressed mail is pressing; mail on which the member is only Cc'd is CC_PRIORITY. */
+export function inboxPriority(summary, member) {
+	return summary.to?.includes(member) ? 'pressing' : CC_PRIORITY;
+}
+
 /**
  * Check if a member has work at the given priority level.
  *
- * Inbox work is detected in O(1) by reading inbox.json directly — no master
- * store lookups are needed for "does this member have a message?".
+ * Inbox work is weighed by the member's role on each message (see
+ * `inboxPriority`). Without a messaging adapter, inbox.json is read directly
+ * and any id counts — no role is known there.
  *
  * @param {Object} [adapters] — the wake-signal adapters: `messaging`, `tasks`,
  *   `schedule`, `triggers`, `watches`. Each is optional; `adapters.tasks`, when
@@ -26,10 +35,12 @@ export async function loadMembers(teamDir) {
  */
 export async function memberHasWork(memberName, priority, teamDir, adapters = {}) {
 	const memberDir = join(teamDir, 'members', memberName);
+	const priorityIdx = PRIORITY_ORDER.indexOf(priority);
 
-	// Check inbox.json for pending messages
+	// Check the inbox for messages at this priority or higher
 	if (adapters.messaging) {
-		if (await adapters.messaging.hasMessages(memberName)) return true;
+		const inbox = await adapters.messaging.listInbox(memberName);
+		if (inbox.some((m) => PRIORITY_ORDER.indexOf(inboxPriority(m, memberName)) <= priorityIdx)) return true;
 	} else {
 		const inboxJson = join(memberDir, 'inbox.json');
 		if (await pathExists(inboxJson)) {
@@ -50,7 +61,6 @@ export async function memberHasWork(memberName, priority, teamDir, adapters = {}
 		if (await pathExists(todoPath)) {
 			try {
 				const todos = JSON.parse(await readFile(todoPath, 'utf-8'));
-				const priorityIdx = PRIORITY_ORDER.indexOf(priority);
 				if (todos.items.some((t) => t.status !== 'blocked' && PRIORITY_ORDER.indexOf(t.priority) <= priorityIdx))
 					return true;
 			} catch {

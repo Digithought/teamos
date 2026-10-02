@@ -12,7 +12,7 @@ import {
 	readTextOrEmpty,
 	waitWhilePaused,
 } from './util.mjs';
-import { getMembersWithWork } from './work-detection.mjs';
+import { CC_PRIORITY, getMembersWithWork, inboxPriority } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,7 +52,23 @@ export async function buildInboxSection(member, messagingAdapter) {
 		return ['', '## Inbox', '', 'No pending messages.', ''];
 	}
 
+	// To-addressed mail first; mail that only Cc's the member follows at CC_PRIORITY.
+	const direct = summaries.filter((s) => inboxPriority(s, member) !== CC_PRIORITY);
+	const ccOnly = summaries.filter((s) => inboxPriority(s, member) === CC_PRIORITY);
+
 	const out = ['', `## Inbox (${summaries.length})`, ''];
+	await pushMessages(out, direct, messagingAdapter);
+	if (ccOnly.length > 0) {
+		out.push(
+			`**Cc'd to you (${ccOnly.length})** — priority \`${CC_PRIORITY}\`: for awareness. Handle after To-addressed mail; act only where you are the right one to.`,
+			'',
+		);
+		await pushMessages(out, ccOnly, messagingAdapter);
+	}
+	return out;
+}
+
+async function pushMessages(out, summaries, messagingAdapter) {
 	for (const summary of summaries) {
 		const msg = await messagingAdapter.readMessage(summary.id, { inlineParent: true }).catch(() => null);
 		if (!msg) continue;
@@ -69,7 +85,6 @@ export async function buildInboxSection(member, messagingAdapter) {
 		}
 		out.push('', '---', '');
 	}
-	return out;
 }
 
 function formatTodoForPrompt(item) {
