@@ -115,3 +115,30 @@ test('pull() updates the submodule checkout content on the rebase path', async (
 		'rebase pull left the physical submodule checkout on its old content'
 	);
 });
+
+// regression: a housekeeping push() swept a submodule checkout left behind its
+// gitlink into the commit, recording the pin as a rewind (SiteCAD ticket
+// teamos-sync-push-commits-a-backwards-submodule-pin).
+test('push() commits other changes but never records a submodule pin moving backwards', async (t) => {
+	const root = mkdtempSync(join(tmpdir(), 'git-sync-'));
+	const fixture = buildFixture(root);
+	bumpSubmodulePin(fixture);
+	sh('git pull -q origin main', fixture.workDir);
+	sh('git submodule update -q', fixture.workDir);
+	const pinned = sh('git rev-parse HEAD:sub', fixture.workDir);
+	const sub = join(fixture.workDir, 'sub');
+	sh('git checkout -q HEAD~1', sub);
+	const stale = sh('git rev-parse HEAD', sub);
+	writeFileSync(join(fixture.workDir, 'notes.txt'), 'housekeeping');
+	const errors = t.mock.method(console, 'error', () => {});
+
+	await new GitSyncAdapter({}).push(fixture.workDir, 'housekeeping: automated cleanup');
+
+	assert.equal(sh('git show --name-only --format= HEAD', fixture.workDir), 'notes.txt');
+	assert.equal(sh('git rev-parse HEAD:sub', fixture.workDir), pinned, 'the commit rewound the submodule pin');
+	assert.equal(sh('git rev-parse HEAD', sub), stale, 'push() touched the submodule checkout');
+	assert.match(
+		errors.mock.calls.map((call) => call.arguments.join(' ')).join('\n'),
+		new RegExp(`sub: HEAD records ${pinned.slice(0, 9)}, checked out is ${stale.slice(0, 9)} — behind`)
+	);
+});
