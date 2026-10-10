@@ -78,22 +78,26 @@ export class GitSyncAdapter {
 	}
 
 	async push(workDir, label) {
-		let changed;
+		// The pin guard reads `.gitmodules` and submodule paths relative to its cwd,
+		// so it runs from the top level: from a subdirectory (`process.cwd()` is
+		// run.mjs's fallback) it found no submodules and let the rewind through.
+		let root, changed;
 		try {
-			changed = changedPaths(workDir);
+			root = runGit(workDir, ['rev-parse', '--show-toplevel']).trim();
+			changed = changedPaths(root);
 		} catch (err) {
-			console.error(`[sync/git] status failed: ${err.message}`);
+			console.error(`[sync/git] status failed: ${this._errText(err)}`);
 			return;
 		}
 		if (changed.length === 0) return;
 
 		try {
-			const refused = refusedPinMoves(workDir, changed);
+			const refused = refusedPinMoves(root, changed);
 			printRefusedPinNotice(refused, label);
 			if (changed.every((path) => refused.some((pin) => pin.path === path))) return;
 
-			stageAllButRefusedPins(workDir, refused);
-			runGit(workDir, ['commit', '-m', label]);
+			stageAllButRefusedPins(root, refused);
+			runGit(root, ['commit', '-m', label]);
 			console.log('  Committed.');
 		} catch (err) {
 			console.error(`[sync/git] commit failed: ${this._errText(err)}`);

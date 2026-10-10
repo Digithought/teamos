@@ -199,9 +199,9 @@ The cycle prompt builder tells the agent it has messaging tools available and pr
 
 ### Git adapter (`git.mjs`)
 
-Wraps the current behavior:
-- `pull()` — no-op (local repo is always current)
-- `push()` — `git add -A && git commit -m "{label}"`, optionally `git push`
+The sync semantics live in the module header of `scripts/lib/sync/git.mjs`; in short:
+- `pull()` — fetch, then fast-forward or rebase onto `origin/<branch>`, then `git submodule update`
+- `push()` — stage everything except a submodule pin that would move backwards or sideways (that one is left out with a warning), commit with `{label}`, optionally `git push`
 - `init()` — no-op (assumes repo exists)
 
 ### S3 adapter (`s3.mjs`)
