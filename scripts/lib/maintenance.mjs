@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runAgent } from './agents/index.mjs';
+import { summarizeLog } from './logs.mjs';
 import { buildLogPath, buildToolsPromptSection, formatTimestamp, readTextOrEmpty, slugify } from './util.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -124,9 +125,7 @@ export async function scanRecentLogs(logsDir, days = 7) {
 		if (Number.isNaN(ts.getTime()) || ts.getTime() < cutoff) continue;
 
 		const content = await readTextOrEmpty(join(logsDir, file));
-		const tail = content.slice(-600);
-		const costMatch = tail.match(/cost \$([0-9.]+)/);
-		const durMatch = tail.match(/\| ([0-9.]+)s/);
+		const { costUsd, durationSec } = summarizeLog(content);
 		const rateLimited = content.includes('"status":"rejected"');
 
 		entries.push({
@@ -134,8 +133,8 @@ export async function scanRecentLogs(logsDir, days = 7) {
 			member,
 			priority,
 			timestamp: ts.toISOString(),
-			cost: costMatch ? Number.parseFloat(costMatch[1]) : 0,
-			durationSec: durMatch ? Number.parseFloat(durMatch[1]) : 0,
+			cost: costUsd ?? 0,
+			durationSec: durationSec ?? 0,
 			rateLimited,
 			sizeKB: Math.round(content.length / 1024),
 		});
