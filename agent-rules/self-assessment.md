@@ -6,6 +6,16 @@ The runner has already queued next week's self-assessment automatically — you 
 
 Save the assessment to `team/members/<your name>/archives/assessments/YYYY-MM-DD.md` (create the directory if needed).
 
+## State budget check — mechanical, do this first
+
+Run `wc -l -c team/members/<your name>/state.md` and compare against the 16 KB budget (`teamos/agent-rules/cycle.md` § Guidelines). Do this every week regardless of how the file looked last time — size creeps back up between assessments even after a clean rollup.
+
+If it's over budget:
+
+1. Archive the current file verbatim to `team/members/<your name>/archives/state-history/<YYYY-MM-DD>-pre-rollup.md`.
+2. Write a new `state.md` under 16 KB holding only the current picture — recent work, open threads (with message ids), what you're waiting on, and a pointer to your doc index. Sort everything else rather than dropping it: reusable knowledge (procedures, past decisions and their reasons, recurring gotchas) goes into `team/docs/<topic>/` — create or extend a doc there, keep its folder's `index.md` current, and make sure the top-level `team/docs/index.md` lists the folder; finished narrative nothing needs again stays in the archive from step 1.
+3. Do this before the ratings below. An assessment that finds `state.md` over budget and doesn't fix it in the same pass cannot score "State, Tasks & Schedule Hygiene" above 2 — the fold is the point of this assessment existing, not an optional action item for "next week."
+
 ## Assessment Format
 
 Use the template below. Rate each area 1-5 (1 = poor, 5 = excellent) and provide a brief justification with specific examples. Be candid — the point is continuous improvement, not self-congratulation.
@@ -26,7 +36,7 @@ Am I making good use of each cycle? Am I doing right-sized units of work — not
 Am I building reusable tools (scripts, libraries) where appropriate? Am I maintaining useful documentation in team/docs/ and team/data/? Am I referencing and improving existing tools rather than reinventing?
 
 ## State, Tasks & Schedule Hygiene (1-5)
-- **State**: Is my state.md concise, current, and useful — or bloated and stale?  Don't overly condense your state either or you'll "forget" things - if something doesn't need to be remembered every cycle, can you put it elsewhere and reference it?
+- **State**: Start from the State budget check above — is `state.md` under 16 KB, and did anything moved out of it actually land in a `team/docs/<topic>/` doc (with its folder's `index.md` updated) rather than just get deleted? Beyond size: is it current and useful, or stale? Don't overly condense either — if something doesn't need to be remembered every cycle, the test is whether it's findable from the doc index, not whether it still fits in state.md.
 - **Tasks**: Are my todos well-prioritized, correctly labeled, and kept clean? Am I using `update_todo` / `complete_todo` to keep the list actionable, not stale?
 - **Schedule**: Am I using schedule events effectively for deferred work instead of leaving unactionable items at high priority?
 
