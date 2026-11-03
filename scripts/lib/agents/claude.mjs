@@ -82,7 +82,10 @@ export function formatClaudeJsonLine(line) {
  * concurrent cycle; the CLI's own file tools already catch that (Edit needs a
  * prior Read and fails on a changed `old_string`, Write refuses a file it has
  * not read), so the restriction bought nothing the tools did not already give.
- * See `teamos/docs/chat.md`.
+ * See `teamos/docs/chat.md`. The one exception applies to every spawn alike:
+ * `ScheduleWakeup` is denied because it only works inside a `/loop` session,
+ * which no TeamOS spawn is, and members kept reaching for it instead of
+ * `add_event`/`update_event`.
  *
  * @param {string} instructionFile - Path to the appended system prompt
  * @param {string} _prompt - Full prompt text (unused; the CLI reads the file)
@@ -97,14 +100,17 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd, task, resum
 	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
 	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
 	// across CLI versions — a cycle without it silently loses teamos-tools and
-	// any other project server. `--mcp-config` is variadic, so it must precede
-	// another flag rather than the trailing prompt string.
+	// any other project server. `--mcp-config` and `--disallowed-tools` are
+	// variadic, so each must precede another flag rather than the trailing
+	// prompt string.
 	const mcpConfig = cwd ? join(cwd, '.mcp.json') : null;
 	return {
 		cmd: 'claude',
 		args: [
 			'-p',
 			'--dangerously-skip-permissions',
+			'--disallowed-tools',
+			'ScheduleWakeup',
 			'--verbose',
 			// Sessions persist so the runner can resume one; Claude Code prunes them after
 			// cleanupPeriodDays (30 by default).

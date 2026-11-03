@@ -76,10 +76,12 @@ test('runAgent streams events, honours the env override, and cleans up the promp
 		assert.equal(events[0].content, 'hi there');
 
 		const argv = JSON.parse(await readFile(join(dir, 'argv.json'), 'utf-8'));
-		// Every spawn gets the project's MCP servers and every built-in tool.
+		// Every spawn gets the project's MCP servers and the same built-in tools.
 		// Chat used to strip both; the file tools' own read-before-write checks
-		// make that unnecessary — see teamos/docs/chat.md.
-		assert.ok(!argv.includes('--disallowed-tools'), 'no tool is denied to a chat spawn');
+		// make that unnecessary — see teamos/docs/chat.md. The one tool denied,
+		// to every spawn alike, is ScheduleWakeup: it only works under `/loop`,
+		// which no spawn is.
+		assert.equal(argv[argv.indexOf('--disallowed-tools') + 1], 'ScheduleWakeup');
 		assert.ok(argv.includes('--mcp-config'), "the project's .mcp.json is loaded explicitly");
 		assert.equal(argv[argv.indexOf('--mcp-config') + 1], join(dir, '.mcp.json'));
 		assert.equal(argv[argv.length - 1], 'say hi');
