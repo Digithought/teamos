@@ -22,6 +22,11 @@ async function withChat(stubScript, fn) {
 		'utf-8',
 	);
 	await writeFile(join(teamDir, 'members', 'ada', 'profile.md'), '# ada', 'utf-8');
+	// An mtime carries sub-millisecond precision and Date.now() is floored, so a
+	// file written in the same millisecond tick as a chat opening reads as written
+	// after it. Age the fixture's member file so it is genuinely "before".
+	const earlier = Date.now() / 1000 - 60;
+	await utimes(join(teamDir, 'members', 'ada', 'profile.md'), earlier, earlier);
 
 	// PATH is the stub's bin dir alone when there is no stub, so a test that
 	// means "the agent binary is missing" can't find the real `claude`.
@@ -479,10 +484,6 @@ test('changedFilesSince reports the member files a cycle rewrote', async () => {
 	await withChat(null, async ({ teamDir }) => {
 		const memberDir = join(teamDir, 'members', 'ada');
 		const cutoff = Date.now();
-		// profile.md was written a moment ago, within the same millisecond tick
-		// as the cutoff; age it so "before" really is before.
-		const earlier = cutoff / 1000 - 60;
-		await utimes(join(memberDir, 'profile.md'), earlier, earlier);
 		assert.deepEqual(await changedFilesSince(teamDir, 'ada', cutoff), [], 'profile.md predates the cutoff');
 
 		// mtime is the signal, so move it rather than racing the clock.
@@ -583,11 +584,6 @@ test("the next turn's prompt names what changed since the chat opened", async ()
 		process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'rechecked' }) + '\\n');
 	`;
 	await withChat(stub, async ({ chat, teamDir, dir }) => {
-		// The fixture's files were written in this same millisecond; age them so
-		// the baseline is genuinely "before the chat opened".
-		const memberDir = join(teamDir, 'members', 'ada');
-		const earlier = Date.now() / 1000 - 60;
-		await utimes(join(memberDir, 'profile.md'), earlier, earlier);
 		const session = await chat.create({ member: 'ada', human: 'nate' });
 
 		await chat.turn(session.id, 'first', {});
