@@ -716,7 +716,7 @@ Agents always see a local filesystem. The sync adapter handles durability *aroun
 
 ## Web Dashboard
 
-TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos and agent logs, and sending messages.
+TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos and agent logs, sending messages, and posting, editing and archiving memos.
 
 ### Running the Dashboard
 

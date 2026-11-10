@@ -688,30 +688,58 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return { name: 'tess', url: `http://localhost:${siblingPort}` };
 	}
 
-	async function createMemo(memo: {
+	interface MemoInput {
 		title: string;
 		content: string;
 		importance: string;
 		authorName: string;
 		projectCodes?: string[];
 		expiresAt?: string;
-	}) {
-		const memosPath = join(teamDir, 'memos.json');
-		const data = await readJson(memosPath, { items: [] });
-		const items: any[] = data.items ?? [];
-		const newMemo = {
+	}
+
+	/** The stored shape of a memo; optional fields are omitted rather than written empty. */
+	function memoRecord(memo: MemoInput, postedAt: string) {
+		return {
 			title: memo.title,
 			content: memo.content,
-			postedAt: new Date().toISOString(),
+			postedAt,
 			...(memo.expiresAt ? { expiresAt: memo.expiresAt } : {}),
 			importance: memo.importance,
 			authorName: memo.authorName,
 			...(memo.projectCodes?.length ? { projectCodes: memo.projectCodes } : {}),
 		};
+	}
+
+	async function createMemo(memo: MemoInput) {
+		const memosPath = join(teamDir, 'memos.json');
+		const data = await readJson(memosPath, { items: [] });
+		const items: any[] = data.items ?? [];
+		const newMemo = memoRecord(memo, new Date().toISOString());
 		items.push(newMemo);
 		data.items = items;
 		await writeFile(memosPath, JSON.stringify(data, null, '\t'), 'utf-8');
 		return newMemo;
+	}
+
+	/**
+	 * Replace the editable fields of the memo at `index`, keeping its `postedAt`.
+	 * Memos are addressed by position, so the caller also sends the `postedAt` it
+	 * saw: if the clerk or an agent reordered or removed memos since the page
+	 * loaded, the position no longer names the same memo and the edit is refused
+	 * (null) rather than landing on a different one.
+	 */
+	async function updateMemo(index: number, memo: MemoInput & { postedAt: string }) {
+		const memosPath = join(teamDir, 'memos.json');
+		const data = await readJson(memosPath, { items: [] });
+		const items: any[] = data.items ?? [];
+		if (items[index]?.postedAt !== memo.postedAt) return null;
+		const updated = { ...items[index], ...memoRecord(memo, memo.postedAt) };
+		if (!memo.expiresAt) delete updated.expiresAt;
+		if (!memo.projectCodes?.length) delete updated.projectCodes;
+		items[index] = updated;
+		data.items = items;
+		await writeFile(memosPath, JSON.stringify(data, null, '\t'), 'utf-8');
+		return updated;
 	}
 
 	async function archiveMemo(index: number) {
@@ -896,6 +924,14 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					if (path === '/api/memos' && method === 'POST') {
 						const memo = JSON.parse(await readBody(req));
 						return json(res, await createMemo(memo), 201);
+					}
+
+					const memoMatch = path.match(/^\/api\/memos\/(\d+)$/);
+					if (memoMatch && method === 'PUT') {
+						const body = JSON.parse(await readBody(req));
+						const updated = await updateMemo(Number.parseInt(memoMatch[1], 10), body);
+						if (!updated) return json(res, { error: 'Memos changed since this page loaded — reload and edit again' }, 409);
+						return json(res, updated);
 					}
 
 					if (path.match(/^\/api\/memos\/(\d+)\/archive$/) && method === 'POST') {

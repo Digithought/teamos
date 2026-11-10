@@ -26,7 +26,10 @@ let newMemberRoles = $state('');
 let newMemberDescription = $state('');
 
 let showNewMemo = $state(false);
+/** Index of the memo whose form is open in place of it; null when none is being edited. */
+let editingMemo = $state<number | null>(null);
 let savingMemo = $state(false);
+let memoError = $state('');
 let memoTitle = $state('');
 let memoContent = $state('');
 let memoImportance = $state('medium');
@@ -83,6 +86,7 @@ async function togglePause() {
 async function archiveMemo(index: number) {
 	await api.archiveMemo(index);
 	memos = memos.filter((_, i) => i !== index);
+	if (editingMemo !== null) closeMemoForm();
 }
 
 function openNewMember() {
@@ -130,7 +134,28 @@ function openNewMemo() {
 	const oneWeek = new Date();
 	oneWeek.setDate(oneWeek.getDate() + 7);
 	memoExpiresAt = oneWeek.toISOString().slice(0, 10);
+	memoError = '';
+	editingMemo = null;
 	showNewMemo = true;
+}
+
+function openEditMemo(index: number) {
+	const memo = memos[index];
+	memoTitle = memo.title;
+	memoContent = memo.content;
+	memoImportance = memo.importance;
+	memoAuthor = memo.authorName ?? '';
+	memoProjectCodes = [...(memo.projectCodes ?? [])];
+	memoExpiresAt = memo.expiresAt?.slice(0, 10) ?? '';
+	memoError = '';
+	showNewMemo = false;
+	editingMemo = index;
+}
+
+function closeMemoForm() {
+	showNewMemo = false;
+	editingMemo = null;
+	memoError = '';
 }
 
 function toggleProjectCode(code: string) {
@@ -144,17 +169,29 @@ function toggleProjectCode(code: string) {
 async function saveMemo() {
 	if (!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim()) return;
 	savingMemo = true;
-	const created = await api.createMemo({
+	memoError = '';
+	const input = {
 		title: memoTitle.trim(),
 		content: memoContent.trim(),
 		importance: memoImportance,
 		authorName: memoAuthor.trim(),
 		projectCodes: memoProjectCodes.length ? memoProjectCodes : undefined,
 		expiresAt: memoExpiresAt || undefined,
-	});
-	memos = [...memos, created];
-	showNewMemo = false;
-	savingMemo = false;
+	};
+	try {
+		if (editingMemo === null) {
+			memos = [...memos, await api.createMemo(input)];
+		} else {
+			const index = editingMemo;
+			const updated = await api.updateMemo(index, { ...input, postedAt: memos[index].postedAt });
+			memos = memos.map((m, i) => (i === index ? updated : m));
+		}
+		closeMemoForm();
+	} catch (err) {
+		memoError = err instanceof Error ? err.message : 'Failed to save memo';
+	} finally {
+		savingMemo = false;
+	}
 }
 
 const hasTickets = $derived(
@@ -254,7 +291,7 @@ const hasTickets = $derived(
 			{/if}
 		</div>
 
-		{#if showNewMemo}
+		{#snippet memoForm()}
 			<div class="memo-form">
 				<div class="form-row">
 					<div class="form-group" style="flex:2">
@@ -300,20 +337,30 @@ const hasTickets = $derived(
 						</div>
 					</div>
 				{/if}
+				{#if memoError}
+					<div class="form-error">{memoError}</div>
+				{/if}
 				<div class="form-actions">
 					<button
 						class="btn btn-primary"
 						onclick={saveMemo}
 						disabled={!memoTitle.trim() || !memoContent.trim() || !memoAuthor.trim() || savingMemo}
-					>{savingMemo ? 'Saving...' : 'Post Memo'}</button>
-					<button class="btn btn-ghost" onclick={() => showNewMemo = false}>Cancel</button>
+					>{savingMemo ? 'Saving...' : editingMemo === null ? 'Post Memo' : 'Save Changes'}</button>
+					<button class="btn btn-ghost" onclick={closeMemoForm}>Cancel</button>
 				</div>
 			</div>
+		{/snippet}
+
+		{#if showNewMemo}
+			{@render memoForm()}
 		{/if}
 
 		{#if memos.length > 0}
 			<div class="memos">
 				{#each memos as memo, i}
+					{#if editingMemo === i}
+						{@render memoForm()}
+					{:else}
 					<div class="memo" class:critical={memo.importance === 'critical'}>
 						<div class="memo-header">
 							<span class="memo-title">{memo.title}</span>
@@ -321,6 +368,7 @@ const hasTickets = $derived(
 								<span class="memo-meta">
 									{memo.authorName} &middot; {new Date(memo.postedAt).toLocaleDateString()}
 								</span>
+								<button class="memo-archive" onclick={() => openEditMemo(i)} title="Edit memo">Edit</button>
 								<button class="memo-archive" onclick={() => archiveMemo(i)} title="Archive memo">Archive</button>
 							</div>
 						</div>
@@ -333,6 +381,7 @@ const hasTickets = $derived(
 							</div>
 						{/if}
 					</div>
+					{/if}
 				{/each}
 			</div>
 		{:else if !showNewMemo}

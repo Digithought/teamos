@@ -17,6 +17,8 @@ import type {
 } from './types.js';
 import type { LogChunk, LogEntry } from './logs.js';
 
+type MemoInput = Omit<Memo, 'postedAt'>;
+
 /** A failed request, with its status and, for a chat that has ended, what happened to it. */
 export class ApiError extends Error {
 	status: number;
@@ -68,6 +70,16 @@ async function put(url: string, body: unknown): Promise<void> {
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) throw await failure(res);
+}
+
+async function putJson<T>(url: string, body: unknown): Promise<T> {
+	const res = await fetch(url, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) throw await failure(res);
+	return res.json();
 }
 
 async function del(url: string): Promise<void> {
@@ -222,14 +234,10 @@ export const api = {
 	removeEvent: (name: string, id: string) =>
 		del(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`),
 	memos: () => get<{ items: Memo[] }>('/api/memos'),
-	createMemo: (memo: {
-		title: string;
-		content: string;
-		importance: string;
-		authorName: string;
-		projectCodes?: string[];
-		expiresAt?: string;
-	}) => post<Memo>('/api/memos', memo),
+	createMemo: (memo: MemoInput) => post<Memo>('/api/memos', memo),
+	/** `postedAt` identifies the memo the index was read for; a mismatch is a 409. */
+	updateMemo: (index: number, memo: MemoInput & { postedAt: string }) =>
+		putJson<Memo>(`/api/memos/${index}`, memo),
 	archiveMemo: (index: number) => post<{ archivedAs: string }>(`/api/memos/${index}/archive`, {}),
 	projects: () => get<{ projects: Project[] }>('/api/projects'),
 	createProject: (input: { code: string; name: string; description?: string; status?: string }) =>
