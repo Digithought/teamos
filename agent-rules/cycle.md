@@ -35,21 +35,13 @@ There are schemas and templates for each of the json files in `teamos/templates/
 
 TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer forming a thread.  Don't respond to every message, only respond if a response from you is clearly expected or in a group convo, only if there is something only you can contribute. 
 
-Use the MCP tools below; they are the only supported way to send, read, or manage messages.
-
-**Tools:**
-- `send_message({ to, body, subject?, cc?, replyTo?, projectCode? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
-- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
-- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`.
-- `list_inbox()` / `list_sent({ to? })` / `list_archives()` — Summaries of your mailboxes (newest first). Each summary has `hasParent` (thread membership), `supersedes` (predecessors this message replaces), and `supersededBy` (a later message that replaces this one) so you can spot consolidation context without fetching the full body. `list_sent` accepts an optional `to: [<member>, ...]` filter.
-- `archive_message(id)` — Move a message from your inbox to your archives after handling it.
-- `unarchive_message(id)` — Put an archived message back in your inbox if you archived prematurely.
-
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 
 **Cc ranks below To.** Both land in your inbox, but mail on which you are only Cc'd counts as `today` work: it alone never wakes you for a pressing cycle, and the prompt lists it after your To-addressed mail. Treat it as awareness — act only where you are the one who should.
 
 **Keep unfinished inbox work visible.** If you can't handle a message this cycle, leave it in your inbox — don't archive until you're done. The runner will cycle you again as long as your inbox has anything unhandled in it.
+
+**Write for a busy generalist.** The humans you write to juggle many things and hold none of your context. Start from the general and work down: what this is about (their request or the problem, in plain words), what you found or did, then what you need from them, if anything. Detail goes last, or in a doc. Subjects too. Not "Scoped the narrow half of the labeled-pin ask: the site anchor has no on-screen representation…" but "You asked for a way to see the site's anchor. There is none today from any path, so I filed a ticket (`…`) to add one."
 
 **Cost of a message is `length × recipients`.** Short messages; save details for a doc you can ref.  Tighten further as the audience grows; on broad threads, brevity or silence. Only reply if you add something unique — no "I agree..."/restatements. Trim CC to those who actually need to act or decide.  Err on the side of NOT including CC parties. 
 
