@@ -39,6 +39,7 @@ teamos/
 │       ├── cycle.mjs            # Cycle/pass execution, prompt building
 │       ├── maintenance.mjs      # Housekeeping, clerk invocation, efficiency
 │       ├── logs.mjs             # Read-only log listing/reading for the dashboard's Logs tab
+│       ├── memos.mjs            # Memo rendering + per-member seen marks
 │       ├── agents/
 │       │   ├── index.mjs        # Registry + common invocation (spawn, timeout, logging)
 │       │   ├── claude.mjs       # Claude CLI adapter + stream parser
@@ -91,7 +92,7 @@ team/
 ├── org.md               # Organization description
 ├── members.json         # Member manifest
 ├── projects.json        # Goals and projects
-├── memos.json           # Timely information for all members
+├── memos.json           # Timely information for all members (seen marks in .logs/memos/)
 ├── messages/            # Master store — one file per message
 │   └── <id>.md
 ├── members/
@@ -378,11 +379,12 @@ A member is given a cycle when any of these are true:
 - They have **schedule events** that are due
 - They have **commit triggers** matching new host-repo commits at or above the current priority level (checked via the triggers adapter's `hasPendingMatches` contract — see `teamos/docs/triggers.md`)
 - They have **watches** whose probe result changed since they were last woken, at or above the current priority level (checked via the watches adapter's `hasPendingObservations` contract — see `teamos/docs/watches.md`)
+- There is a **memo they have not seen** at `high` (`today`) or `critical` (`pressing`) importance — see `teamos/docs/memos.md`
 
 ## Cycle Behavior
 
 During a cycle, the agent:
-1. Reviews organization context (org, memos, projects)
+1. Reviews organization context (org, memos, projects). Memos it has not seen are marked `[NEW]` / `[REVISED]`; the rest are listed by title. The member's seen mark advances when the cycle succeeds (`teamos/docs/memos.md`).
 2. Processes inbox messages — reads them via MCP and calls `archive_message` for each one it has fully handled. Anything left in the inbox carries to the next cycle.
 3. Performs one unit of work at the current priority
 4. Updates state.md with what was accomplished
@@ -433,7 +435,7 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 1. **Cycle rules** — `teamos/agent-rules/cycle.md` (how to execute a cycle)
 2. **System architecture** — `teamos/README.md` (this file)
 3. **Organization** — `team/org.md`
-4. **Memos** — `team/memos.json` (timely info for all members)
+4. **Memos** — `team/memos.json` (timely info for all members; your seen mark is `team/.logs/memos/<you>.json` — interactive sessions read it but don't advance it)
 5. **Projects** — `team/projects.json`
 6. **Team roster** — `team/members.json`
 7. **Your profile** — `team/members/<you>/profile.md`

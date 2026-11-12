@@ -727,13 +727,24 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	 * saw: if the clerk or an agent reordered or removed memos since the page
 	 * loaded, the position no longer names the same memo and the edit is refused
 	 * (null) rather than landing on a different one.
+	 *
+	 * A change to what the memo says (title, content, importance) stamps
+	 * `revisedAt`, which re-surfaces it to members as REVISED in their next cycle
+	 * (teamos/docs/memos.md); changing only its expiry or projects does not.
 	 */
 	async function updateMemo(index: number, memo: MemoInput & { postedAt: string }) {
 		const memosPath = join(teamDir, 'memos.json');
 		const data = await readJson(memosPath, { items: [] });
 		const items: any[] = data.items ?? [];
-		if (items[index]?.postedAt !== memo.postedAt) return null;
-		const updated = { ...items[index], ...memoRecord(memo, memo.postedAt) };
+		const current = items[index];
+		if (current?.postedAt !== memo.postedAt) return null;
+		const reworded =
+			current.title !== memo.title || current.content !== memo.content || current.importance !== memo.importance;
+		const updated = {
+			...current,
+			...memoRecord(memo, memo.postedAt),
+			...(reworded ? { revisedAt: new Date().toISOString() } : {}),
+		};
 		if (!memo.expiresAt) delete updated.expiresAt;
 		if (!memo.projectCodes?.length) delete updated.projectCodes;
 		items[index] = updated;

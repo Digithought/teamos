@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { hasUnseenMemos } from './memos.mjs';
 import { PRIORITY_ORDER } from './scheduler.mjs';
 import { pathExists } from './util.mjs';
 
@@ -87,6 +88,10 @@ export async function memberHasWork(memberName, priority, teamDir, adapters = {}
 	if (adapters.watches) {
 		if (await adapters.watches.hasPendingObservations(memberName, priority)) return true;
 	}
+
+	// Check memos — an unseen high (today) or critical (pressing) memo wakes the
+	// member; lower importances wait for its next cycle. See memos.mjs.
+	if (await hasUnseenMemos(teamDir, memberName, priority)) return true;
 
 	return false;
 }

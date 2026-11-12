@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildInboxSection, buildScheduleSections, buildTodoSection } from '../cycle.mjs';
+import { buildMemosSection } from '../memos.mjs';
 import { buildToolsPromptSection, formatTimestamp, readTextOrEmpty } from '../util.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,11 +35,12 @@ export async function buildChatPrompt(member, teamDir, adapters = {}, opts = {})
 	const memberDir = join(teamDir, 'members', member.name);
 	const rulesFile = join(TEAMOS_ROOT, 'agent-rules', 'chat.md');
 
-	const [rules, orgDoc, memosDoc, projectsDoc, membersDoc, profile, state, todosText, scheduleSections] =
+	// Memos are marked against the same per-member mark a cycle uses, but a chat never advances it.
+	const [rules, orgDoc, memosSection, projectsDoc, membersDoc, profile, state, todosText, scheduleSections] =
 		await Promise.all([
 			readTextOrEmpty(rulesFile),
 			readTextOrEmpty(join(teamDir, 'org.md')),
-			readTextOrEmpty(join(teamDir, 'memos.json')),
+			buildMemosSection(teamDir, member.name),
 			readTextOrEmpty(join(teamDir, 'projects.json')),
 			readTextOrEmpty(join(teamDir, 'members.json')),
 			readTextOrEmpty(join(memberDir, 'profile.md')),
@@ -60,7 +62,7 @@ export async function buildChatPrompt(member, teamDir, adapters = {}, opts = {})
 		'',
 		'## Memos',
 		'',
-		memosDoc,
+		memosSection.text,
 		'',
 		'## Projects',
 		'',

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentSupportsResume, runAgent } from './agents/index.mjs';
 import { buildCleanupPrompt, leftoversSince, readClaims, snapshotDirty, withoutClaimed } from './leftovers.mjs';
+import { acknowledgeMemos, buildMemosSection } from './memos.mjs';
 import { PRIORITY_ORDER, normalizeVruntimes, pickNextPriority, rotateAfter } from './scheduler.mjs';
 import {
 	buildLogPath,
@@ -216,7 +217,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 	const [
 		rules,
 		orgDoc,
-		memosDoc,
+		memosSection,
 		projectsDoc,
 		membersDoc,
 		profile,
@@ -228,7 +229,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 	] = await Promise.all([
 		readTextOrEmpty(rulesFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
-		readTextOrEmpty(join(teamDir, 'memos.json')),
+		buildMemosSection(teamDir, member.name),
 		readTextOrEmpty(join(teamDir, 'projects.json')),
 		readTextOrEmpty(join(teamDir, 'members.json')),
 		readTextOrEmpty(join(memberDir, 'profile.md')),
@@ -254,7 +255,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		'',
 		'## Memos',
 		'',
-		memosDoc,
+		memosSection.text,
 		'',
 		'## Projects',
 		'',
@@ -326,7 +327,10 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		`Execute a cycle for **${member.name}** at priority level **${priority}**.`,
 	);
 
-	return { prompt: parts.join('\n'), delivered: { watches: watchesSection.delivered } };
+	return {
+		prompt: parts.join('\n'),
+		delivered: { watches: watchesSection.delivered, memosThrough: memosSection.through },
+	};
 }
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
@@ -488,6 +492,9 @@ export async function runCycle({
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}
+			await acknowledgeMemos(teamDir, member.name, delivered.memosThrough).catch((err) => {
+				console.error(`[runner] acknowledgeMemos failed for ${member.name}: ${err.message}`);
+			});
 		}
 
 		console.log(`\n  Complete: ${member.name}\n`);
