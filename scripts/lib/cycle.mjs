@@ -61,7 +61,7 @@ export function stateBudgetWarning(sizeBytes) {
 	if (sizeBytes <= STATE_BUDGET_BYTES) return null;
 	const kb = (sizeBytes / 1024).toFixed(1);
 	const budgetKb = STATE_BUDGET_BYTES / 1024;
-	return `⚠ **state.md is ${kb} KB, over the ${budgetKb} KB budget** (agent-rules/cycle.md § Guidelines). Roll it up this cycle: archive the current file verbatim to \`archives/state-history/<YYYY-MM-DD>-pre-rollup.md\`, then rewrite \`state.md\` under budget — move reusable detail into \`team/docs/<topic>/\` (updating that folder's \`index.md\` and the top-level \`team/docs/index.md\`) rather than dropping it, and only finished narrative into the archive.`;
+	return `⚠ **state.md is ${kb} KB, over the ${budgetKb} KB budget** (agent-rules/cycle.md § Guidelines). Roll it up this cycle: archive the current file verbatim to \`archives/state-history/<YYYY-MM-DD>-pre-rollup.md\`, then rewrite \`state.md\` under budget — move permanent directives and lessons to your profile's \`## Standing notes\` (agent-rules/self-assessment.md § 2), reusable detail into \`team/docs/<topic>/\` (updating that folder's \`index.md\` and the top-level \`team/docs/index.md\`) rather than dropping it, and only finished narrative into the archive.`;
 }
 
 export async function buildInboxSection(member, messagingAdapter) {

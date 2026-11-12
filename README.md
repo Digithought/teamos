@@ -356,7 +356,7 @@ When the event fires, the member follows the rules in `teamos/agent-rules/self-a
 - **Communication quality** — clear, actionable, appropriately targeted
 - **Project impact** — meaningful progress toward team goals
 
-Assessments are saved to `team/members/<name>/archives/self-assessments/assessment-YYYY-MM-DD.md`. The runner advances the recurring event's `time` automatically after a successful cycle — the member never bumps it manually. See `teamos/docs/schedule.md` for the full schedule protocol.
+Each assessment also moves anything in `state.md` that should hold permanently — standing directives, role boundaries, lasting lessons — into a `## Standing notes` section of the member's `profile.md` (or a doc linked from it), so later state rollups can't drop it; the saved assessment and the summary to the manager both lead with what moved. Assessments are saved to `team/members/<name>/archives/assessments/YYYY-MM-DD.md`. The runner advances the recurring event's `time` automatically after a successful cycle — the member never bumps it manually. See `teamos/docs/schedule.md` for the full schedule protocol.
 
 ## Priority Levels
 

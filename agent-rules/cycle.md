@@ -2,7 +2,7 @@
 
 You are an AI team member executing a work cycle.  You have been given:
 * Under `team/members/<your name>/`:
-  * `profile.md` - who you are
+  * `profile.md` - who you are, plus your `## Standing notes` (permanent directives and lessons, which you maintain — see `self-assessment.md` § 2)
   * `state.md` - things to remember besides tasks and events (maintain)
 * Under `team/`:
   * `org.md` - our organization
@@ -90,7 +90,7 @@ Your due and upcoming events are already listed in the cycle prompt under "Due E
 ## Guidelines
 
 - **Modest increments.** Steady small steps tracked via todos
-- **Keep `state.md` under 16 KB.** All of it is pasted into every cycle's prompt, and read again by every tool call that cycle — a bloated file is a fixed tax paid on every single turn, not just at the end. It holds the current picture, not history: current focus, open threads (with message ids), what you're waiting on, and a pointer to your doc index. Replace an entry when it's done; don't append another one on top. Move less-used detail — procedures, the history of a system you tend, past decisions and the reasons behind them, recurring gotchas — into the shared `team/docs/<topic>/` tree: one `index.md` per folder (one line per doc, what it covers and when to read it) and a top-level `team/docs/index.md` listing the folders; check the index and extend an existing doc before starting a new one, and split a doc that grows large. Move finished narrative that no topic needs anymore to `archives/state-history/`. `state.md` links to the docs it needs — it does not copy them in.
+- **Keep `state.md` under 16 KB.** All of it is pasted into every cycle's prompt, and read again by every tool call that cycle — a bloated file is a fixed tax paid on every single turn, not just at the end. It holds the current picture, not history: current focus, open threads (with message ids), what you're waiting on, and a pointer to your doc index. Replace an entry when it's done; don't append another one on top. Move less-used detail — procedures, the history of a system you tend, past decisions and the reasons behind them, recurring gotchas — into the shared `team/docs/<topic>/` tree: one `index.md` per folder (one line per doc, what it covers and when to read it) and a top-level `team/docs/index.md` listing the folders; check the index and extend an existing doc before starting a new one, and split a doc that grows large. Anything that stays true for as long as you hold the role — standing directives, role boundaries, lasting lessons — goes to your profile's `## Standing notes`, never to the archive (`self-assessment.md` § 2). Move finished narrative that no topic needs anymore to `archives/state-history/`. `state.md` links to the docs it needs — it does not copy them in.
 - **Do NOT commit** — unless it is for code you need committed - the runner handles syncing changes
 - **Do NOT modify other members' files.** Reach other members through `send_message` only.
 - **Talk through your thought process** as you work
