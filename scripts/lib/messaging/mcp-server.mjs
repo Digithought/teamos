@@ -746,7 +746,7 @@ async function handleMessage(message) {
 				const result = await handleToolCall(name, args || {});
 				sendResponse(id, result);
 			} catch (err) {
-				if (err.code) {
+				if (typeof err.code === 'number') {
 					sendError(id, err.code, err.message);
 				} else {
 					sendResponse(id, {
