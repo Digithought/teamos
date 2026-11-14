@@ -26,6 +26,12 @@ export interface ScheduleEvent {
 	};
 	/** Optional project tag for filtering/grouping */
 	projectCode?: string;
+	/**
+	 * Marks a system-injected event (e.g. the daily check-in) so the runner
+	 * recognizes it even after a rename or cadence change. Set only by the
+	 * runner at creation — not settable through `add_event`/`update_event`.
+	 */
+	systemKey?: string;
 }
 
 /** Root structure for schedule.json */

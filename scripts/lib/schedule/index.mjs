@@ -12,12 +12,12 @@
 /**
  * @typedef {Object} ScheduleAdapter
  * @property {(member: string) => Promise<ScheduleEvent[]>} listEvents
- * @property {(member: string, input: { title: string, time: string, description?: string, recurrence?: { frequency: string, interval: number, endDate?: string }, projectCode?: string }) => Promise<{ id: string }>} addEvent
+ * @property {(member: string, input: { title: string, time: string, description?: string, recurrence?: { frequency: string, interval: number, endDate?: string }, projectCode?: string, systemKey?: string }) => Promise<{ id: string }>} addEvent
  * @property {(member: string, id: string, patch: { title?: string, description?: string, time?: string, recurrence?: Object | null, projectCode?: string }) => Promise<void>} updateEvent
  * @property {(member: string, id: string) => Promise<void>} removeEvent
  * @property {(member: string, now: Date) => Promise<boolean>} hasDueEvents
  * @property {(member: string, cycleStartTime: Date) => Promise<void>} acknowledgeDue
- * @property {(member: string, title: string) => Promise<boolean>} hasEventWithTitle
+ * @property {(member: string, systemKey: string) => Promise<boolean>} hasEventWithSystemKey
  */
 
 import { FileScheduleAdapter } from './file.mjs';

@@ -186,6 +186,7 @@ export interface ScheduleEvent {
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
 	isDue?: boolean;
+	systemKey?: string;
 }
 
 export interface MemberDetail {

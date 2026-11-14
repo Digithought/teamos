@@ -31,7 +31,8 @@ team/
       "title": "Daily Check-in",
       "description": "Daily check-in following teamos/agent-rules/daily-checkin.md.",
       "time": "2026-04-15T09:00:00.000Z",
-      "recurrence": { "frequency": "daily", "interval": 1 }
+      "recurrence": { "frequency": "daily", "interval": 1 },
+      "systemKey": "daily-checkin"
     },
     {
       "id": "2026-04-10T14-22-17.903Z-7a1e",
@@ -54,6 +55,7 @@ Field reference:
 | `time` | yes | ISO-8601 timestamp of the **next occurrence**. The adapter keeps this up to date for recurring events. |
 | `recurrence` | no | Recurrence descriptor; absent means one-time |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `systemKey` | no | Identifies a system-injected event (e.g. `daily-checkin`); runner-owned, not settable through `add_event`/`update_event` |
 
 ### Recurrence descriptor
 
@@ -200,9 +202,11 @@ The runner ensures every active AI member has two recurring events:
 - **Daily Check-in** (09:00 UTC daily) — see `agent-rules/daily-checkin.md`
 - **Weekly Self-Assessment** (Fridays 18:00 UTC) — see `agent-rules/self-assessment.md`
 
-These are injected on startup via the adapter's `add_event` path (not by writing the file directly) so any backend picks them up transparently. The runner checks for existing events by title before injecting to avoid duplicates.
+These are injected on startup via the adapter's `add_event` path (not by writing the file directly) so any backend picks them up transparently. Each carries a `systemKey` (`daily-checkin` / `self-assessment`) set at creation; the runner checks for an existing event with that key before injecting, so a title- or cadence-only match is never required.
 
-Once injected, these events are indistinguishable from agent-created events — the adapter owns their recurrence advancement just like any other recurring event.
+`systemKey` is otherwise invisible to the normal event lifecycle: a member can rename the event, change its cadence, or rewrite its description via `update_event` — none of those touch `systemKey`, since the field is never in `update_event`'s patch, so the runner keeps recognizing the event as already present. A member is free to customize a system-injected event in place (as opposed to deleting it) without it coming back.
+
+Events created before `systemKey` existed carry none. The file adapter backfills one, on read, onto any event whose description still names the governing rule file (`agent-rules/daily-checkin.md` / `agent-rules/self-assessment.md`) — the one part of the boilerplate text a member customizing title or cadence has the least reason to touch. An event that no longer names the rule file anywhere is not recovered this way and is treated as a fresh, ordinary event.
 
 ## Future Adapters
 

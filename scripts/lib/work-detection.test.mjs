@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildInboxSection } from './cycle.mjs';
 import { FileMessagingAdapter } from './messaging/file.mjs';
-import { memberHasWork } from './work-detection.mjs';
+import { FileScheduleAdapter } from './schedule/file.mjs';
+import { ensureDailyCheckinEvents, memberHasWork } from './work-detection.mjs';
 
 async function withTeam(fn) {
 	const dir = await mkdtemp(join(tmpdir(), 'teamos-work-'));
@@ -33,6 +34,25 @@ test('a member in both To and Cc is treated as To', async () => {
 	await withTeam(async (dir, messaging) => {
 		await messaging.sendMessage({ from: 'alice', to: ['bob'], cc: ['bob'], subject: 'Both', body: 'x' });
 		assert.equal(await memberHasWork('bob', 'pressing', dir, { messaging }), true);
+	});
+});
+
+test('ensureDailyCheckinEvents does not re-inject after the member renames and re-cadences the event in place', async () => {
+	await withTeam(async (dir) => {
+		const schedule = new FileScheduleAdapter(dir);
+		const members = [{ name: 'alice' }];
+		await ensureDailyCheckinEvents(members, schedule);
+
+		const [event] = await schedule.listEvents('alice');
+		await schedule.updateEvent('alice', event.id, {
+			title: 'Weekly Check-in',
+			recurrence: { frequency: 'weekly', interval: 1 },
+		});
+
+		await ensureDailyCheckinEvents(members, schedule);
+
+		const events = await schedule.listEvents('alice');
+		assert.equal(events.length, 1, 'renaming the injected event must not cause a second one to be added');
 	});
 });
 

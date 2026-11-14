@@ -111,6 +111,11 @@ export async function getMembersWithWork(members, priority, teamDir, adapters = 
 const SELF_ASSESSMENT_TITLE = 'Weekly Self-Assessment';
 const DAILY_CHECKIN_TITLE = 'Daily Check-in';
 
+// Stable identity for these events, independent of title/cadence — see the
+// `systemKey` note in schedule/file.mjs for why title matching broke this.
+const SELF_ASSESSMENT_KEY = 'self-assessment';
+const DAILY_CHECKIN_KEY = 'daily-checkin';
+
 function nextFriday(from = new Date()) {
 	const d = new Date(from);
 	d.setUTCHours(18, 0, 0, 0);
@@ -130,7 +135,7 @@ function nextMorning(from = new Date()) {
 export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 	let added = 0;
 	for (const member of members) {
-		if (await scheduleAdapter.hasEventWithTitle(member.name, SELF_ASSESSMENT_TITLE)) continue;
+		if (await scheduleAdapter.hasEventWithSystemKey(member.name, SELF_ASSESSMENT_KEY)) continue;
 		// Skip the first occurrence so a freshly-added member doesn't immediately
 		// think it needs to self-assess on its first cycle.
 		const first = nextFriday(new Date());
@@ -140,6 +145,7 @@ export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 			description: 'Conduct a weekly self-assessment following the rules in teamos/agent-rules/self-assessment.md.',
 			time: first.toISOString(),
 			recurrence: { frequency: 'weekly', interval: 1 },
+			systemKey: SELF_ASSESSMENT_KEY,
 		});
 		added++;
 	}
@@ -151,7 +157,7 @@ export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 export async function ensureDailyCheckinEvents(members, scheduleAdapter) {
 	let added = 0;
 	for (const member of members) {
-		if (await scheduleAdapter.hasEventWithTitle(member.name, DAILY_CHECKIN_TITLE)) continue;
+		if (await scheduleAdapter.hasEventWithSystemKey(member.name, DAILY_CHECKIN_KEY)) continue;
 		// Skip the first occurrence so a freshly-added member doesn't immediately
 		// think it needs to check in on its first cycle.
 		const first = nextMorning(new Date());
@@ -161,6 +167,7 @@ export async function ensureDailyCheckinEvents(members, scheduleAdapter) {
 			description: 'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
 			time: first.toISOString(),
 			recurrence: { frequency: 'daily', interval: 1 },
+			systemKey: DAILY_CHECKIN_KEY,
 		});
 		added++;
 	}
