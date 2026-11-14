@@ -20,12 +20,14 @@
  *
  * Every tool accepts an optional `member` argument identifying the team member
  * whose mailbox / todos / schedule / triggers / watches the call operates against. When
- * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. This makes the same
- * server process usable by any member — the runner sets the env var per-cycle
- * so existing agent behavior is unchanged, while interactive sessions can act
- * as any member by passing `member` explicitly.
+ * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. The runner sets the
+ * env var per cycle (and the dashboard per chat); when it is set, `member` may
+ * only name that member, except that the clerk may work on other members'
+ * lists. Interactive sessions without it act as any member by passing
+ * `member`. No call may send as a human member. See checkIdentity().
  */
 
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig } from '../config.mjs';
@@ -55,6 +57,57 @@ function resolveMember(args) {
 		throw { code: -32602, message: `Invalid member name: ${JSON.stringify(name)}` };
 	}
 	return name;
+}
+
+// The member whose cycle may work on other members' lists: it tidies their
+// todos, events, triggers and watches. It still speaks only as itself.
+const CROSS_MEMBER_AGENTS = new Set(['clerk']);
+// Tools that speak for a member or change what reaches their mailbox. No
+// agent may use these as anyone but itself.
+const MAILBOX_TOOLS = new Set(['send_message', 'supersede_message', 'archive_message', 'unarchive_message']);
+const SENDING_TOOLS = new Set(['send_message', 'supersede_message']);
+
+/** Human members, from members.json (plus "Nate" in case the manifest can't be read). */
+async function humanMembers() {
+	const names = new Set(['nate']);
+	try {
+		const manifest = JSON.parse(await readFile(join(teamDir, 'members.json'), 'utf-8'));
+		for (const m of manifest.members ?? []) {
+			if (m && m.type === 'human' && typeof m.name === 'string') names.add(m.name.toLowerCase());
+		}
+	} catch {
+		/* keep the fallback */
+	}
+	return names;
+}
+
+/**
+ * Refuse a call that claims to be someone it isn't. This server only ever
+ * runs inside an agent process, so:
+ * - When the runner (cycle or dashboard chat) set TEAMOS_MEMBER_NAME, a
+ *   `member` naming someone else is refused — except that the clerk may work
+ *   on other members' lists (not their mailboxes).
+ * - Nobody sends as a human member (Nate) through it, set identity or not;
+ *   humans write from the dashboard or by hand.
+ * Without TEAMOS_MEMBER_NAME (an interactive session) `member` is still
+ * honoured, as before, for everything but sending as a human.
+ */
+async function checkIdentity(tool, args) {
+	const claimed = args && args.member;
+	if (envMemberName && claimed && claimed !== envMemberName) {
+		if (!CROSS_MEMBER_AGENTS.has(envMemberName) || MAILBOX_TOOLS.has(tool)) {
+			throw {
+				code: -32602,
+				message: `You are ${envMemberName}; \`member: ${JSON.stringify(claimed)}\` is refused. Omit \`member\` to act as yourself.`,
+			};
+		}
+	}
+	if (SENDING_TOOLS.has(tool)) {
+		const sender = claimed || envMemberName;
+		if (sender && (await humanMembers()).has(String(sender).toLowerCase())) {
+			throw { code: -32602, message: `Agents can't send as ${sender}, a human member. Send as yourself.` };
+		}
+	}
 }
 
 const messagingAdapterName = process.env.TEAMOS_MESSAGING_ADAPTER || 'file';
@@ -135,7 +188,7 @@ const watches = makeWatchesAdapter(watchesAdapterName);
 // tool definitions below stay focused on tool-specific arguments.
 const MEMBER_PROP = {
 	type: 'string',
-	description: 'Member identity (defaults to the runner-set member).',
+	description: 'Member identity. Omit it: it defaults to you, and naming another member is refused (the clerk may name one for lists).',
 };
 
 const BASE_TOOLS = [
@@ -547,6 +600,7 @@ function textResult(payload) {
 }
 
 async function handleToolCall(name, args) {
+	await checkIdentity(name, args);
 	switch (name) {
 		case 'send_message': {
 			const { to, subject, body, cc, replyTo, projectCode } = args;

@@ -144,6 +144,10 @@ Cloudflare forwards the authenticated email on every request; the dashboard read
 
 Point oauth2-proxy at the dashboard port, configure it to pass `X-Forwarded-Email`, and set `trustProxy: true`. Works identically to the Cloudflare Access recipe.
 
+## Cross-site writes
+
+The dashboard has no login of its own, so any web page open in a browser that can reach it could try to write to it. Every non-GET/HEAD request under `/api/` is refused with `403` unless: a body, if any, is `application/json`; `Origin`, if sent, names the request's own host; and `Sec-Fetch-Site`, if sent, is `same-origin` or `none`. The UI's own fetches pass; so does curl, which sends none of those headers. See `crossSiteRefusal()` in `ui/src/server/api-plugin.ts`.
+
 ## Future work
 
 - **Mutation gating** — today identity is advisory (it sets the default "from" field). A natural next step is to reject `POST /api/messages` when `from !== me.name` while `locked: true`.

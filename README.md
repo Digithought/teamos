@@ -401,7 +401,7 @@ A unit of work can include:
 
 Messages behave like email — `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer that forms a thread. Every message is stored once in `team/messages/<id>.md` with YAML frontmatter; per-member mailboxes (`inbox.json`, `sent.json`, `archives.json`) are lists of message ids.
 
-Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly. Every tool accepts an optional `member` argument identifying whose mailbox/todos/schedule/triggers the call operates against; when omitted, the server uses the `TEAMOS_MEMBER_NAME` set by the runner. Cycle agents never need to pass `member` explicitly — interactive sessions do.
+Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly. Every tool accepts an optional `member` argument identifying whose mailbox/todos/schedule/triggers the call operates against; when omitted, the server uses the `TEAMOS_MEMBER_NAME` set by the runner. Cycle agents never need to pass `member` explicitly — interactive sessions do. When the runner (or a dashboard chat) has set `TEAMOS_MEMBER_NAME`, `member` may only name that member — except that the clerk may work on other members' todos, events, triggers and watches (never their mailboxes) — and no call may send as a human member.
 
 | Tool | Purpose |
 |---|---|

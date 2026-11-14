@@ -283,6 +283,52 @@ function sse(res: ServerResponse): (event: unknown) => void {
 	};
 }
 
+/**
+ * Refuse writes a page on another site could forge from the browser of
+ * someone who can reach the dashboard. The dashboard has no login, so any
+ * page that knows its address can try to POST to it; a "simple" request
+ * (form post, text/plain fetch) skips the CORS preflight and would land.
+ * Every write the UI makes is a same-origin fetch, with a JSON body or none
+ * (DELETE), so a write must: carry JSON when it carries a body, come from
+ * this origin when the browser says where it came from (Origin, which
+ * browsers send on every cross-origin write), and not be marked cross-site
+ * by Sec-Fetch-Site. Tools without a browser (curl) send neither header and
+ * still work. Returns the reason to refuse, or null.
+ */
+function crossSiteRefusal(req: IncomingMessage, method: string): string | null {
+	if (method === 'GET' || method === 'HEAD') return null;
+	const header = (name: string) => {
+		const raw = req.headers[name];
+		return (Array.isArray(raw) ? raw[0] : raw)?.trim();
+	};
+
+	const fetchSite = header('sec-fetch-site')?.toLowerCase();
+	if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+		return 'Cross-site request refused';
+	}
+
+	const origin = header('origin');
+	if (origin) {
+		let originHost: string | null = null;
+		try {
+			const u = new URL(origin);
+			if (u.protocol === 'http:' || u.protocol === 'https:') originHost = u.host.toLowerCase();
+		} catch {
+			/* "null" or garbage: refused below */
+		}
+		const host = header('host')?.toLowerCase();
+		if (!originHost || !host || originHost !== host) return 'Cross-origin request refused';
+	}
+
+	const length = Number.parseInt(header('content-length') ?? '0', 10) || 0;
+	const hasBody = length > 0 || header('transfer-encoding') !== undefined;
+	const type = header('content-type')?.split(';')[0].trim().toLowerCase();
+	if ((hasBody || type) && type !== 'application/json') {
+		return 'Writes must be sent as application/json';
+	}
+	return null;
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let data = '';
@@ -909,6 +955,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				const url = new URL(req.url, `http://${req.headers.host}`);
 				const path = url.pathname;
 				const method = req.method?.toUpperCase() ?? 'GET';
+
+				const refusal = crossSiteRefusal(req, method);
+				if (refusal) return json(res, { error: refusal }, 403);
 
 				try {
 					if (path === '/api/messaging/info' && method === 'GET') {
