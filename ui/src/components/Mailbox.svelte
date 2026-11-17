@@ -446,6 +446,16 @@ function roleOf(msg: ThreadMessage): string {
 								{#if msg.supersedes?.length}
 									<span class="row-badge warn">consolidates {msg.supersedes.length}</span>
 								{/if}
+								{#if msg.ask === 'decide'}
+									<span class="row-badge" class:decide={!msg.resolvedBy} class:done={!!msg.resolvedBy}>
+										{msg.resolvedBy ? (msg.resolution === 'default-applied' ? 'decided: default' : 'decided') : 'decide'}
+									</span>
+								{:else if msg.ask === 'fyi'}
+									<span class="row-badge fyi">fyi</span>
+								{/if}
+								{#if msg.resolves}
+									<span class="row-badge fyi">default applied</span>
+								{/if}
 								{#if !isOpen}
 									{@const drift = subjectDrift(msg, selected)}
 									<span class="msg-gist" class:renamed={!!drift}>{drift || snippetOf(msg.id)}</span>
@@ -459,6 +469,12 @@ function roleOf(msg: ThreadMessage): string {
 										{#if msg.cc?.length}<span>Cc: {msg.cc.join(', ')}</span>{/if}
 										<span class="msg-full-time">{fullTime(msg.sentAt)}</span>
 									</div>
+									{#if msg.ask === 'decide' && msg.default}
+										<div class="msg-default">
+											<strong>Default:</strong> {msg.default}
+											{#if msg.defaultBy}<span class="msg-default-by">after {msg.defaultBy}</span>{/if}
+										</div>
+									{/if}
 									{#if bodies[msg.id] === undefined}
 										<div class="empty small">Loading...</div>
 									{:else}
@@ -626,6 +642,9 @@ function roleOf(msg: ThreadMessage): string {
 	.row-badge.inbox { background: var(--primary-subtle); color: var(--primary); }
 	.row-badge.project { background: var(--ai-subtle); color: var(--ai); }
 	.row-badge.warn { background: var(--warning-subtle); color: var(--warning); }
+	.row-badge.decide { background: var(--danger-subtle); color: var(--danger); }
+	.row-badge.done { background: var(--success-subtle); color: var(--success); }
+	.row-badge.fyi { background: var(--bg); color: var(--text-light); border: 1px solid var(--border); }
 	.row-badge.muted {
 		background: var(--bg);
 		color: var(--text-light);
@@ -716,6 +735,14 @@ function roleOf(msg: ThreadMessage): string {
 		padding: 0.5rem 0 0.25rem;
 	}
 	.msg-full-time { margin-left: auto; }
+	.msg-default {
+		font-size: 0.78rem;
+		padding: 0.35rem 0.5rem;
+		margin: 0.25rem 0;
+		border-radius: var(--radius);
+		background: var(--warning-subtle);
+	}
+	.msg-default-by { margin-left: 0.5rem; color: var(--text-muted); }
 	.msg-text {
 		font-family: var(--font);
 		font-size: 0.85rem;

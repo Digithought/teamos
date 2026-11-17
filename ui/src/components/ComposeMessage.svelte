@@ -2,7 +2,7 @@
 import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
-import type { MemberSummary, Message, Project } from '../lib/types.js';
+import type { Ask, MemberSummary, Message, Project } from '../lib/types.js';
 
 let members = $state<MemberSummary[]>([]);
 let projects = $state<Project[]>([]);
@@ -17,12 +17,27 @@ let from = $state(identity.name ?? '');
 let subject = $state('');
 let projectCode = $state('');
 let body = $state('');
+let ask = $state<Ask | ''>('');
+let askDefault = $state('');
+let askDefaultBy = $state('');
 
 let replyMessage = $state<Message | null>(null);
 let inboxOwner = $state<string | null>(null);
 let isReplyAll = $state(false);
 
 const isReply = $derived(!!replyMessage);
+
+/**
+ * A new thread to a human, from anyone but a human, must say what it wants
+ * (`decide` or `fyi`); the server refuses it otherwise. See docs/messages.md.
+ */
+const humanNames = $derived(new Set(members.filter((m) => m.type === 'human').map((m) => m.name)));
+const needsAsk = $derived(
+	!isReply && !humanNames.has(from.trim()) && [...to, ...cc].some((r) => humanNames.has(r) && r !== from.trim()),
+);
+const askIncomplete = $derived(
+	needsAsk && (!ask || (ask === 'decide' && (!askDefault.trim() || !askDefaultBy))),
+);
 const backPath = $derived.by(() => {
 	if (!inboxOwner) return '/';
 	const msg = replyMessage;
@@ -105,6 +120,12 @@ async function send() {
 			body: body.trim(),
 			replyTo: replyMessage?.id,
 			projectCode: projectCode || undefined,
+			...(needsAsk && ask
+				? {
+						ask,
+						...(ask === 'decide' ? { default: askDefault.trim(), defaultBy: askDefaultBy } : {}),
+					}
+				: {}),
 		});
 	} catch (err) {
 		sendError = err instanceof Error ? err.message : String(err);
@@ -125,6 +146,9 @@ function reset() {
 	subject = '';
 	projectCode = '';
 	body = '';
+	ask = '';
+	askDefault = '';
+	askDefaultBy = '';
 	sent = false;
 	sendError = null;
 	replyMessage = null;
@@ -215,6 +239,29 @@ function reset() {
 			</div>
 		</div>
 
+		{#if needsAsk}
+			<div class="form-row">
+				<div class="form-group" style="flex:1">
+					<label class="label" for="ask">Ask (to a human)</label>
+					<select id="ask" bind:value={ask}>
+						<option value="">Choose...</option>
+						<option value="decide">Decide: one question, with a default</option>
+						<option value="fyi">FYI: no attention needed</option>
+					</select>
+				</div>
+				{#if ask === 'decide'}
+					<div class="form-group" style="flex:2">
+						<label class="label" for="ask-default">Default if no answer</label>
+						<input id="ask-default" type="text" bind:value={askDefault} placeholder="What happens if they say nothing" />
+					</div>
+					<div class="form-group" style="flex:1">
+						<label class="label" for="ask-default-by">Default goes ahead after</label>
+						<input id="ask-default-by" type="date" bind:value={askDefaultBy} />
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		{#if replyMessage}
 			<div class="reply-context">
 				<div class="reply-context-header">
@@ -244,7 +291,7 @@ function reset() {
 			<button
 				class="btn btn-primary"
 				onclick={send}
-				disabled={to.size === 0 || !body.trim() || !from.trim() || sending || (!isReply && !subject.trim())}
+				disabled={to.size === 0 || !body.trim() || !from.trim() || sending || (!isReply && !subject.trim()) || askIncomplete}
 			>
 				{sending ? 'Sending...' : `Send to ${to.size} recipient${to.size !== 1 ? 's' : ''}`}
 			</button>

@@ -1,4 +1,6 @@
 import type {
+	Ask,
+	Attention,
 	ChatEvent,
 	ChatGone,
 	ChatSession,
@@ -143,6 +145,9 @@ export interface SendMessageArgs {
 	body: string;
 	replyTo?: string;
 	projectCode?: string;
+	ask?: Ask;
+	default?: string;
+	defaultBy?: string;
 }
 
 /**
@@ -191,6 +196,8 @@ export const api = {
 	message: (id: string) => get<Message>(`/api/messages/${encodeURIComponent(id)}`),
 	/** Subject-grouped, reply-chain-resolved view of a member's mailboxes. */
 	threads: (name: string) => get<Thread[]>(`/api/members/${encodeURIComponent(name)}/threads`),
+	/** Open decides put to a member, and their recent FYI digest. */
+	attention: (name: string) => get<Attention>(`/api/members/${encodeURIComponent(name)}/attention`),
 	/** Bodies for a whole thread in one request. */
 	messagesBatch: (ids: string[]) => post<Message[]>('/api/messages/batch', { ids }),
 	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),

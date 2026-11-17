@@ -12,7 +12,23 @@ export interface MemberSummary {
 	eventCount: number;
 }
 
-export interface MessageSummary {
+/**
+ * What a message to a human wants from them. `decide`: one question whose
+ * `default` goes ahead after `defaultBy`. `fyi`: nothing needed. Absent on
+ * replies and on mail from before the rule (untagged).
+ */
+export type Ask = 'decide' | 'fyi';
+
+export interface AskState {
+	ask?: Ask;
+	default?: string;
+	defaultBy?: string;
+	resolves?: string;
+	resolvedBy?: string;
+	resolution?: 'answered' | 'default-applied';
+}
+
+export interface MessageSummary extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -25,7 +41,7 @@ export interface MessageSummary {
 	supersededBy?: string;
 }
 
-export interface Message {
+export interface Message extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -43,7 +59,7 @@ export interface Message {
 export type MailBox = 'inbox' | 'sent' | 'archives';
 
 /** One message inside a thread group. No body — bodies load when the thread opens. */
-export interface ThreadMessage {
+export interface ThreadMessage extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -75,6 +91,33 @@ export interface Thread {
 	lastFrom: string;
 	preview: string;
 	messages: ThreadMessage[];
+}
+
+/** An open `decide` put to the viewed member. */
+export interface NeedsItem {
+	id: string;
+	from: string;
+	subject: string;
+	sentAt: string;
+	default: string;
+	defaultBy: string;
+	/** `defaultBy` has passed: the sender may apply the default now. */
+	overdue: boolean;
+}
+
+export interface FyiItem {
+	id: string;
+	from: string;
+	subject: string;
+	sentAt: string;
+	preview: string;
+}
+
+export interface Attention {
+	needs: NeedsItem[];
+	fyi: FyiItem[];
+	/** How many days back `fyi` reaches. */
+	fyiDays: number;
 }
 
 /** Thread counts per mailbox filter, plus the raw inbox message count for the tab badge. */

@@ -4,7 +4,18 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
 
-interface MessageSummary {
+/** What a message to a human wants from them; see teamos/docs/messages.md. Absent = untagged. */
+interface AskState {
+	ask?: 'decide' | 'fyi';
+	default?: string;
+	defaultBy?: string;
+	resolves?: string;
+	resolvedBy?: string;
+	resolvedAt?: string;
+	resolution?: 'answered' | 'default-applied';
+}
+
+interface MessageSummary extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -20,7 +31,7 @@ interface MessageSummary {
 type MailBox = 'inbox' | 'sent' | 'archives';
 
 /** One message as it appears inside a thread group — no body; bodies are fetched on open. */
-interface ThreadMessage {
+interface ThreadMessage extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -54,7 +65,7 @@ interface Thread {
 	messages: ThreadMessage[];
 }
 
-interface Message {
+interface Message extends AskState {
 	id: string;
 	from: string;
 	to: string[];
@@ -79,6 +90,10 @@ interface MessagingAdapter {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		ask?: string;
+		default?: string;
+		defaultBy?: string;
+		resolves?: string;
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -89,6 +104,10 @@ interface MessagingAdapter {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		ask?: string;
+		default?: string;
+		defaultBy?: string;
+		resolves?: string;
 	}): Promise<{ id: string; sentAt: string; supersededIds: string[]; unreadRemoved: number; alreadyDelivered: number }>;
 	readMessage(id: string, opts?: { inlineParent?: boolean }): Promise<Message>;
 	listInbox(member: string): Promise<MessageSummary[]>;
@@ -698,6 +717,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					projectCode: m.projectCode,
 					supersedes: m.supersedes?.length ? m.supersedes : undefined,
 					supersededBy: m.supersededBy,
+					ask: m.ask,
+					default: m.default,
+					defaultBy: m.defaultBy,
+					resolves: m.resolves,
+					resolvedBy: m.resolvedBy,
+					resolution: m.resolution,
 					boxes: boxesById.get(m.id) ?? [],
 					depth: resolve(m.id).depth,
 				})),
@@ -715,8 +740,67 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		ask?: string;
+		default?: string;
+		defaultBy?: string;
+		resolves?: string;
 	}) {
 		return messagingAdapter.sendMessage(msg);
+	}
+
+	// ─── Attention: what a human member needs to see ─────────────────────────
+	//
+	// Agents tag a new thread to a human `ask: decide` (one question, with a
+	// default that goes ahead after defaultBy) or `ask: fyi` (no attention
+	// needed; the adapter files it straight to the human's archives). The
+	// "Needs you" view lists open decides; the FYI digest lists recent fyi.
+
+	/** How far back the FYI digest reaches. */
+	const FYI_DAYS = 14;
+
+	/** When a defaultBy passes. A bare date runs to the end of that day, UTC (as the adapter rules). */
+	function defaultDeadline(defaultBy?: string): number {
+		if (!defaultBy) return Number.NaN;
+		const v = defaultBy.trim();
+		return Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59.999Z` : v);
+	}
+
+	async function getAttention(member: string) {
+		const ids = new Set<string>();
+		for (const list of [
+			await messagingAdapter.listInbox(member).catch(() => []),
+			await messagingAdapter.listArchives(member).catch(() => []),
+		]) {
+			for (const entry of list) ids.add(entry.id);
+		}
+		const now = Date.now();
+		const since = now - FYI_DAYS * 86_400_000;
+		const needs: object[] = [];
+		const fyi: object[] = [];
+		for (const id of ids) {
+			const m = await readCachedMessage(id);
+			if (!m || m.from === member || m.supersededBy) continue;
+			if (!(m.to ?? []).includes(member) && !(m.cc ?? []).includes(member)) continue;
+			if (m.ask === 'decide' && !m.resolvedBy) {
+				const deadline = defaultDeadline(m.defaultBy);
+				needs.push({
+					id: m.id,
+					from: m.from,
+					subject: m.subject,
+					sentAt: m.sentAt,
+					default: m.default ?? '',
+					defaultBy: m.defaultBy ?? '',
+					overdue: Number.isFinite(deadline) && now > deadline,
+				});
+			} else if (m.ask === 'fyi' && Date.parse(m.sentAt) >= since) {
+				fyi.push({ id: m.id, from: m.from, subject: m.subject, sentAt: m.sentAt, preview: previewOf(m.body) });
+			}
+		}
+		// Soonest default first; then newest FYI first.
+		const by = (x: any) => defaultDeadline(x.defaultBy) || 0;
+		needs.sort((a: any, b: any) => by(a) - by(b));
+		fyi.sort((a: any, b: any) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+		return { needs, fyi, fyiDays: FYI_DAYS };
 	}
 
 	async function getTicketSummary(): Promise<Record<string, number> | null> {
@@ -1201,6 +1285,11 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const name = decodeURIComponent(match[1]);
 						const body = JSON.parse(await readBody(req));
 						return json(res, await updateMemberProfile(name, body));
+					}
+
+					match = path.match(/^\/api\/members\/([^/]+)\/attention$/);
+					if (match && method === 'GET') {
+						return json(res, await getAttention(decodeURIComponent(match[1])));
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/threads$/);
