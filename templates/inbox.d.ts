@@ -9,6 +9,42 @@
  */
 
 /**
+ * What a message to a human member wants from them.
+ *
+ * A new thread (no `replyTo`) with a human in `to`/`cc` must carry one; a
+ * reply needs none. Messages from before this rule have none and read as
+ * untagged.
+ *   - `decide` — exactly one standalone question, with `default` and
+ *     `defaultBy`. Silence means the default goes ahead.
+ *   - `fyi` — nothing needed. Filed to the human's archives and their FYI
+ *     digest, never their inbox.
+ */
+export type Ask = 'decide' | 'fyi';
+
+/** Ask fields a sender may set on `send_message` (and, minus `resolves`, `supersede_message`). */
+export interface AskArgs {
+	ask?: Ask;
+	/** decide only, required: one line saying what happens if there is no answer. */
+	default?: string;
+	/** decide only, required: ISO date after which the default goes ahead. A bare date runs to the end of that day, UTC. */
+	defaultBy?: string;
+	/**
+	 * Id of a decide YOU sent whose `defaultBy` has passed unanswered: this
+	 * message reports the default was applied and closes it. Threads under the
+	 * question; filed to the human's archives.
+	 */
+	resolves?: string;
+}
+
+/** Ask state on a stored message. `resolvedBy` / `resolvedAt` / `resolution` are written by the adapter. */
+export interface AskState extends AskArgs {
+	/** decide: the message that closed it — the human's reply, or the sender's `resolves`. */
+	resolvedBy?: string;
+	resolvedAt?: string;
+	resolution?: 'answered' | 'default-applied';
+}
+
+/**
  * A full message as returned by `read_message(id)`.
  *
  * TeamOS messages behave like email: a message has `from`, `to`, `cc`,
@@ -16,7 +52,7 @@
  * a thread. `to` and `cc` deliver identically; the distinction is only
  * how the recipient perceives their involvement.
  */
-export interface Message {
+export interface Message extends AskState {
 	id: string; // opaque — never parse or construct
 	from: string; // sender member name
 	to: string[]; // primary recipients
@@ -48,7 +84,7 @@ export interface Message {
  * Inbox/archives listings collapse a predecessor when its consolidated
  * version is reachable in the same mailbox; sent listings do not collapse.
  */
-export interface MessageSummary {
+export interface MessageSummary extends Omit<AskState, 'resolvedAt'> {
 	id: string;
 	from: string;
 	to: string[];
@@ -64,7 +100,7 @@ export interface MessageSummary {
 /**
  * Arguments to `send_message`. Returns `{ id, sentAt }`.
  */
-export interface SendMessageArgs {
+export interface SendMessageArgs extends AskArgs {
 	to: string[];
 	body: string;
 	subject?: string; // required on new threads; optional on replies
@@ -84,7 +120,7 @@ export interface SendMessageArgs {
  *     out of their inbox (typically archived); they receive the new message
  *     normally and can re-read.
  */
-export interface SupersedeMessageArgs {
+export interface SupersedeMessageArgs extends Omit<AskArgs, 'resolves'> {
 	supersedes: string[];
 	to: string[];
 	body: string;

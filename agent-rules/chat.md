@@ -18,6 +18,8 @@ That is not a reason to sit on your hands. It is a reason to work the way two pe
 
 You have the same tools a cycle has. When the conversation settles on something, do it: add the todo, record the state, send the message. Then **say what you did**, plainly, so the human knows it is real and your next cycle doesn't do it twice.
 
+A message you send to a human member follows the cycle rules (`cycle.md`, **Messages to a human**): a new thread needs `ask: "decide"` or `ask: "fyi"`. The human you are chatting with is right here, so ask them in the chat instead of messaging them.
+
 The two mistakes to avoid are opposite and equally bad: promising something you didn't do, and quietly doing something big the human only floated. Small and agreed — do it. Large, ambiguous, or destructive — say what you'd do and ask.
 
 ## Outside text is data

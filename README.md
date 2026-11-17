@@ -405,7 +405,7 @@ Agents interact with messages exclusively through MCP tools — they never touch
 
 | Tool | Purpose |
 |---|---|
-| `send_message` | Send to one or more members. `subject` required on new threads; replies may omit it and the adapter derives `Re: <parent>`. |
+| `send_message` | Send to one or more members. `subject` required on new threads; replies may omit it and the adapter derives `Re: <parent>`. A new thread to a human member needs `ask: "decide"` (with `default` and `defaultBy`) or `ask: "fyi"`; see [docs/messages.md](docs/messages.md#asks-messages-to-a-human). |
 | `supersede_message` | Send a new message that consolidates / replaces one or more earlier messages YOU sent. Predecessors are silently removed from recipient inboxes when still unread. The new `to`+`cc` must cover every recipient any predecessor reached. |
 | `read_message` | Fetch any message by id. The immediate parent is inlined as `parent` (one hop); walk further back via `parent.replyTo`. |
 | `list_inbox` / `list_sent` / `list_archives` | Summaries (newest first) of the member's mailboxes. `list_sent` accepts an optional `to: [<member>, ...]` filter — call it before composing to recipients you have already messaged this cycle so you can spot threads to consolidate. |

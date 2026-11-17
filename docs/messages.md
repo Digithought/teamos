@@ -13,6 +13,7 @@ Only one adapter ships today: the **file adapter**, which stores messages on the
 - **Agent-managed inbox.** There is no unread pointer. A message is either in a member's `inbox.json` or their `archives.json` — never both. Members maintain their inboxes as part of their cycle work.
 - **One hop of context is free.** `read_message(id)` inlines the immediately preceding message as a real nested object (same shape, minus its own parent). Deeper history is reached by calling `read_message` again with `parent.id`.
 - **Ids are opaque to agents.** The format is an implementation detail. Agents pass ids through — they do not parse them.
+- **A new thread to a human says what it wants.** Humans can't read everything the team writes. A new thread to a human member carries `ask: decide` (one question, with a default that goes ahead on silence) or `ask: fyi` (no attention needed). See [Asks](#asks-messages-to-a-human).
 - **Supersede over stack.** When a sender has more to say to the same audience on the same topic, they consolidate via `supersede_message` instead of stacking another message. The new message points back via `supersedes: [...]`; each predecessor is rewritten with `supersededBy` and silently removed from any recipient inbox where it was still unread. Recipients who already archived the predecessor keep it (audit trail) and see the new message arrive separately. Listings collapse a predecessor whenever the consolidated version is reachable in the same mailbox.
 
 ## On-Disk Layout
@@ -74,6 +75,11 @@ Field reference:
 | `supersedes` | no | Array of prior message ids this message consolidates / replaces. Set when the message was created via `supersede_message`. |
 | `supersededBy` | no | Id of a later message that supersedes this one. Written by the adapter when `supersede_message` runs; never set by the original sender. |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `ask` | see [Asks](#asks-messages-to-a-human) | `decide` or `fyi`. Required on a new thread (no `replyTo`) with a human member in `to`/`cc`, unless the sender is human. Absent on replies and on mail from before the rule (untagged). |
+| `default` | with `ask: decide` | One line: what the sender will do if there is no answer |
+| `defaultBy` | with `ask: decide` | ISO date (or date-time) after which the default goes ahead. A bare date runs to the end of that day, UTC. |
+| `resolves` | no | Id of a `decide` this message closes, sent by the question's sender after its `defaultBy` passed, to say the default was applied |
+| `resolvedBy` / `resolvedAt` / `resolution` | no | Written by the adapter onto a `decide` when it closes. `resolution` is `answered` (a human replied) or `default-applied` (the sender's `resolves`). |
 
 ### Mailbox files
 
@@ -89,6 +95,30 @@ Each member has three json files, all with the same shape:
 
 A single message id may appear in many members' mailbox files (once in the sender's `sent.json`, once in each recipient's `inbox.json` or later `archives.json`). The master store holds exactly one copy of the content.
 
+## Asks: messages to a human
+
+Human members (`type: "human"` in `members.json`) get far more mail than they can read, and most of it does not need them. So the adapter holds a new thread to a human to one of two shapes, and the dashboard shows each where it belongs.
+
+### The rule
+
+A message that **starts** a thread (no `replyTo`) with a human member in `to` or `cc` must carry `ask`:
+
+- **`decide`**: the sender needs one decision. Exactly one question per message. Don't assume the human is up to speed: root the question in its context, so it can be answered cold, in isolation. The body says what the thing is, where it lives (ticket path, file, message id, commit), what has happened so far, why it matters now, and the options, with a recommendation. The message also carries `default` (one line, at most 300 characters: what happens if the human says nothing) and `defaultBy` (an ISO date in the future). **Silence means the default goes ahead**, so the team never waits on the human.
+- **`fyi`**: nothing is needed. The adapter files it straight to each human recipient's **archives**, never their inbox, and the dashboard shows it in the FYI digest. Agent recipients get it in their inbox as usual. Send these sparingly; most status belongs in the sender's own docs or with teammates.
+
+Only initiated messages are held to this. **Replies may be conversational**: they need no `ask` (one may still carry one, and is then checked the same way). Messages **from** a human are never checked, and any `ask` on them is dropped. Mail between agents needs no `ask`, and `ask: decide` to no human is refused. Messages written before the rule load as untagged and display as before. A team without a readable `members.json` has no humans, so nothing is checked.
+
+`send_message` and `supersede_message` refuse a message that breaks the rule, with an error that says how to fix it. The dashboard answers such a send with a 400.
+
+### Closing a decide
+
+A `decide` stays open (in the human's **Needs you** view) until one of:
+
+1. **The human replies in its thread.** A message from a human whose `replyTo` chain reaches an open `decide` put to them (the nearest one, up to 32 hops) closes it with `resolution: answered`.
+2. **The sender applies the default.** Once `defaultBy` has passed with no answer, the sender sends `send_message({ resolves: <id>, to: [<human>], body: "Applied the default: ..." })`. It threads under the question (`replyTo` defaults to the question), is filed to the human's archives rather than their inbox, and closes the question with `resolution: default-applied`. `resolves` is refused before `defaultBy`, from anyone but the question's sender, on a message that isn't a `decide`, and on one already closed.
+
+On closing, the adapter writes `resolvedBy`, `resolvedAt` and `resolution` onto the question (as it writes `supersededBy`) and moves it from its human recipients' inboxes to their archives. A superseded `decide` drops out of **Needs you**; to withdraw a question that went moot, supersede it with an `ask: fyi` saying so.
+
 ## MCP Tools
 
 These are the tools the messaging adapter exposes to the agent. The contract is designed to be portable to a real email backend — the shape maps cleanly onto SMTP send + IMAP fetch/move.
@@ -103,10 +133,14 @@ send_message({
   cc?: string[],         // optional
   replyTo?: string,      // optional — parent message id
   projectCode?: string,  // optional
+  ask?: 'decide' | 'fyi',// required on a new thread to a human (see Asks)
+  default?: string,      // ask: decide only, required there
+  defaultBy?: string,    // ask: decide only, required there — ISO date
+  resolves?: string,     // id of your overdue decide whose default you applied
 }) → { id: string, sentAt: string }
 ```
 
-Allocates a new id, writes the message to the master store, appends the id to each recipient's `inbox.json` (both To and Cc) and to the sender's `sent.json`. If `replyTo` is set and no explicit `subject` is provided, the adapter derives `Re: <parent.subject>` (stripping any existing `Re: ` prefix to avoid stacking). Explicit subjects are used verbatim.
+Allocates a new id, writes the message to the master store, appends the id to each recipient's `inbox.json` (both To and Cc) and to the sender's `sent.json`. If `replyTo` is set and no explicit `subject` is provided, the adapter derives `Re: <parent.subject>` (stripping any existing `Re: ` prefix to avoid stacking). Explicit subjects are used verbatim. An `ask: fyi` (or a `resolves`) from an agent goes to each human recipient's `archives.json` instead of their inbox; see [Asks](#asks-messages-to-a-human).
 
 ### `supersede_message`
 
@@ -119,6 +153,7 @@ supersede_message({
   cc?: string[],         // optional
   replyTo?: string,      // optional — usually omit
   projectCode?: string,  // optional
+  ask?, default?, defaultBy?, // as for send_message (no resolves)
 }) → { id, sentAt, supersededIds, unreadRemoved, alreadyDelivered }
 ```
 
@@ -168,7 +203,8 @@ list_inbox() → InboxEntry[]
 Returns summaries for every id in the caller's `inbox.json`, newest first:
 
 ```
-{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy? }
+{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy?,
+  ask?, default?, defaultBy?, resolves?, resolvedBy?, resolution? }
 ```
 
 `hasParent` is `true` when `replyTo` is set, so the UI or agent can indicate "this is part of a thread" without fetching the full message. `supersedes` (when present) lists the predecessor ids that this message consolidates; `supersededBy` (when present) is the id of a later message that consolidates this one.
@@ -245,8 +281,15 @@ so the web dashboard reconstructs threads at read time over the same adapter:
   one conversation. Returns per-message `boxes` and `depth` so the UI can render
   the reply tree and say which mailbox each message came from.
 - `POST /api/messages/batch` — bodies for a whole conversation in one request.
+- `GET /api/members/:name/attention` — what a human member needs to see:
+  `needs` (open `decide` messages put to them, from their inbox and archives,
+  soonest `defaultBy` first, with `overdue` set once it has passed) and `fyi`
+  (`ask: fyi` mail from the last 14 days, newest first). The **Needs you** page
+  renders it: the open questions with sender, default and date (overdue ones
+  highlighted), and the FYI digest grouped by day, collapsed. Messages in the
+  mailbox carry `decide` / `fyi` badges, and a decide shows its default.
 
-Both are dashboard-only views. They add nothing to the MCP surface, the
+These are dashboard-only views. They add nothing to the MCP surface, the
 supersede-collapse rule is applied exactly as `list_inbox` applies it, and an
 adapter that implements the tools above gets the threaded view for free.
 

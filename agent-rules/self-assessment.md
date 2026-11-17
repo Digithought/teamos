@@ -90,4 +90,4 @@ Am I making meaningful progress on assigned projects?
 
 ## 5. Send the summary
 
-Call `send_message` with your manager in `to`, subject `"Weekly self-assessment — YYYY-MM-DD"`. If step 2 moved anything, the body opens with it: a first line such as **"Moved to my profile: …"** naming each entry, followed by any proposed change to the manager-owned parts of your profile. Then your scores and the changes you made. Keep it short; the full assessment is in the archive.
+Call `send_message` with your manager in `to`, subject `"Weekly self-assessment — YYYY-MM-DD"`. If your manager is a human member, send it with `ask: "fyi"`; if you need a decision from them (say on a proposed profile change), send that decision separately as its own `ask: "decide"` message (`cycle.md`, **Messages to a human**). If step 2 moved anything, the body opens with it: a first line such as **"Moved to my profile: …"** naming each entry, followed by any proposed change to the manager-owned parts of your profile. Then your scores and the changes you made. Keep it short; the full assessment is in the archive.

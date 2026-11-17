@@ -10,13 +10,27 @@
  * @property {boolean} hasParent
  * @property {string[]} [supersedes] — ids of prior messages this one consolidates / replaces
  * @property {string} [supersededBy] — id of a later message that consolidates / replaces this one
+ * @property {'decide'|'fyi'} [ask] — what a message to a human wants; absent on replies and legacy mail
+ * @property {string} [default] — decide: what happens if there is no answer
+ * @property {string} [defaultBy] — decide: ISO date after which the default goes ahead
+ * @property {string} [resolves] — id of the decide this message closes (default applied)
+ * @property {string} [resolvedBy] — decide: id of the message that closed it (written by the adapter)
+ * @property {'answered'|'default-applied'} [resolution] — decide: how it closed
+ */
+
+/**
+ * @typedef {Object} AskFields
+ * @property {'decide'|'fyi'} [ask]
+ * @property {string} [default]
+ * @property {string} [defaultBy]
+ * @property {string} [resolves]
  */
 
 /**
  * @typedef {Object} MessagingAdapter
  * @property {(member: string) => Promise<boolean>} hasMessages
- * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string }) => Promise<{ id: string, sentAt: string }>} sendMessage
- * @property {(args: { from: string, supersedes: string[], to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string }) => Promise<{ id: string, sentAt: string, supersededIds: string[], unreadRemoved: number, alreadyDelivered: number }>} supersedeMessage
+ * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string } & AskFields) => Promise<{ id: string, sentAt: string }>} sendMessage
+ * @property {(args: { from: string, supersedes: string[], to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string } & Omit<AskFields, 'resolves'>) => Promise<{ id: string, sentAt: string, supersededIds: string[], unreadRemoved: number, alreadyDelivered: number }>} supersedeMessage
  * @property {(id: string, opts?: { inlineParent?: boolean }) => Promise<Object>} readMessage
  * @property {(member: string) => Promise<MessageSummary[]>} listInbox
  * @property {(member: string, opts?: { to?: string[] }) => Promise<MessageSummary[]>} listSent

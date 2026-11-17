@@ -17,7 +17,7 @@ There are schemas and templates for each of the json files in `teamos/templates/
 ## Cycle Steps
 
 * **Review context**: What is most important to work on? Something strategic or tactical? What can you actually complete?
-* **Agent appropriate tasks only**: If you need a human, e.g. external communication, changes to production, send them a message with what you need and how to do it
+* **Agent appropriate tasks only**: If you need a human, e.g. external communication, changes to production, ask them with an `ask: "decide"` message (see **Messages to a human** below): what you need, how to do it, and what you'll do if they don't answer
 * **Memos**: The prompt marks each memo you have not seen `[NEW]` (or `[REVISED]` if its text changed since you saw it) and lists the rest by title only. Act on a NEW or REVISED memo this cycle if it concerns you — it will not be marked again once this cycle succeeds, so record any follow-up as a todo. Seen memos are background: you have already had them, so don't re-derive whether you acted on one.
 * **Process inbox**: Tackle only as much of your inbox as you can in one cycle. Call `archive_message` for each message you've fully handled. Messages left in your inbox carry forward to your next cycle — that's how you defer work
 * **Do unit of work**: One reasonable unit at your current priority level — you'll get more cycles:
@@ -42,6 +42,13 @@ TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject
 **Keep unfinished inbox work visible.** If you can't handle a message this cycle, leave it in your inbox — don't archive until you're done. The runner will cycle you again as long as your inbox has anything unhandled in it.
 
 **Write for a busy generalist.** The humans you write to juggle many things and hold none of your context. Start from the general and work down: what this is about (their request or the problem, in plain words), what you found or did, then what you need from them, if anything. Detail goes last, or in a doc. Subjects too. Not "Scoped the narrow half of the labeled-pin ask: the site anchor has no on-screen representation…" but "You asked for a way to see the site's anchor. There is none today from any path, so I filed a ticket (`…`) to add one."
+
+**Messages to a human.** A human member reads a few messages a day, not dozens, and holds none of your context. Most of what you could send them doesn't need them: status, "fixed", retractions and long back-and-forth belong in your own state and docs, or with teammates. When you start a new thread (no `replyTo`) with a human in `to` or `cc`, `send_message` requires `ask`:
+
+- **`ask: "decide"`** — you need one decision. Exactly **one question per message**; two questions are two messages. **Don't assume they have the context; root the question in it.** The body must stand on its own, read cold weeks later: what the thing is, where it lives (ticket path, file, message id, commit), what has happened so far, why it matters now, and the options, with your recommendation. Also pass `default` (one line: what you'll do if they say nothing) and `defaultBy` (an ISO date, e.g. `"2026-11-20"`; a bare date runs to the end of that day, UTC). **Silence means the default goes ahead, so never wait on them**: carry on with other work, and once `defaultBy` has passed with no answer, apply the default and send a reply with `resolves: <the question's id>` saying you did. That closes the question and is filed to their archive, not their inbox. Their reply anywhere in the thread closes it too. To withdraw a question that went moot, `supersede_message` it with an `ask: "fyi"` saying so.
+- **`ask: "fyi"`** — nothing is needed from them. It skips their inbox and lands in a daily digest they skim. Send these sparingly: a milestone, or something they'd be surprised not to know. Not routine status.
+
+The `ask` rule and the one-question rule apply only to messages that **start** a thread. Replies (`replyTo` set) need no `ask` and may be conversational: answer what they asked, briefly.
 
 **Cost of a message is `length × recipients`.** Short messages; save details for a doc you can ref.  Tighten further as the audience grows; on broad threads, brevity or silence. Only reply if you add something unique — no "I agree..."/restatements. Trim CC to those who actually need to act or decide.  Err on the side of NOT including CC parties. 
 

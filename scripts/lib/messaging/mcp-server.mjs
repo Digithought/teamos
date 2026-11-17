@@ -195,7 +195,7 @@ const BASE_TOOLS = [
 	{
 		name: 'send_message',
 		description:
-			'Send a message to one or more team members. Behaves like email: targets multiple parties, carries a subject, can reference a preceding message via replyTo. Cost scales with length × recipients — keep messages tight, especially on broad threads. Before composing to a recipient set you have already messaged this cycle, call list_sent({ to: [...] }) and prefer supersede_message to consolidate over stacking another message on the same topic.',
+			'Send a message to one or more team members. Behaves like email: targets multiple parties, carries a subject, can reference a preceding message via replyTo. Cost scales with length × recipients — keep messages tight, especially on broad threads. Before composing to a recipient set you have already messaged this cycle, call list_sent({ to: [...] }) and prefer supersede_message to consolidate over stacking another message on the same topic. A new thread to a human member must carry ask ("decide" with default + defaultBy, or "fyi"); see teamos/docs/messages.md.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -209,6 +209,26 @@ const BASE_TOOLS = [
 				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names" },
 				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
+				ask: {
+					type: 'string',
+					enum: ['decide', 'fyi'],
+					description:
+						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc; replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
+				},
+				default: {
+					type: 'string',
+					description: 'ask "decide" only (required there): one line saying what you will do if the human does not answer.',
+				},
+				defaultBy: {
+					type: 'string',
+					description:
+						'ask "decide" only (required there): ISO date (e.g. "2026-11-20") after which you go ahead with the default if there is no answer. A bare date runs to the end of that day, UTC.',
+				},
+				resolves: {
+					type: 'string',
+					description:
+						'Id of a "decide" you sent whose defaultBy has passed with no answer: this message says you applied the default and closes it. It threads under the question and is filed to the human\'s archives, not their inbox.',
+				},
 			},
 			required: ['to', 'body'],
 		},
@@ -244,6 +264,21 @@ const BASE_TOOLS = [
 						'Optional id of the message this thread replies to (carries through to the new message; usually omit).',
 				},
 				projectCode: { type: 'string', description: 'Optional project tag.' },
+				ask: {
+					type: 'string',
+					enum: ['decide', 'fyi'],
+					description:
+						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc; replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
+				},
+				default: {
+					type: 'string',
+					description: 'ask "decide" only (required there): one line saying what you will do if the human does not answer.',
+				},
+				defaultBy: {
+					type: 'string',
+					description:
+						'ask "decide" only (required there): ISO date (e.g. "2026-11-20") after which you go ahead with the default if there is no answer. A bare date runs to the end of that day, UTC.',
+				},
 			},
 			required: ['supersedes', 'to', 'body'],
 		},
@@ -603,7 +638,7 @@ async function handleToolCall(name, args) {
 	await checkIdentity(name, args);
 	switch (name) {
 		case 'send_message': {
-			const { to, subject, body, cc, replyTo, projectCode } = args;
+			const { to, subject, body, cc, replyTo, projectCode, ask, defaultBy, resolves } = args;
 			const { id, sentAt } = await adapter.sendMessage({
 				from: resolveMember(args),
 				to,
@@ -612,12 +647,16 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				ask,
+				default: args.default,
+				defaultBy,
+				resolves,
 			});
 			return textResult({ id, sentAt, to, cc: cc ?? [] });
 		}
 
 		case 'supersede_message': {
-			const { supersedes, to, subject, body, cc, replyTo, projectCode } = args;
+			const { supersedes, to, subject, body, cc, replyTo, projectCode, ask, defaultBy } = args;
 			const result = await adapter.supersedeMessage({
 				from: resolveMember(args),
 				supersedes,
@@ -627,6 +666,9 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				ask,
+				default: args.default,
+				defaultBy,
 			});
 			return textResult(result);
 		}
