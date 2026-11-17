@@ -213,7 +213,7 @@ const BASE_TOOLS = [
 					type: 'string',
 					enum: ['decide', 'fyi'],
 					description:
-						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc; replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
+						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc, or reply adding a human who was not on the parent; other replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
 				},
 				default: {
 					type: 'string',
@@ -268,7 +268,7 @@ const BASE_TOOLS = [
 					type: 'string',
 					enum: ['decide', 'fyi'],
 					description:
-						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc; replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
+						'What a message to a human member wants from them. Required when you start a new thread (no replyTo) with a human in to/cc, or reply adding a human who was not on the parent; other replies need none. "decide": exactly one standalone question, with default + defaultBy. "fyi": no attention needed; it goes to their FYI digest, not their inbox. Send fyi sparingly.',
 				},
 				default: {
 					type: 'string',

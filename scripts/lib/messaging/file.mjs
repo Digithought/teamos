@@ -135,7 +135,8 @@ function recipientsOf(msg) {
 //   ask: fyi    — no attention needed. Delivered to the human's archives, not
 //                 their inbox, and shown in the dashboard's FYI digest.
 //
-// Replies are conversational and need no `ask`. Messages from a human are not
+// Replies are conversational and need no `ask`, unless they add a human who
+// wasn't on the parent: that counts as starting a thread. Messages from a human are not
 // checked. Messages written before this rule have no `ask` and read as
 // untagged. A `decide` closes (resolvedBy is written onto it) when a human
 // recipient replies in its thread, or when its sender sends a message with
@@ -180,7 +181,7 @@ const ASK_HOW_TO = [
 	'Pick one:',
 	'- `ask: "decide"` — you need exactly one decision from them. Make the body standalone: what this is, where it lives (ticket path, file, message id, commit), what has happened so far, why it matters now, and the options. Also pass `default` (what you will do if they don\'t answer, one line) and `defaultBy` (ISO date, e.g. "2026-11-20", after which you go ahead with the default).',
 	'- `ask: "fyi"` — nothing is needed from them. It goes to their FYI digest, not their inbox. Send these sparingly; most status belongs in your own docs or with teammates.',
-	'Replies (`replyTo` set) need no `ask`.',
+	'Replies (`replyTo` set) need no `ask`, unless they add a human who was not on the parent message: that counts as starting a thread.',
 ].join('\n');
 
 export class FileMessagingAdapter {
@@ -373,10 +374,22 @@ export class FileMessagingAdapter {
 			fail(`ask must be "decide" or "fyi", not ${JSON.stringify(fields.ask)}.\n${ASK_HOW_TO}`);
 		}
 		// A `resolves` threads under its question, so it is a reply too.
-		const isReply = !!replyTo || !!fields.resolves;
-		if (!isReply && humanRecipients.length > 0 && !fields.ask) {
+		const parentId = replyTo || fields.resolves;
+		// Adding a human to an existing thread counts as starting one: a reply
+		// is exempt only for humans already on its parent (from, to or cc). A
+		// parent that can't be read leaves every human recipient new.
+		let newHumans = humanRecipients;
+		if (parentId) {
+			const parent = await this._readRawMessage(parentId).catch(() => null);
+			const onParent = new Set(parent ? [parent.from, ...recipientsOf(parent)] : []);
+			newHumans = humanRecipients.filter((r) => !onParent.has(r));
+		}
+		if (newHumans.length > 0 && !fields.ask) {
+			const who = `${newHumans.join(', ')} ${newHumans.length === 1 ? 'is a human member' : 'are human members'}`;
 			fail(
-				`${humanRecipients.join(', ')} ${humanRecipients.length === 1 ? 'is a human member' : 'are human members'}, and a new message to a human must say what it wants from them.\n${ASK_HOW_TO}`,
+				parentId
+					? `${who} not on the message you are replying to. Adding a human to an existing thread counts as starting one, so this message must say what it wants from them (or leave them off).\n${ASK_HOW_TO}`
+					: `${who}, and a new message to a human must say what it wants from them.\n${ASK_HOW_TO}`,
 			);
 		}
 		if (fields.ask === 'decide') {

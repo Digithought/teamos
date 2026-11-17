@@ -249,3 +249,41 @@ test('defaultDeadline: a bare date runs to the end of the day, UTC', () => {
 	assert.equal(isOverdue({ defaultBy: '2026-11-20' }, Date.parse('2026-11-21T00:00:00Z')), true);
 	assert.equal(isOverdue({}), false);
 });
+
+test('a reply that adds a human who was not on the parent counts as initiated', async () => {
+	await withTeam(async (adapter) => {
+		const { id: parent } = await adapter.sendMessage({ from: 'Ada', to: ['Bo'], subject: 'Pairing', body: 'later?' });
+		await rejects(
+			adapter.sendMessage({ from: 'Bo', to: ['Ada'], cc: ['Nate'], replyTo: parent, body: 'sure' }),
+			/Nate is a human member not on the message you are replying to[\s\S]*counts as starting one/,
+		);
+		// The same decide validation applies.
+		await rejects(
+			adapter.sendMessage({ from: 'Bo', to: ['Nate'], replyTo: parent, body: 'Pick one?', ask: 'decide' }),
+			/needs `default`/,
+		);
+		const { id } = await adapter.sendMessage({ from: 'Bo', to: ['Ada'], cc: ['Nate'], replyTo: parent, body: 'fyi', ask: 'fyi' });
+		assert.deepEqual(await adapter.listInbox('Nate'), []);
+		assert.equal((await adapter.readMessage(id)).ask, 'fyi');
+		await adapter.sendMessage(decide({ from: 'Bo', replyTo: parent }));
+		assert.equal((await adapter.listInbox('Nate')).length, 1);
+	});
+});
+
+test('a reply to a human already on the parent stays exempt, as from, to or cc', async () => {
+	await withTeam(async (adapter) => {
+		const { id: fromNate } = await adapter.sendMessage({ from: 'Nate', to: ['Ada'], subject: 'Idea', body: 'hmm' });
+		await adapter.sendMessage({ from: 'Ada', to: ['Nate'], replyTo: fromNate, body: 'ok' });
+		const { id: ccNate } = await adapter.sendMessage({ from: 'Ada', to: ['Bo'], cc: ['Nate'], subject: 'Ship', body: 'x', ask: 'fyi' });
+		await adapter.sendMessage({ from: 'Bo', to: ['Ada', 'Nate'], replyTo: ccNate, body: 'done' });
+	});
+});
+
+test('a reply to a parent that cannot be read treats every human as new', async () => {
+	await withTeam(async (adapter) => {
+		await rejects(
+			adapter.sendMessage({ from: 'Ada', to: ['Nate'], replyTo: '2026-01-01T00-00-00.000Z-gone', subject: 's', body: 'x' }),
+			/counts as starting one/,
+		);
+	});
+});
