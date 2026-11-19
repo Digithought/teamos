@@ -90,6 +90,7 @@ interface MessagingAdapter {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		effort?: string;
 		ask?: string;
 		default?: string;
 		defaultBy?: string;
@@ -126,6 +127,7 @@ interface ScheduleEvent {
 	time: string;
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
+	effort?: string;
 	isDue?: boolean;
 }
 
@@ -139,6 +141,7 @@ interface ScheduleAdapter {
 			description?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string };
 			projectCode?: string;
+			effort?: string;
 		},
 	): Promise<{ id: string }>;
 	updateEvent(
@@ -150,6 +153,7 @@ interface ScheduleAdapter {
 			time?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
 			projectCode?: string;
+			effort?: string | null;
 		},
 	): Promise<void>;
 	removeEvent(member: string, id: string): Promise<void>;
@@ -740,6 +744,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		effort?: string;
 		ask?: string;
 		default?: string;
 		defaultBy?: string;

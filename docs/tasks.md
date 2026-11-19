@@ -57,6 +57,7 @@ Field reference:
 | `status` | no | `blocked` or omitted; blocked items are skipped by the scheduler |
 | `notes` | no | Free-form updates — progress, blockers, context |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `effort` | no | Effort for the cycle that handles this todo (`low`…`max`); `null` on update clears it. See README § *Model and effort* |
 
 ### Id format (file adapter)
 

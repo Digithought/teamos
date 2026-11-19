@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isEffort, optionalEffort, patchEffort } from '../effort.mjs';
 
 /**
  * File-based schedule adapter.
@@ -174,6 +175,7 @@ export class FileScheduleAdapter {
 			if (typeof entry.projectCode === 'string' && entry.projectCode) {
 				normalized.projectCode = entry.projectCode;
 			}
+			if (isEffort(entry.effort)) normalized.effort = entry.effort;
 			events.push(normalized);
 		}
 		if (mutated) await this._writeEvents(member, events);
@@ -203,6 +205,7 @@ export class FileScheduleAdapter {
 				'add_event: recurrence must have a valid frequency (daily|weekly|monthly) and positive integer interval',
 			);
 		}
+		const effort = optionalEffort(input.effort, 'add_event');
 
 		// Additive, and two instances of one member can be adding at once (a
 		// chat beside a cycle). This file is reached only through the MCP
@@ -222,6 +225,7 @@ export class FileScheduleAdapter {
 		if (typeof input.projectCode === 'string' && input.projectCode) {
 			event.projectCode = input.projectCode;
 		}
+		if (effort) event.effort = effort;
 		// Internal only — the MCP `add_event` tool handler never forwards this
 		// field from agent-supplied args, so only trusted callers (the
 		// runner's system-event injectors) can set it.
@@ -279,6 +283,7 @@ export class FileScheduleAdapter {
 			if (patch.projectCode === null || patch.projectCode === '') next.projectCode = undefined;
 			else next.projectCode = String(patch.projectCode);
 		}
+		patchEffort(next, patch.effort, 'update_event');
 
 		events[idx] = next;
 		await this._writeEvents(member, events);

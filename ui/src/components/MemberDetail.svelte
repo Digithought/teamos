@@ -2,7 +2,7 @@
 import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
-import type { MailboxCounts, MemberDetail, TodoItem } from '../lib/types.js';
+import { EFFORT_LEVELS, type Effort, type MailboxCounts, type MemberDetail, type TodoItem } from '../lib/types.js';
 import Mailbox from './Mailbox.svelte';
 import MemberChat from './MemberChat.svelte';
 import MemberLogs from './MemberLogs.svelte';
@@ -31,13 +31,17 @@ $effect(() => {
 
 let newTodoTitle = $state('');
 let newTodoPriority = $state('today');
+let newTodoEffort = $state<Effort | ''>('');
 
 async function addTodo() {
 	if (!newTodoTitle.trim() || !detail) return;
-	const items = [...detail.todos.items, { title: newTodoTitle.trim(), priority: newTodoPriority, status: 'pending' }];
+	const todo: TodoItem = { title: newTodoTitle.trim(), priority: newTodoPriority, status: 'pending' };
+	if (newTodoEffort) todo.effort = newTodoEffort;
+	const items = [...detail.todos.items, todo];
 	await api.updateTodos(name, { items });
 	detail.todos.items = items;
 	newTodoTitle = '';
+	newTodoEffort = '';
 }
 
 async function removeTodo(idx: number) {
@@ -59,6 +63,7 @@ async function toggleTodoStatus(idx: number) {
 
 let newEventTitle = $state('');
 let newEventTime = $state('');
+let newEventEffort = $state<Effort | ''>('');
 
 async function addEvent() {
 	if (!newEventTime || !detail) return;
@@ -66,7 +71,9 @@ async function addEvent() {
 	await api.addEvent(name, {
 		title,
 		time: new Date(newEventTime).toISOString(),
+		effort: newEventEffort || undefined,
 	});
+	newEventEffort = '';
 	const fresh = await api.schedule(name);
 	detail.schedule.events = fresh.events as typeof detail.schedule.events;
 	newEventTitle = '';
@@ -302,6 +309,12 @@ async function deleteMember() {
 					<option value="thisWeek">thisWeek</option>
 					<option value="later">later</option>
 				</select>
+				<select class="add-select" bind:value={newTodoEffort} title="Effort for the cycle that handles this todo">
+					<option value="">effort: member's</option>
+					{#each EFFORT_LEVELS as level}
+						<option value={level}>effort: {level}</option>
+					{/each}
+				</select>
 				<button class="add-btn" onclick={addTodo}>Add</button>
 			</div>
 			{#if todoGroups.length === 0}
@@ -323,6 +336,9 @@ async function deleteMember() {
 									{/if}
 									{#if item.projectCode}
 										<span class="project-badge">{item.projectCode}</span>
+									{/if}
+									{#if item.effort}
+										<span class="project-badge" title="Effort for the cycle that handles this">effort: {item.effort}</span>
 									{/if}
 									<button class="todo-remove" onclick={() => removeTodo(globalIdx)} title="Remove">×</button>
 								</div>
@@ -355,6 +371,12 @@ async function deleteMember() {
 			<div class="add-form">
 				<input class="add-input" type="datetime-local" bind:value={newEventTime} />
 				<input class="add-input" type="text" placeholder="Event title..." bind:value={newEventTitle} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') addEvent(); }} />
+				<select class="add-select" bind:value={newEventEffort} title="Effort for the cycle that handles this event">
+					<option value="">effort: member's</option>
+					{#each EFFORT_LEVELS as level}
+						<option value={level}>effort: {level}</option>
+					{/each}
+				</select>
 				<button class="add-btn" onclick={addEvent}>Add</button>
 			</div>
 			{#if detail.schedule.events.length === 0}
@@ -365,6 +387,9 @@ async function deleteMember() {
 						<span class="event-time">{new Date(event.time).toLocaleString()}</span>
 						{#if event.title}
 							<span class="event-title">{event.title}</span>
+						{/if}
+						{#if event.effort}
+							<span class="project-badge" title="Effort for the cycle that handles this">effort: {event.effort}</span>
 						{/if}
 						<button class="event-remove" onclick={() => removeEvent(event.id)} title="Remove">×</button>
 					</div>

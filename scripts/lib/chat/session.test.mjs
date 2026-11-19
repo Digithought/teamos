@@ -67,8 +67,14 @@ async function withChat(stubScript, fn) {
 }
 
 test('resolveChatConfig defaults to the runner agent and drops unresolved env refs', () => {
-	assert.deepEqual(resolveChatConfig({ agent: 'claude' }), { agent: 'claude', env: {} });
-	assert.deepEqual(resolveChatConfig({}), { agent: 'claude', env: {} });
+	const defaults = { agent: 'claude', env: {}, model: 'opus', effort: 'medium' };
+	assert.deepEqual(resolveChatConfig({ agent: 'claude' }), defaults);
+	assert.deepEqual(resolveChatConfig({}), defaults);
+	assert.deepEqual(
+		resolveChatConfig({ model: 'sonnet', effort: 'high', chat: { effort: 'low' } }),
+		{ agent: 'claude', env: {}, model: 'sonnet', effort: 'low' },
+		'chat.effort overrides the top level; chat inherits the top-level model',
+	);
 
 	const resolved = resolveChatConfig({
 		agent: 'claude',

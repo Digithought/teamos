@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { cycleEffort, highestEffort, memberSettings } from './effort.mjs';
 import { hasUnseenMemos } from './memos.mjs';
 import { PRIORITY_ORDER } from './scheduler.mjs';
 import { pathExists } from './util.mjs';
@@ -94,6 +95,61 @@ export async function memberHasWork(memberName, priority, teamDir, adapters = {}
 	if (await hasUnseenMemos(teamDir, memberName, priority)) return true;
 
 	return false;
+}
+
+/**
+ * The work items a cycle at `priority` serves — the same sources `memberHasWork` weighs — each as
+ * `{ source, effort? }`. `effort` is the item's own override (effort.mjs). An unseen memo carries
+ * none, but it still counts: it is work at the member's own effort.
+ */
+export async function cycleWorkItems(memberName, priority, teamDir, adapters = {}) {
+	const ceiling = PRIORITY_ORDER.indexOf(priority);
+	const within = (p) => PRIORITY_ORDER.indexOf(p) <= ceiling;
+	const items = [];
+	if (adapters.messaging) {
+		for (const m of await adapters.messaging.listInbox(memberName)) {
+			if (within(inboxPriority(m, memberName))) items.push({ source: `message "${m.subject}"`, effort: m.effort });
+		}
+	}
+	if (adapters.tasks) {
+		for (const t of await adapters.tasks.listTodos(memberName)) {
+			if (t.status !== 'blocked' && within(t.priority)) items.push({ source: `todo "${t.title}"`, effort: t.effort });
+		}
+	}
+	if (adapters.schedule) {
+		for (const e of await adapters.schedule.listEvents(memberName)) {
+			if (e.isDue) items.push({ source: `event "${e.title}"`, effort: e.effort });
+		}
+	}
+	if (adapters.triggers) {
+		const matches = await adapters.triggers.pendingMatches(memberName);
+		if (matches.length > 0) {
+			const byId = new Map((await adapters.triggers.listTriggers(memberName)).map((t) => [t.id, t]));
+			for (const m of matches) {
+				if (!within(m.priority)) continue;
+				const effort = highestEffort(m.matchedTriggerIds.map((id) => byId.get(id)?.effort));
+				items.push({ source: `commit ${m.shortHash}`, effort });
+			}
+		}
+	}
+	if (adapters.watches) {
+		for (const o of await adapters.watches.pendingObservations(memberName)) {
+			if (within(o.priority)) items.push({ source: `watch ${o.probe}`, effort: o.effort });
+		}
+	}
+	if (await hasUnseenMemos(teamDir, memberName, priority)) items.push({ source: 'memo' });
+	return items;
+}
+
+/**
+ * Model and effort for one member's cycle at `priority`: the profile over the run-wide `base`,
+ * then the highest effort among the work items. `setBy` names the items that moved the effort.
+ */
+export async function resolveCycleSettings(memberName, priority, teamDir, adapters, base) {
+	const member = await memberSettings(teamDir, memberName, base);
+	const items = await cycleWorkItems(memberName, priority, teamDir, adapters);
+	const { effort, setBy } = cycleEffort(member.effort, items);
+	return { model: member.model, effort, setBy };
 }
 
 export async function getMembersWithWork(members, priority, teamDir, adapters = {}) {

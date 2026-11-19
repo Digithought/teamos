@@ -10,6 +10,8 @@
  *
  * Options:
  *   --agent <name>       Agent adapter: claude | auggie | cursor  (default: claude)
+ *   --model <name>       Model for every spawn, under profile overrides (default: config, then opus)
+ *   --effort <level>     Effort for every spawn, under profile/item overrides (default: config, then medium)
  *   --messaging <name>   Messaging adapter: file                  (default: file)
  *   --tasks <name>       Tasks adapter: file                      (default: file)
  *   --schedule <name>    Schedule adapter: file                   (default: file)
@@ -49,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runAgent } from './lib/agents/index.mjs';
 import { loadConfig, loadDotEnv, resolveEnvVars } from './lib/config.mjs';
+import { EFFORT_LEVELS, resolveBaseSettings } from './lib/effort.mjs';
 import { watchCodeVersion } from './lib/code-version.mjs';
 import { runCycle, runPass } from './lib/cycle.mjs';
 import { buildClerkPrompt, runMaintenance } from './lib/maintenance.mjs';
@@ -66,6 +69,7 @@ import {
 	ensureSelfAssessmentEvents,
 	getMembersWithWork,
 	loadMembers,
+	resolveCycleSettings,
 } from './lib/work-detection.mjs';
 
 // ─── Path resolution ───────────────────────────────────────────────────────────
@@ -100,6 +104,8 @@ function printHelp() {
 		'',
 		'Options:',
 		'  --agent <name>       claude | auggie | cursor              (default: claude)',
+		'  --model <name>       Model, under member profile overrides (default: config, then opus)',
+		`  --effort <level>     ${EFFORT_LEVELS.join(' | ')} — under profile and item overrides (default: config, then medium)`,
 		'  --messaging <name>   file                                 (default: file)',
 		'  --tasks <name>       file                                 (default: file)',
 		'  --schedule <name>    file                                 (default: file)',
@@ -132,6 +138,8 @@ function printHelp() {
 function parseArgs(argv) {
 	const opts = {
 		agent: null, // resolved from config if not set
+		model: null, // resolved from config if not set (effort.mjs)
+		effort: null, // resolved from config if not set (effort.mjs)
 		messaging: null, // resolved from config if not set
 		tasks: null, // resolved from config if not set
 		schedule: null, // resolved from config if not set
@@ -161,6 +169,12 @@ function parseArgs(argv) {
 		switch (arg) {
 			case '--agent':
 				opts.agent = argv[++i];
+				break;
+			case '--model':
+				opts.model = argv[++i];
+				break;
+			case '--effort':
+				opts.effort = argv[++i];
 				break;
 			case '--messaging':
 				opts.messaging = argv[++i];
@@ -325,6 +339,12 @@ async function main() {
 	if (!opts.triggers) opts.triggers = config.triggers?.adapter || 'file';
 	if (!opts.watches) opts.watches = config.watches?.adapter || 'file';
 	if (!opts.sync) opts.sync = config.sync?.adapter || 'git';
+	try {
+		Object.assign(opts, resolveBaseSettings(config, { model: opts.model, effort: opts.effort }));
+	} catch (err) {
+		console.error(err.message);
+		process.exit(1);
+	}
 
 	// ── Create adapters ──────────────────────────────────────────────────────
 	const syncAdapter = opts.noCommit
@@ -395,7 +415,7 @@ async function main() {
 			scheduleAdapterName: opts.schedule,
 			triggersAdapterName: opts.triggers,
 			watchesAdapterName: opts.watches,
-		});
+		}, { agentOptions: { model: opts.model, effort: opts.effort } });
 
 		if (clerkExit !== 0) {
 			console.error(`[runner] Clerk exited with code ${clerkExit}`);
@@ -418,6 +438,7 @@ async function main() {
 		console.log(
 			`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Watches: ${opts.watches} | Sync: ${opts.sync}`,
 		);
+		console.log(`  Model: ${opts.model} | Effort: ${opts.effort} (before member and item overrides)`);
 
 		const weightStr = Object.entries(opts.weights)
 			.map(([p, w]) => `${p}:${w}`)
@@ -450,7 +471,9 @@ async function main() {
 			if (withWork.length > 0) {
 				console.log(`  [${priority}]`);
 				for (const m of withWork) {
-					console.log(`    ${m.name} (${m.title})`);
+					const s = await resolveCycleSettings(m.name, priority, teamDir, adapters, opts);
+					const by = s.setBy.length ? ` (set by ${s.setBy.join(', ')})` : '';
+					console.log(`    ${m.name} (${m.title}) — ${s.model}, effort ${s.effort}${by}`);
 				}
 			}
 		}
@@ -479,6 +502,7 @@ async function main() {
 		`  teamos (${version})${opts.loop ? ' [loop mode]' : ' [single pass]'}`,
 		`  ${members.length} active AI member(s): ${members.map((m) => m.name).join(', ')}`,
 		`  Agent: ${opts.agent} | Messaging: ${opts.messaging} | Tasks: ${opts.tasks} | Schedule: ${opts.schedule} | Triggers: ${opts.triggers} | Watches: ${opts.watches} | Sync: ${opts.sync}`,
+		`  Model: ${opts.model} | Effort: ${opts.effort} (before member and item overrides)`,
 		`  Weights: ${weightStr}`,
 		`  Cadences: ${cadenceStr}`,
 		budgetStr ? `  Budgets: ${budgetStr}` : null,

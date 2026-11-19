@@ -13,7 +13,7 @@ import {
 	readTextOrEmpty,
 	waitWhilePaused,
 } from './util.mjs';
-import { CC_PRIORITY, getMembersWithWork, inboxPriority } from './work-detection.mjs';
+import { CC_PRIORITY, getMembersWithWork, inboxPriority, resolveCycleSettings } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -47,6 +47,7 @@ function renderMessage(msg, { heading, headingLevel = '###' }) {
 	lines.push(`**Sent:** ${msg.sentAt}`);
 	if (msg.projectCode) lines.push(`**Project:** ${msg.projectCode}`);
 	if (msg.replyTo) lines.push(`**In reply to:** ${msg.replyTo}`);
+	if (msg.effort) lines.push(`**Effort:** ${msg.effort}`);
 	lines.push('');
 	lines.push(msg.body || '');
 	return lines;
@@ -112,6 +113,7 @@ function formatTodoForPrompt(item) {
 	);
 	if (item.description) parts.push(`    ${item.description.replace(/\n/g, '\n    ')}`);
 	if (item.projectCode) parts.push(`    project: ${item.projectCode}`);
+	if (item.effort) parts.push(`    effort: ${item.effort}`);
 	if (item.notes) parts.push(`    notes: ${item.notes.replace(/\n/g, '\n    ')}`);
 	return parts.join('\n');
 }
@@ -131,6 +133,7 @@ function formatEventForPrompt(event) {
 	parts.push(`- **${event.title || '(untitled)'}** — ${event.time}${rec}  \`(id: ${event.id})\``);
 	if (event.description) parts.push(`    ${event.description.replace(/\n/g, '\n    ')}`);
 	if (event.projectCode) parts.push(`    project: ${event.projectCode}`);
+	if (event.effort) parts.push(`    effort: ${event.effort}`);
 	return parts.join('\n');
 }
 
@@ -341,7 +344,18 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
  * member that can't clean up in one turn needs a person, not a loop.  Never throws — the cycle
  * already succeeded.
  */
-async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId }) {
+async function resolveLeftovers({
+	member,
+	prompt,
+	repoRoot,
+	teamDir,
+	currentLog,
+	mcpContext,
+	opts,
+	settings,
+	treeBefore,
+	sessionId,
+}) {
 	try {
 		// Paths a dashboard chat changed during the cycle are the chat's to resolve, not this member's.
 		const after = snapshotDirty(repoRoot, teamDir);
@@ -357,6 +371,7 @@ async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog,
 		await appendFile(currentLog, `\n[runner] Leftover check: resuming session ${sessionId} for ${left.length} path(s)\n`);
 		const code = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
 			resume: { sessionId, message: buildCleanupPrompt(left) },
+			agentOptions: { model: settings.model, effort: settings.effort },
 		});
 		const afterCleanup = snapshotDirty(repoRoot, teamDir);
 		const still = withoutClaimed(leftoversSince(treeBefore, afterCleanup), await readClaims(teamDir), afterCleanup);
@@ -417,12 +432,18 @@ export async function runCycle({
 
 		memberRuns++;
 		const currentLog = buildLogPath(logsDir, member.name, priority);
+		const settings = await resolveCycleSettings(member.name, priority, teamDir, adapters, {
+			model: opts.model,
+			effort: opts.effort,
+		});
+		const effortLine = `${settings.effort}${settings.setBy.length ? ` (set by ${settings.setBy.join(', ')})` : ''}`;
 
 		console.log(
 			[
 				`${'─'.repeat(72)}`,
 				`  ${member.name} (${member.title})`,
 				`  Priority: ${priority}  |  Cycle: ${cycleCount}`,
+				`  Model: ${settings.model}  |  Effort: ${effortLine}`,
 				`  Log: ${currentLog}`,
 				`${'─'.repeat(72)}`,
 			].join('\n'),
@@ -434,6 +455,8 @@ export async function runCycle({
 				`Member: ${member.name} (${member.title})`,
 				`Priority: ${priority}`,
 				`Agent: ${opts.agent}`,
+				`Model: ${settings.model}`,
+				`Effort: ${effortLine}`,
 				`TeamOS: ${version}`,
 				`Started: ${new Date().toISOString()}`,
 				'═'.repeat(72),
@@ -461,12 +484,24 @@ export async function runCycle({
 		const treeBefore = opts.leftoverCheck ? snapshotDirty(repoRoot, teamDir) : null;
 		let sessionId = null;
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			agentOptions: { model: settings.model, effort: settings.effort },
 			onSession: (id) => {
 				sessionId ??= id;
 			},
 		});
 		if (exitCode === 0 && treeBefore) {
-			await resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId });
+			await resolveLeftovers({
+				member,
+				prompt,
+				repoRoot,
+				teamDir,
+				currentLog,
+				mcpContext,
+				opts,
+				settings,
+				treeBefore,
+				sessionId,
+			});
 		}
 
 		if (exitCode !== 0) {

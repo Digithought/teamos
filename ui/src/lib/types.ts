@@ -19,6 +19,10 @@ export interface MemberSummary {
  */
 export type Ask = 'decide' | 'fyi';
 
+/** Effort for the cycle that handles an item, lowest first. README § Model and effort. */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORT_LEVELS)[number];
+
 export interface AskState {
 	ask?: Ask;
 	default?: string;
@@ -36,6 +40,7 @@ export interface MessageSummary extends AskState {
 	subject: string;
 	sentAt: string;
 	projectCode?: string;
+	effort?: Effort;
 	hasParent: boolean;
 	supersedes?: string[];
 	supersededBy?: string;
@@ -52,6 +57,7 @@ export interface Message extends AskState {
 	supersedes?: string[];
 	supersededBy?: string;
 	projectCode?: string;
+	effort?: Effort;
 	body: string;
 	parent?: Message;
 }
@@ -219,6 +225,7 @@ export interface TodoItem {
 	notes?: string;
 	description?: string;
 	projectCode?: string;
+	effort?: Effort;
 }
 
 export interface ScheduleEvent {
@@ -228,6 +235,7 @@ export interface ScheduleEvent {
 	time: string;
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
+	effort?: Effort;
 	isDue?: boolean;
 	systemKey?: string;
 }

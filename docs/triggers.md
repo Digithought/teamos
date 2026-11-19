@@ -59,6 +59,7 @@ Field reference:
 | `author` | no | Only match commits whose author name or email equals this |
 | `authorNot` | no | Skip commits by this author. Defaults to the member's own name; set explicitly to override (`""` to allow self-commits through) |
 | `messageMatches` | no | JavaScript regex (string) tested against the commit subject line |
+| `effort` | no | Effort for the cycle that reviews a matching commit (`low`…`max`); a commit matching several triggers takes the highest. See README § *Model and effort* |
 
 A `triggers.json` written before this split may still carry a `cursor` field inline — the adapter migrates it into the ledger file the first time it's loaded (adopting it as the initial scan position, not re-anchoring at HEAD, so nothing already pending gets silently skipped) and rewrites this file without it.
 

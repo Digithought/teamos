@@ -1,6 +1,7 @@
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runAgent } from '../agents/index.mjs';
+import { memberSettings, resolveBaseSettings } from '../effort.mjs';
 import { heldClaims, leftoversSince, readClaims, recordClaims, releaseClaims, snapshotDirty } from '../leftovers.mjs';
 import {
 	buildChatPrompt,
@@ -96,7 +97,9 @@ export function resolveChatConfig(config = {}) {
 		}
 		env[key] = value;
 	}
-	return { agent: chat.agent || config.agent || 'claude', env };
+	// `chat.model` / `chat.effort` sit where the CLI flags sit for the runner; the member's profile
+	// still overrides them per turn (see effort.mjs).
+	return { agent: chat.agent || config.agent || 'claude', env, ...resolveBaseSettings(config, chat) };
 }
 
 /**
@@ -638,7 +641,10 @@ export class ChatSessions {
 					// Same tools a cycle gets. A chat instance is the member, and a
 					// member that cannot act has to file everything for its next self
 					// — see teamos/docs/chat.md.
-					agentOptions: { task: `${session.human} says:\n\n${said}` },
+					agentOptions: {
+						task: `${session.human} says:\n\n${said}`,
+						...(await memberSettings(this.teamDir, session.member, this.chatConfig)),
+					},
 					env: this.chatConfig.env,
 					onEvent: collect,
 					signal: controller.signal,
@@ -785,7 +791,11 @@ export class ChatSessions {
 				this.repoRoot,
 				session.logFile ?? join(this.teamDir, '.logs', 'chat', `${session.member}.${session.id}.log`),
 				{ ...this.mcpContext, memberName: session.member },
-				{ agentOptions: { task }, env: this.chatConfig.env, quiet: true },
+				{
+					agentOptions: { task, ...(await memberSettings(this.teamDir, session.member, this.chatConfig)) },
+					env: this.chatConfig.env,
+					quiet: true,
+				},
 			);
 			const still = heldClaims(await readClaims(this.teamDir), owner, snapshotDirty(this.repoRoot, this.teamDir));
 			if (still.length > 0) {

@@ -2,7 +2,7 @@
 import { api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
-import type { Ask, MemberSummary, Message, Project } from '../lib/types.js';
+import { EFFORT_LEVELS, type Ask, type Effort, type MemberSummary, type Message, type Project } from '../lib/types.js';
 
 let members = $state<MemberSummary[]>([]);
 let projects = $state<Project[]>([]);
@@ -16,6 +16,7 @@ let cc = $state<Set<string>>(new Set());
 let from = $state(identity.name ?? '');
 let subject = $state('');
 let projectCode = $state('');
+let effort = $state<Effort | ''>('');
 let body = $state('');
 let ask = $state<Ask | ''>('');
 let askDefault = $state('');
@@ -35,6 +36,8 @@ const humanNames = $derived(new Set(members.filter((m) => m.type === 'human').ma
 const needsAsk = $derived(
 	!isReply && !humanNames.has(from.trim()) && [...to, ...cc].some((r) => humanNames.has(r) && r !== from.trim()),
 );
+/** Only a human sender may set the recipient cycle's effort; the server refuses it otherwise. */
+const canSetEffort = $derived(humanNames.has(from.trim()));
 const askIncomplete = $derived(
 	needsAsk && (!ask || (ask === 'decide' && (!askDefault.trim() || !askDefaultBy))),
 );
@@ -120,6 +123,7 @@ async function send() {
 			body: body.trim(),
 			replyTo: replyMessage?.id,
 			projectCode: projectCode || undefined,
+			effort: canSetEffort && effort ? effort : undefined,
 			...(needsAsk && ask
 				? {
 						ask,
@@ -145,6 +149,7 @@ function reset() {
 	cc = new Set();
 	subject = '';
 	projectCode = '';
+	effort = '';
 	body = '';
 	ask = '';
 	askDefault = '';
@@ -237,6 +242,17 @@ function reset() {
 					{/each}
 				</select>
 			</div>
+			{#if canSetEffort}
+				<div class="form-group" style="flex:1">
+					<label class="label" for="effort">Effort (recipient cycle)</label>
+					<select id="effort" bind:value={effort}>
+						<option value="">Member's default</option>
+						{#each EFFORT_LEVELS as level}
+							<option value={level}>{level}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
 		</div>
 
 		{#if needsAsk}

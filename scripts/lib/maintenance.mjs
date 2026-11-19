@@ -304,14 +304,21 @@ export async function runMaintenance({
 		);
 
 		const clerkPrompt = await buildClerkPrompt(teamDir, errorContext.length > 0 ? errorContext.join('\n') : null);
-		const clerkExit = await runAgent(opts.agent, clerkPrompt, repoRoot, clerkLog, {
-			teamDir,
-			memberName: 'clerk',
-			messagingAdapterName: opts.messaging,
-			tasksAdapterName: opts.tasks,
-			scheduleAdapterName: opts.schedule,
-			triggersAdapterName: opts.triggers,
-		});
+		const clerkExit = await runAgent(
+			opts.agent,
+			clerkPrompt,
+			repoRoot,
+			clerkLog,
+			{
+				teamDir,
+				memberName: 'clerk',
+				messagingAdapterName: opts.messaging,
+				tasksAdapterName: opts.tasks,
+				scheduleAdapterName: opts.schedule,
+				triggersAdapterName: opts.triggers,
+			},
+			{ agentOptions: { model: opts.model, effort: opts.effort } },
+		);
 
 		if (clerkExit !== 0) {
 			console.error(`[runner] Clerk exited with code ${clerkExit}`);
@@ -344,14 +351,21 @@ export async function runMaintenance({
 		);
 
 		const prompt = await buildEfficiencyPrompt(teamDir, logsDir);
-		const analysisExit = await runAgent(opts.agent, prompt, repoRoot, analysisLog, {
-			teamDir,
-			memberName: 'clerk',
-			messagingAdapterName: opts.messaging,
-			tasksAdapterName: opts.tasks,
-			scheduleAdapterName: opts.schedule,
-			triggersAdapterName: opts.triggers,
-		});
+		const analysisExit = await runAgent(
+			opts.agent,
+			prompt,
+			repoRoot,
+			analysisLog,
+			{
+				teamDir,
+				memberName: 'clerk',
+				messagingAdapterName: opts.messaging,
+				tasksAdapterName: opts.tasks,
+				scheduleAdapterName: opts.schedule,
+				triggersAdapterName: opts.triggers,
+			},
+			{ agentOptions: { model: opts.model, effort: opts.effort } },
+		);
 
 		if (analysisExit !== 0) {
 			console.error(`[runner] Efficiency analysis exited with code ${analysisExit}`);

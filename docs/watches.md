@@ -136,6 +136,7 @@ Watch field reference:
 | `params` | no | Probe parameters. Every name the probe declares is required; anything else is an error. |
 | `reason` | no | Short note explaining why the subscription exists |
 | `cooldownMinutes` | no | Minimum minutes between wakes from this watch. Default 15; `0` disables. |
+| `effort` | no | Effort for the cycle a transition wakes (`low`…`max`). See README § *Model and effort* |
 
 ### Hit semantics (`fires`)
 

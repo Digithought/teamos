@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { isEffort, optionalEffort, patchEffort } from '../effort.mjs';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
 /**
@@ -135,6 +136,7 @@ function normalizeTrigger(entry) {
 	if (typeof entry.messageMatches === 'string' && entry.messageMatches) {
 		out.messageMatches = entry.messageMatches;
 	}
+	if (isEffort(entry.effort)) out.effort = entry.effort;
 	return out;
 }
 
@@ -307,6 +309,7 @@ export class FileTriggersAdapter {
 		if (!isValidPriority(input.priority)) {
 			throw new Error(`add_trigger: priority must be one of ${PRIORITY_ORDER.join(', ')}`);
 		}
+		optionalEffort(input.effort, 'add_trigger');
 		const state = await this._loadNormalized(member);
 		const trigger = normalizeTrigger({ ...input, id: makeTriggerId() });
 		if (!trigger) throw new Error('add_trigger: invalid trigger');
@@ -376,6 +379,7 @@ export class FileTriggersAdapter {
 				next.messageMatches = String(patch.messageMatches);
 			}
 		}
+		patchEffort(next, patch.effort, 'update_trigger');
 		state.items[idx] = next;
 		await this._writeItems(member, state.items);
 		this._scannedTo.delete(member);

@@ -94,8 +94,10 @@ export function formatClaudeJsonLine(line) {
  * @param {string} [options.task] - The trailing prompt line; defaults to the cycle framing.
  * @param {{ sessionId: string, message: string }} [options.resume] - Continue that session with
  *   `resume.message` instead of starting a cycle (the runner's leftover check uses this).
+ * @param {string} [options.model] - `--model` value (alias or full id); resolved in effort.mjs
+ * @param {string} [options.effort] - `--effort` level; resolved in effort.mjs
  */
-export function createClaudeAdapter(instructionFile, _prompt, { cwd, task, resume } = {}) {
+export function createClaudeAdapter(instructionFile, _prompt, { cwd, task, resume, model, effort } = {}) {
 	// Load the project's `.mcp.json` explicitly rather than relying on the
 	// CLI's project-scope auto-discovery, whose approval rules (trust dialog,
 	// `enabledMcpjsonServers` in a gitignored settings.local.json) have varied
@@ -117,8 +119,8 @@ export function createClaudeAdapter(instructionFile, _prompt, { cwd, task, resum
 			...(resume ? ['--resume', resume.sessionId] : []),
 			'--output-format',
 			'stream-json',
-			'--effort',
-			'xhigh',
+			...(model ? ['--model', model] : []),
+			...(effort ? ['--effort', effort] : []),
 			...(mcpConfig && existsSync(mcpConfig) ? ['--mcp-config', mcpConfig] : []),
 			'--append-system-prompt-file',
 			instructionFile,

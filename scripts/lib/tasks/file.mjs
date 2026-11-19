@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isEffort, optionalEffort, patchEffort } from '../effort.mjs';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
 /**
@@ -35,6 +36,7 @@ function sanitizeItem(item) {
 	if (item.status === 'blocked') out.status = 'blocked';
 	if (typeof item.notes === 'string' && item.notes) out.notes = item.notes;
 	if (typeof item.projectCode === 'string' && item.projectCode) out.projectCode = item.projectCode;
+	if (isEffort(item.effort)) out.effort = item.effort;
 	return out;
 }
 
@@ -109,6 +111,7 @@ export class FileTasksAdapter {
 		if (!isValidPriority(input.priority)) {
 			throw new Error(`add_todo: priority must be one of ${PRIORITY_ORDER.join(', ')}`);
 		}
+		const effort = optionalEffort(input.effort, 'add_todo');
 		// A chat instance of this member can be adding a todo while a cycle of
 		// the same member is adding one. Claude's file tools catch that for
 		// `state.md` and `profile.md` (an Edit whose `old_string` moved is
@@ -128,6 +131,7 @@ export class FileTasksAdapter {
 			notes: input.notes,
 			projectCode: input.projectCode,
 			status: input.status === 'blocked' ? 'blocked' : undefined,
+			effort,
 		});
 		await mkdir(dirname(this._todoPath(member)), { recursive: true });
 		const items = await this._loadNormalized(member);
@@ -174,6 +178,7 @@ export class FileTasksAdapter {
 			else if (patch.status === 'blocked') next.status = 'blocked';
 			else throw new Error('update_todo: status must be "blocked" or null');
 		}
+		patchEffort(next, patch.effort, 'update_todo');
 
 		items[idx] = next;
 		await this._writeItems(member, items);

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
+import { isEffort, optionalEffort } from '../effort.mjs';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
 /**
@@ -162,6 +163,7 @@ function normalizeWatch(entry) {
 		if (Object.keys(params).length) out.params = params;
 	}
 	if (typeof entry.reason === 'string' && entry.reason) out.reason = entry.reason;
+	if (isEffort(entry.effort)) out.effort = entry.effort;
 	out.cooldownMinutes =
 		typeof entry.cooldownMinutes === 'number' && entry.cooldownMinutes >= 0
 			? entry.cooldownMinutes
@@ -324,6 +326,7 @@ export class FileWatchesAdapter {
 				throw new Error('add_watch: cooldownMinutes must be a non-negative number');
 			}
 		}
+		optionalEffort(input.effort, 'add_watch');
 		const state = await this._loadNormalized(member);
 		const watch = normalizeWatch({
 			...input,
@@ -432,6 +435,7 @@ export class FileWatchesAdapter {
 				probe: watch.probe,
 				priority: watch.priority,
 				reason: watch.reason,
+				effort: watch.effort,
 				fires: watch.fires,
 				status: obs.latest.status,
 				signature: obs.latest.signature,

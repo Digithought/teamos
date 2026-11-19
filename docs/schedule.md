@@ -55,6 +55,7 @@ Field reference:
 | `time` | yes | ISO-8601 timestamp of the **next occurrence**. The adapter keeps this up to date for recurring events. |
 | `recurrence` | no | Recurrence descriptor; absent means one-time |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `effort` | no | Effort for the cycle that handles this event when due (`low`…`max`); `null` on update clears it. See README § *Model and effort* |
 | `systemKey` | no | Identifies a system-injected event (e.g. `daily-checkin`); runner-owned, not settable through `add_event`/`update_event` |
 
 ### Recurrence descriptor

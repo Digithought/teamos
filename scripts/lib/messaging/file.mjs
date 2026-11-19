@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isEffort, optionalEffort } from '../effort.mjs';
 import { pathExists } from '../util.mjs';
 
 /**
@@ -60,6 +61,7 @@ function serializeMessage(msg) {
 	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
 	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
+	if (msg.effort) lines.push(`effort: ${msg.effort}`);
 	if (msg.ask) lines.push(`ask: ${msg.ask}`);
 	if (msg.default) lines.push(`default: ${oneLine(msg.default)}`);
 	if (msg.defaultBy) lines.push(`defaultBy: ${msg.defaultBy}`);
@@ -102,6 +104,7 @@ function normalizeMessage(metadata, body) {
 		supersededBy:
 			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
+		effort: isEffort(metadata.effort) ? metadata.effort : undefined,
 		// Untagged (legacy) messages simply have no `ask`.
 		ask: ASK_VALUES.includes(metadata.ask) ? metadata.ask : undefined,
 		default: optionalString(metadata.default),
@@ -227,6 +230,21 @@ export class FileMessagingAdapter {
 	}
 
 	/** Names of human members (`type: "human"` in members.json). Empty without a roster. */
+	/**
+	 * A message's `effort` sets the effort of the cycle that handles it (effort.mjs). Only a human
+	 * may set it: an agent raising another agent's effort would spend on its own judgment what a
+	 * person never approved.
+	 */
+	_checkEffort(op, from, effort, humans) {
+		if (effort === undefined || effort === null || effort === '') return undefined;
+		if (!humans.has(from)) throw new MessageValidationError(`${op}: only a human member can set effort on a message`);
+		try {
+			return optionalEffort(effort, op);
+		} catch (err) {
+			throw new MessageValidationError(err.message);
+		}
+	}
+
 	async humanMembers() {
 		const roster = await this._loadRoster();
 		return new Set((roster ?? []).filter((m) => m.type === 'human').map((m) => m.name));
@@ -498,6 +516,7 @@ export class FileMessagingAdapter {
 		await this._validateParties('sendMessage', from, to, cc);
 		const humans = await this.humanMembers();
 		const ask = await this._checkAsk('sendMessage', { ...args, replyTo }, humans);
+		const effort = this._checkEffort('sendMessage', from, args.effort, humans);
 		// A resolution threads under the question it closes.
 		if (ask.resolves && !replyTo) replyTo = ask.resolves;
 
@@ -525,6 +544,7 @@ export class FileMessagingAdapter {
 			sentAt,
 			replyTo,
 			projectCode,
+			effort,
 			...ask,
 			body,
 		});
@@ -568,6 +588,7 @@ export class FileMessagingAdapter {
 		await this._validateParties('supersedeMessage', from, to, cc);
 		const humans = await this.humanMembers();
 		const ask = await this._checkAsk('supersedeMessage', args, humans);
+		const effort = this._checkEffort('supersedeMessage', from, args.effort, humans);
 		if (ask.resolves) {
 			throw new MessageValidationError('supersedeMessage: `resolves` is not allowed here. Send it with send_message as a reply to the question.');
 		}
@@ -629,6 +650,7 @@ export class FileMessagingAdapter {
 			replyTo,
 			supersedes: [...supersedes],
 			projectCode,
+			effort,
 			...ask,
 			body,
 		});
@@ -687,6 +709,7 @@ export class FileMessagingAdapter {
 				subject: msg.subject,
 				sentAt: msg.sentAt,
 				projectCode: msg.projectCode,
+				effort: msg.effort,
 				hasParent: !!msg.replyTo,
 				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,

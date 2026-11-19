@@ -1,3 +1,5 @@
+import type { Effort } from './effort';
+
 /**
  * A commit-trigger subscription.
  *
@@ -27,6 +29,8 @@ export interface CommitTrigger {
 	authorNot?: string;
 	/** JavaScript regex (string) tested against the commit subject line. */
 	messageMatches?: string;
+	/** Effort for the cycle that reviews a matching commit; absent means the member's. */
+	effort?: Effort;
 }
 
 /** Root structure for triggers.json */

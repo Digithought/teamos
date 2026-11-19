@@ -1,3 +1,5 @@
+import type { Effort } from './effort';
+
 /**
  * A scheduled event.
  *
@@ -26,6 +28,8 @@ export interface ScheduleEvent {
 	};
 	/** Optional project tag for filtering/grouping */
 	projectCode?: string;
+	/** Effort for the cycle that handles this event when it is due; absent means the member's. */
+	effort?: Effort;
 	/**
 	 * Marks a system-injected event (e.g. the daily check-in) so the runner
 	 * recognizes it even after a rename or cadence change. Set only by the

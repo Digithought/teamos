@@ -31,6 +31,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig } from '../config.mjs';
+import { EFFORT_LEVELS } from '../effort.mjs';
 import { FileScheduleAdapter } from '../schedule/file.mjs';
 import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileTriggersAdapter } from '../triggers/file.mjs';
@@ -191,6 +192,22 @@ const MEMBER_PROP = {
 	description: 'Member identity. Omit it: it defaults to you, and naming another member is refused (the clerk may name one for lists).',
 };
 
+// The effort of the cycle that handles an item — see effort.mjs for how it combines with the rest.
+const EFFORT_DESCRIPTION =
+	'Optional reasoning effort for the cycle that handles this item. Omit it to use your profile\'s effort. A cycle runs at the highest effort among the items it serves (an item without one counts as your profile\'s), so set it only when this item needs deeper or lighter work than usual.';
+const EFFORT_PROP = { type: 'string', enum: EFFORT_LEVELS, description: EFFORT_DESCRIPTION };
+const EFFORT_PATCH_PROP = {
+	type: ['string', 'null'],
+	enum: [...EFFORT_LEVELS, null],
+	description: `${EFFORT_DESCRIPTION} Pass null to clear it.`,
+};
+const MESSAGE_EFFORT_PROP = {
+	type: 'string',
+	enum: EFFORT_LEVELS,
+	description:
+		'Human senders only (refused from an agent): the reasoning effort of the recipient cycle that handles this message.',
+};
+
 const BASE_TOOLS = [
 	{
 		name: 'send_message',
@@ -209,6 +226,7 @@ const BASE_TOOLS = [
 				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names" },
 				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
+				effort: MESSAGE_EFFORT_PROP,
 				ask: {
 					type: 'string',
 					enum: ['decide', 'fyi'],
@@ -264,6 +282,7 @@ const BASE_TOOLS = [
 						'Optional id of the message this thread replies to (carries through to the new message; usually omit).',
 				},
 				projectCode: { type: 'string', description: 'Optional project tag.' },
+				effort: MESSAGE_EFFORT_PROP,
 				ask: {
 					type: 'string',
 					enum: ['decide', 'fyi'],
@@ -367,6 +386,7 @@ const BASE_TOOLS = [
 				notes: { type: 'string', description: 'Free-form context, blockers, or progress' },
 				projectCode: { type: 'string', description: 'Optional project tag' },
 				status: { type: 'string', enum: ['blocked'], description: 'Rare — usually added unblocked and blocked later' },
+				effort: EFFORT_PROP,
 			},
 			required: ['title', 'priority'],
 		},
@@ -385,6 +405,7 @@ const BASE_TOOLS = [
 				notes: { type: 'string' },
 				projectCode: { type: 'string' },
 				status: { type: ['string', 'null'], enum: ['blocked', null], description: 'Set to "blocked" or null to clear' },
+				effort: EFFORT_PATCH_PROP,
 			},
 			required: ['id'],
 		},
@@ -428,6 +449,7 @@ const BASE_TOOLS = [
 					required: ['frequency', 'interval'],
 				},
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
+				effort: EFFORT_PROP,
 			},
 			required: ['title', 'time'],
 		},
@@ -459,6 +481,7 @@ const BASE_TOOLS = [
 					],
 				},
 				projectCode: { type: 'string' },
+				effort: EFFORT_PATCH_PROP,
 			},
 			required: ['id'],
 		},
@@ -512,6 +535,7 @@ const BASE_TOOLS = [
 					type: 'string',
 					description: 'JS regex tested against the commit subject (first line of the message).',
 				},
+				effort: EFFORT_PROP,
 			},
 			required: ['priority'],
 		},
@@ -530,6 +554,7 @@ const BASE_TOOLS = [
 				author: { type: ['string', 'null'] },
 				authorNot: { type: ['string', 'null'] },
 				messageMatches: { type: ['string', 'null'] },
+				effort: EFFORT_PATCH_PROP,
 			},
 			required: ['id'],
 		},
@@ -600,6 +625,7 @@ const BASE_TOOLS = [
 					type: 'number',
 					description: 'Minimum minutes between wakes from this watch (default 15). Keeps a flapping probe from spamming you.',
 				},
+				effort: EFFORT_PROP,
 			},
 			required: ['probe', 'priority'],
 		},
@@ -638,7 +664,7 @@ async function handleToolCall(name, args) {
 	await checkIdentity(name, args);
 	switch (name) {
 		case 'send_message': {
-			const { to, subject, body, cc, replyTo, projectCode, ask, defaultBy, resolves } = args;
+			const { to, subject, body, cc, replyTo, projectCode, effort, ask, defaultBy, resolves } = args;
 			const { id, sentAt } = await adapter.sendMessage({
 				from: resolveMember(args),
 				to,
@@ -647,6 +673,7 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				effort,
 				ask,
 				default: args.default,
 				defaultBy,
@@ -656,7 +683,7 @@ async function handleToolCall(name, args) {
 		}
 
 		case 'supersede_message': {
-			const { supersedes, to, subject, body, cc, replyTo, projectCode, ask, defaultBy } = args;
+			const { supersedes, to, subject, body, cc, replyTo, projectCode, effort, ask, defaultBy } = args;
 			const result = await adapter.supersedeMessage({
 				from: resolveMember(args),
 				supersedes,
@@ -666,6 +693,7 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				effort,
 				ask,
 				default: args.default,
 				defaultBy,
@@ -704,8 +732,16 @@ async function handleToolCall(name, args) {
 			return textResult(await tasks.listTodos(resolveMember(args)));
 
 		case 'add_todo': {
-			const { title, priority, description, notes, projectCode, status } = args;
-			const { id } = await tasks.addTodo(resolveMember(args), { title, priority, description, notes, projectCode, status });
+			const { title, priority, description, notes, projectCode, status, effort } = args;
+			const { id } = await tasks.addTodo(resolveMember(args), {
+				title,
+				priority,
+				description,
+				notes,
+				projectCode,
+				status,
+				effort,
+			});
 			return textResult({ id });
 		}
 
@@ -725,8 +761,15 @@ async function handleToolCall(name, args) {
 			return textResult(await schedule.listEvents(resolveMember(args)));
 
 		case 'add_event': {
-			const { title, time, description, recurrence, projectCode } = args;
-			const { id } = await schedule.addEvent(resolveMember(args), { title, time, description, recurrence, projectCode });
+			const { title, time, description, recurrence, projectCode, effort } = args;
+			const { id } = await schedule.addEvent(resolveMember(args), {
+				title,
+				time,
+				description,
+				recurrence,
+				projectCode,
+				effort,
+			});
 			return textResult({ id });
 		}
 
@@ -746,7 +789,7 @@ async function handleToolCall(name, args) {
 			return textResult(await triggers.listTriggers(resolveMember(args)));
 
 		case 'add_trigger': {
-			const { priority, reason, paths, author, authorNot, messageMatches } = args;
+			const { priority, reason, paths, author, authorNot, messageMatches, effort } = args;
 			const { id } = await triggers.addTrigger(resolveMember(args), {
 				priority,
 				reason,
@@ -754,6 +797,7 @@ async function handleToolCall(name, args) {
 				author,
 				authorNot,
 				messageMatches,
+				effort,
 			});
 			return textResult({ id });
 		}
@@ -783,7 +827,7 @@ async function handleToolCall(name, args) {
 			});
 
 		case 'add_watch': {
-			const { probe, priority, fires, exitCode, params, reason, cooldownMinutes } = args;
+			const { probe, priority, fires, exitCode, params, reason, cooldownMinutes, effort } = args;
 			const { id } = await watches.addWatch(resolveMember(args), {
 				probe,
 				priority,
@@ -792,6 +836,7 @@ async function handleToolCall(name, args) {
 				params,
 				reason,
 				cooldownMinutes,
+				effort,
 			});
 			return textResult({ id });
 		}

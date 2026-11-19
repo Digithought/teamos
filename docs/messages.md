@@ -75,6 +75,7 @@ Field reference:
 | `supersedes` | no | Array of prior message ids this message consolidates / replaces. Set when the message was created via `supersede_message`. |
 | `supersededBy` | no | Id of a later message that supersedes this one. Written by the adapter when `supersede_message` runs; never set by the original sender. |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `effort` | no | Human senders only — refused from an agent. Effort for the recipient cycle that handles this message (`low`…`max`). See README § *Model and effort* |
 | `ask` | see [Asks](#asks-messages-to-a-human) | `decide` or `fyi`. Required on a new thread (no `replyTo`) with a human member in `to`/`cc`, unless the sender is human. Absent on replies and on mail from before the rule (untagged). |
 | `default` | with `ask: decide` | One line: what the sender will do if there is no answer |
 | `defaultBy` | with `ask: decide` | ISO date (or date-time) after which the default goes ahead. A bare date runs to the end of that day, UTC. |

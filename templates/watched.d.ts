@@ -1,3 +1,5 @@
+import type { Effort } from './effort';
+
 /**
  * A watch subscription — wakes the member when a named probe's result changes.
  *
@@ -29,6 +31,8 @@ export interface Watch {
 	reason?: string;
 	/** Minimum minutes between wakes from this watch. Defaults to 15; 0 disables. */
 	cooldownMinutes: number;
+	/** Effort for the cycle a transition wakes; absent means the member's. */
+	effort?: Effort;
 }
 
 /** One probe run, as recorded by the runner. */

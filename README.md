@@ -151,6 +151,7 @@ title: Software Engineer
 roles: [developer]
 active: true
 type: ai
+effort: high          # optional — overrides the run-wide effort; `model:` likewise
 personality:
   openness: 8
   conscientiousness: 9
@@ -215,6 +216,8 @@ node teamos/scripts/run.mjs --no-commit
 | Option | Default | Description |
 |---|---|---|
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
+| `--model <name>` | config `model`, then `opus` | Run-wide model; member profiles override it (see **Model and effort**) |
+| `--effort <level>` | config `effort`, then `medium` | Run-wide effort; member profiles and work items override it |
 | `--messaging <name>` | `file` | Messaging adapter: `file` |
 | `--tasks <name>` | `file` | Tasks adapter: `file` |
 | `--schedule <name>` | `file` | Schedule adapter: `file` |
@@ -249,6 +252,18 @@ tree (outside `team/`) before each cycle; if a clean cycle added or changed anyt
 it resumes that member's session once with the list and asks it to commit, stash or revert each
 path. Whatever is still left is logged for a person. Sessions therefore persist (Claude Code prunes
 them after `cleanupPeriodDays`).
+
+### Model and effort
+
+Every Claude spawn — cycle, clerk, chat — is given a `--model` and an `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). They resolve in this order, the later one winning:
+
+1. **Defaults** — `opus`, `medium`.
+2. **Config** — top-level `model` / `effort` in `teamos.config.json`. For dashboard chats, `chat.model` / `chat.effort` then override these.
+3. **CLI** — `--model` / `--effort` on the runner.
+4. **Member profile** — `model:` / `effort:` in the member's `profile.md` frontmatter. An unknown effort there is logged and ignored.
+5. **Work items** (effort only) — a todo, event, commit trigger or watch may carry `effort`, and so may a message, but only when a human sent it; the adapter refuses it from an agent. A cycle runs at the **highest** effort among the items it serves at its priority, where an item without one counts as the member's. So a lone low-effort event (a light check-in) runs low, but beside an ordinary todo it runs at the member's effort; a human who wants a message handled carefully sends it with `effort: high`.
+
+The clerk runs at the run-wide settings. Each cycle log's header and `--dry-run` show the resolved model and effort, and which items set the effort. Cursor and Augment ignore both. The rules live in `teamos/scripts/lib/effort.mjs`.
 
 ### Loop Mode (Default)
 
@@ -529,11 +544,13 @@ Adapters can be configured via `teamos.config.json` at the project root, with CL
   "probes": {},
   "sync": { "adapter": "git" },
   "agent": "claude",
+  "model": "opus",
+  "effort": "medium",
   "chat": { "agent": "claude", "env": {} }
 }
 ```
 
-The `chat` section configures the dashboard's live chat with a member (see `teamos/docs/chat.md`). `chat.agent` defaults to the top-level `agent`; `chat.env` layers env vars over the inherited environment for chat spawns only, so conversation tokens can be billed to a different Claude account than the automated cycles:
+`model` and `effort` are the run-wide defaults described under **Model and effort**. The `chat` section configures the dashboard's live chat with a member (see `teamos/docs/chat.md`). `chat.agent`, `chat.model` and `chat.effort` default to the top-level values; `chat.env` layers env vars over the inherited environment for chat spawns only, so conversation tokens can be billed to a different Claude account than the automated cycles:
 
 ```json
 {
